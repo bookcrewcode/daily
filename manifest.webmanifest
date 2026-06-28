@@ -1,0 +1,15 @@
+{
+  "name": "Daily",
+  "short_name": "Daily",
+  "description": "Ben's daily win stack — tap, log, stay consistent.",
+  "start_url": "/daily/",
+  "scope": "/daily/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0e0a",
+  "theme_color": "#0a0e0a",
+  "icons": [
+    { "src": "/daily/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/daily/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
