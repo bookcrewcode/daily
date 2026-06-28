@@ -4,15 +4,17 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Daily",
   description: "Ben's daily win stack — tap, log, stay consistent.",
-  manifest: "/manifest.webmanifest",
+  // basePath is NOT auto-applied to these metadata links on static export,
+  // so the /daily prefix is hardcoded to resolve on GitHub Pages.
+  manifest: "/daily/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
     title: "Daily",
   },
   icons: {
-    apple: "/icons/apple-touch-icon.png",
-    icon: "/icons/icon-192.png",
+    apple: "/daily/icons/apple-touch-icon.png",
+    icon: "/daily/icons/icon-192.png",
   },
 };
 
