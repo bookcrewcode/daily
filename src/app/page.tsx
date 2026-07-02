@@ -7,12 +7,16 @@ import Today from "@/components/Today";
 import Food from "@/components/Food";
 import Lifts from "@/components/Lifts";
 import Night from "@/components/Night";
+import Goals from "@/components/Goals";
+import Money from "@/components/Money";
 
-type Tab = "today" | "food" | "lifts" | "night";
+type Tab = "today" | "goals" | "food" | "lifts" | "money" | "night";
 const TABS: { key: Tab; emoji: string; label: string }[] = [
   { key: "today", emoji: "✅", label: "Today" },
+  { key: "goals", emoji: "🎯", label: "Goals" },
   { key: "food", emoji: "🍎", label: "Food" },
   { key: "lifts", emoji: "🏋️", label: "Lifts" },
+  { key: "money", emoji: "💰", label: "Money" },
   { key: "night", emoji: "🌙", label: "Night" },
 ];
 
@@ -34,19 +38,21 @@ export default function App() {
   return (
     <main className="max-w-md mx-auto px-4 pb-28 min-h-full">
       {tab === "today" && <Today uid={uid} />}
+      {tab === "goals" && <Goals uid={uid} />}
       {tab === "food" && <Food uid={uid} />}
       {tab === "lifts" && <Lifts uid={uid} />}
+      {tab === "money" && <Money uid={uid} />}
       {tab === "night" && <Night uid={uid} />}
 
       <button onClick={() => supabase.auth.signOut()} className="mt-8 mx-auto block text-xs opacity-30 underline">Sign out</button>
 
       <nav className="fixed bottom-0 left-0 right-0 z-10 border-t border-white/10 bg-[var(--background)]/95 backdrop-blur">
-        <div className="max-w-md mx-auto grid grid-cols-4">
+        <div className="max-w-md mx-auto grid grid-cols-6">
           {TABS.map((t) => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`flex flex-col items-center gap-0.5 py-3 ${tab === t.key ? "text-[var(--neon)]" : "opacity-50"}`}>
-              <span className="text-xl">{t.emoji}</span>
-              <span className="text-[10px] font-medium">{t.label}</span>
+              <span className="text-lg">{t.emoji}</span>
+              <span className="text-[9px] font-medium">{t.label}</span>
             </button>
           ))}
         </div>

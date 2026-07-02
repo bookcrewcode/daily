@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase, WIN_KEYS, todayStr, dateStr, type DayRow } from "@/lib/supabase";
 import { Ring, NumCard, SectionTitle } from "./ui";
+import Overseer from "./Overseer";
 
 type WinKey = (typeof WIN_KEYS)[number];
 
@@ -74,6 +75,8 @@ export default function Today({ uid }: { uid: string }) {
         <p className="text-xs uppercase tracking-widest text-[var(--neon)]/70">{now}</p>
         <h1 className="text-2xl font-bold mt-1">Daily Win Stack</h1>
       </div>
+
+      <Overseer uid={uid} />
 
       <div className="flex items-center gap-3 my-4">
         <Ring score={score} total={WINS.length} />

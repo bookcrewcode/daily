@@ -79,6 +79,31 @@ export const SPLIT: { name: string; exercises: string[] }[] = [
   { name: "Day 6 — Back/Bis/Traps", exercises: ["Weighted Pull-ups", "ISO Lateral Pull", "Cable Row", "Reverse Pec Dec", "Shrugs", "Preacher Curls"] },
 ];
 
+export type Goal = {
+  id: string;
+  title: string;
+  why: string;
+  due: string | null;
+  priority: number;
+  status: string;
+};
+
+export type Asset = {
+  id: string;
+  name: string;
+  kind: "asset" | "liability";
+  value: number;
+};
+
+export type Subscription = {
+  id: string;
+  name: string;
+  cost: number;
+  cycle: "monthly" | "yearly";
+  renews_on: string | null;
+  active: boolean;
+};
+
 export function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;

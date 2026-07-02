@@ -1,2 +1,11 @@
 [sync] 2026-06-28: wins 4/7, 0 meals, 0 lifts → /Users/bengarnet/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ben's brain /10 Daily/2026-06-28.md
 [sync] 2026-06-28: wins 4/7, 0 meals, 0 lifts → /Users/bengarnet/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ben's brain /10 Daily/2026-06-28.md
+[sync] FAILED [TypeError: fetch failed] {
+  [cause]: Error: getaddrinfo ENOTFOUND pciljeqsrricybdnhvsu.supabase.co
+      at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:122:26) {
+    errno: -3008,
+    code: 'ENOTFOUND',
+    syscall: 'getaddrinfo',
+    hostname: 'pciljeqsrricybdnhvsu.supabase.co'
+  }
+}
