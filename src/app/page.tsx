@@ -9,6 +9,7 @@ import Lifts from "@/components/Lifts";
 import Night from "@/components/Night";
 import Goals from "@/components/Goals";
 import Money from "@/components/Money";
+import Board from "@/components/Board";
 
 type Tab = "today" | "goals" | "food" | "lifts" | "money" | "night";
 const TABS: { key: Tab; emoji: string; label: string }[] = [
@@ -24,6 +25,7 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
   const [tab, setTab] = useState<Tab>("today");
+  const [boardOpen, setBoardOpen] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setChecking(false); });
@@ -45,6 +47,13 @@ export default function App() {
       {tab === "night" && <Night uid={uid} />}
 
       <button onClick={() => supabase.auth.signOut()} className="mt-8 mx-auto block text-xs opacity-30 underline">Sign out</button>
+
+      {/* floating Board button */}
+      <button onClick={() => setBoardOpen(true)}
+        className="fixed z-20 bottom-24 right-4 w-14 h-14 rounded-full bg-[var(--neon)] text-black text-2xl grid place-items-center shadow-lg active:scale-90">
+        🧠
+      </button>
+      {boardOpen && <Board onClose={() => setBoardOpen(false)} />}
 
       <nav className="fixed bottom-0 left-0 right-0 z-10 border-t border-white/10 bg-[var(--background)]/95 backdrop-blur">
         <div className="max-w-md mx-auto grid grid-cols-6">
