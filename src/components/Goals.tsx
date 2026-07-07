@@ -2,8 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase, todayStr, type Goal } from "@/lib/supabase";
-import { SectionTitle } from "./ui";
+import { SectionTitle, Pill } from "./ui";
 import NorthStar from "./NorthStar";
+
+const JUMPS = [
+  { id: "top", label: "🎯 Goals" },
+  { id: "history", label: "🗓️ History" },
+  { id: "northstar", label: "🌟 North Star" },
+  { id: "achievements", label: "🏆 Achievements" },
+  { id: "rewards", label: "🎁 Rewards" },
+];
 
 function daysUntil(due: string | null): number | null {
   if (!due) return null;
@@ -56,8 +64,15 @@ export default function Goals({ uid }: { uid: string }) {
   const urgent = sorted.filter((g) => urgency(g).rank <= 1);
 
   return (
-    <div>
+    <div id="top">
       <h1 className="text-2xl font-bold pt-3">🎯 Goals</h1>
+      <div className="flex gap-1.5 overflow-x-auto mt-3 pb-1 -mx-4 px-4">
+        {JUMPS.map((j) => (
+          <Pill key={j.id} active={false} onClick={() => document.getElementById(j.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+            {j.label}
+          </Pill>
+        ))}
+      </div>
       {urgent.length > 0 && (
         <div className="mt-3 rounded-2xl bg-red-500/10 border border-red-500/40 p-4">
           <p className="text-xs uppercase tracking-widest text-red-400 mb-1">🔥 Urgent — handle today</p>

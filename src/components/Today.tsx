@@ -2,26 +2,30 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase, WIN_KEYS, todayStr, dateStr, type DayRow } from "@/lib/supabase";
-import { Ring, NumCard, SectionTitle } from "./ui";
+import { Ring, NumCard, SectionTitle, Card } from "./ui";
 import Overseer from "./Overseer";
 import GameBar from "./GameBar";
 
 type WinKey = (typeof WIN_KEYS)[number];
 
 const WINS: { key: WinKey; emoji: string; label: string; link?: string; linkLabel?: string }[] = [
-  { key: "ws_meds", emoji: "💊", label: "Meds + water" },
+  { key: "ws_meds", emoji: "💊", label: "Meds" },
+  { key: "ws_water", emoji: "💧", label: "Water" },
   { key: "ws_eat", emoji: "🍽️", label: "Ate clean + logged" },
   { key: "ws_lift", emoji: "🏋️", label: "Lifts (or rest day)" },
   { key: "ws_stretch", emoji: "🧘", label: "Stretch 5 min", link: "https://www.youtube.com/watch?v=TTN7-Aw5G2s", linkLabel: "Play" },
+  { key: "ws_sleep", emoji: "😴", label: "Slept 7+ hrs" },
   { key: "ws_vocab", emoji: "✍️", label: "Vocab word" },
   { key: "ws_chinese", emoji: "🐼", label: "Chinese", link: "https://www.duolingo.com/learn", linkLabel: "Duolingo" },
-  { key: "ws_work", emoji: "💼", label: "30 min BookCrew / research" },
+  { key: "ws_school", emoji: "📚", label: "School" },
+  { key: "ws_work", emoji: "💼", label: "BookCrew / research" },
 ];
 
 const EMPTY: DayRow = {
   day: todayStr(),
   ws_meds: false, ws_eat: false, ws_lift: false, ws_stretch: false,
   ws_vocab: false, ws_chinese: false, ws_work: false,
+  ws_water: false, ws_sleep: false, ws_school: false,
   calories: 0, protein: 0, bodyweight: null, vocab_count: 0,
 };
 
@@ -88,31 +92,29 @@ export default function Today({ uid, onOpenAdvisor }: { uid: string; onOpenAdvis
         </div>
       </div>
 
-      <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2">
         {WINS.map((w) => {
           const on = row[w.key];
           return (
-            <div key={w.key}
-              className={`flex items-center gap-3 rounded-2xl px-4 py-3 border transition ${on ? "bg-[var(--neon)]/15 border-[var(--neon)]/60" : "bg-white/5 border-white/10"}`}>
-              <button onClick={() => save({ [w.key]: !on } as Partial<DayRow>)} className="flex items-center gap-3 flex-1 text-left">
-                <span className="text-2xl">{w.emoji}</span>
-                <span className="flex-1 font-medium">{w.label}</span>
-                <span className={`w-7 h-7 rounded-full grid place-items-center text-sm font-bold ${on ? "bg-[var(--neon)] text-black" : "border border-white/30"}`}>{on ? "✓" : ""}</span>
+            <Card key={w.key} padded={false} tone={on ? "neon" : "default"} className="p-3">
+              <button onClick={() => save({ [w.key]: !on } as Partial<DayRow>)} className="flex items-center gap-2.5 w-full text-left">
+                <span className="text-xl shrink-0">{w.emoji}</span>
+                <span className="flex-1 text-sm font-medium leading-tight">{w.label}</span>
+                <span className={`w-6 h-6 shrink-0 rounded-full grid place-items-center text-xs font-bold ${on ? "bg-[var(--neon)] text-black" : "border border-white/30"}`}>{on ? "✓" : ""}</span>
               </button>
               {w.link && (
                 <a href={w.link} target="_blank" rel="noreferrer"
-                  className="text-xs font-semibold px-3 py-1.5 rounded-full bg-[var(--neon)]/20 text-[var(--neon)] active:scale-95">{w.linkLabel} ↗</a>
+                  className="mt-2 inline-block text-[10px] font-semibold px-2.5 py-1 rounded-full bg-[var(--neon)]/20 text-[var(--neon)] active:scale-95">{w.linkLabel} ↗</a>
               )}
-            </div>
+            </Card>
           );
         })}
       </div>
 
       <SectionTitle>Quick log</SectionTitle>
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-3 gap-2">
         <NumCard label="🔥 Calories" value={row.calories} onChange={(v) => save({ calories: v })} step={50} />
         <NumCard label="💪 Protein g" value={row.protein} onChange={(v) => save({ protein: v })} step={5} />
-        <NumCard label="✍️ Vocab" value={row.vocab_count} onChange={(v) => save({ vocab_count: v })} step={1} />
         <NumCard label="⚖️ Weight lb" value={row.bodyweight ?? 0} onChange={(v) => save({ bodyweight: v })} step={1} decimals />
       </div>
 
@@ -131,6 +133,7 @@ export default function Today({ uid, onOpenAdvisor }: { uid: string; onOpenAdvis
           );
         })}
       </div>
+      <p className="text-xs opacity-30 mt-2">Full history + trends → <span className="text-[var(--neon)]/70">Goals tab</span></p>
     </div>
   );
 }

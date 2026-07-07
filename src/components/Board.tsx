@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { supabase, ADVISOR_FN, SUPABASE_ANON } from "@/lib/supabase";
+import { useVoiceInput } from "@/lib/useVoiceInput";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
@@ -19,6 +20,7 @@ export default function Board({ onClose, initialAdvisor }: { onClose: () => void
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const voice = useVoiceInput((text) => setInput(text));
 
   async function send() {
     const text = input.trim();
@@ -84,8 +86,14 @@ export default function Board({ onClose, initialAdvisor }: { onClose: () => void
 
       <div className="p-3 border-t border-white/10 flex gap-2" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
         <input value={input} onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()} placeholder={`Ask ${active.name}…`}
+          onKeyDown={(e) => e.key === "Enter" && send()} placeholder={voice.listening ? "listening…" : `Ask ${active.name}…`}
           className="flex-1 rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
+        {voice.supported && (
+          <button onClick={voice.toggle}
+            className={`w-12 rounded-xl font-bold active:scale-95 ${voice.listening ? "bg-red-500 text-white animate-pulse" : "bg-white/10"}`}>
+            🎤
+          </button>
+        )}
         <button onClick={send} disabled={busy} className="px-5 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95 disabled:opacity-50">↑</button>
       </div>
     </div>

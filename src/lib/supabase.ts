@@ -30,6 +30,9 @@ export type DayRow = {
   ws_vocab: boolean;
   ws_chinese: boolean;
   ws_work: boolean;
+  ws_water: boolean;
+  ws_sleep: boolean;
+  ws_school: boolean;
   calories: number;
   protein: number;
   bodyweight: number | null;
@@ -44,6 +47,9 @@ export const WIN_KEYS = [
   "ws_vocab",
   "ws_chinese",
   "ws_work",
+  "ws_water",
+  "ws_sleep",
+  "ws_school",
 ] as const;
 
 export type Meal = {
@@ -106,6 +112,20 @@ export type Subscription = {
   cycle: "monthly" | "yearly";
   renews_on: string | null;
   active: boolean;
+};
+
+export type VocabWord = {
+  id: string;
+  word: string;
+  definition: string;
+  sentence: string;
+  mnemonic: string;
+  added: string;
+};
+
+export type UserSettings = {
+  calorie_goal: number;
+  protein_goal: number;
 };
 
 export function todayStr() {

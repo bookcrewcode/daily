@@ -19,9 +19,12 @@ const HABIT_XP: Record<(typeof WIN_KEYS)[number], number> = {
   ws_chinese: 10,
   ws_work: 10,
   ws_eat: 10,
+  ws_sleep: 10,
+  ws_school: 10,
   ws_meds: 5,
   ws_stretch: 5,
   ws_vocab: 5,
+  ws_water: 5,
 };
 const MEAL_XP = 3;
 const LIFT_SET_XP = 2;
@@ -29,7 +32,7 @@ const GOAL_DONE_XP = 50;
 const BODYWEIGHT_LOG_XP = 5;
 
 export type GameData = {
-  days: (Pick<DayRow, "day" | "ws_meds" | "ws_eat" | "ws_lift" | "ws_stretch" | "ws_vocab" | "ws_chinese" | "ws_work" | "bodyweight">)[];
+  days: (Pick<DayRow, "day" | "ws_meds" | "ws_eat" | "ws_lift" | "ws_stretch" | "ws_vocab" | "ws_chinese" | "ws_work" | "ws_water" | "ws_sleep" | "ws_school" | "bodyweight">)[];
   mealsCount: number;
   liftSetsDoneCount: number;
   goalsDoneCount: number;
@@ -39,6 +42,8 @@ export type GameData = {
 export function scoreOf(d: Record<string, unknown>): number {
   return WIN_KEYS.reduce((s, k) => s + (d[k] ? 1 : 0), 0);
 }
+
+export const WIN_TOTAL = WIN_KEYS.length;
 
 export function baseXP(g: GameData): number {
   let xp = 0;
@@ -62,7 +67,7 @@ export function currentFullStreak(days: GameData["days"]): number {
   for (;;) {
     const ds = dateStr(cursor);
     const row = map.get(ds);
-    const won = !!row && scoreOf(row) === 7;
+    const won = !!row && scoreOf(row) === WIN_TOTAL;
     if (first && ds === todayStr() && !won) {
       first = false;
       cursor.setDate(cursor.getDate() - 1);
@@ -121,8 +126,8 @@ export const ACHIEVEMENTS: Achievement[] = [
   // ── Getting started ──
   { key: "first_day", emoji: "🌱", name: "First Win", desc: "Log your first day", xp: 10,
     check: (g) => g.days.length >= 1 },
-  { key: "perfect_day", emoji: "✅", name: "Perfect Day", desc: "First 7/7 Win Stack day", xp: 25,
-    check: (g) => g.days.some((d) => scoreOf(d) === 7) },
+  { key: "perfect_day", emoji: "✅", name: "Perfect Day", desc: "First full Win Stack day", xp: 25,
+    check: (g) => g.days.some((d) => scoreOf(d) === WIN_TOTAL) },
   { key: "on_scale", emoji: "⚖️", name: "On the Scale", desc: "Log your bodyweight for the first time", xp: 25,
     check: (g) => g.days.some((d) => d.bodyweight != null) },
   { key: "first_goal", emoji: "🎯", name: "First Goal Crushed", desc: "Complete your first goal", xp: 25,
@@ -185,3 +190,34 @@ export function achievementBonusXP(unlockedKeys: Set<string>): number {
 export function computeUnlocked(g: GameData): Achievement[] {
   return ACHIEVEMENTS.filter((a) => a.check(g));
 }
+
+// Group achievements into categories for a cleaner, less-overwhelming grid.
+export type Category = { key: string; label: string; emoji: string; keys: string[] };
+export const CATEGORIES: Category[] = [
+  { key: "start", label: "Getting Started", emoji: "🌱", keys: ["first_day", "perfect_day", "on_scale", "first_goal"] },
+  { key: "streaks", label: "Streaks", emoji: "🔥", keys: ["streak_3", "streak_14", "streak_30", "streak_90", "streak_365"] },
+  { key: "volume", label: "Volume & Mastery", emoji: "💪", keys: ["days_50", "days_100", "lift_30", "chinese_30", "vocab_50", "meals_100", "sets_500", "goals_10"] },
+  { key: "body", label: "190 Lean", emoji: "🏆", keys: ["lean_190"] },
+  { key: "money", label: "Millionaire", emoji: "👑", keys: ["net_1k", "net_10k", "net_25k", "net_50k", "net_100k", "net_250k", "net_500k", "net_750k", "millionaire"] },
+];
+
+// ── Rewards — gated by LEVEL, not spendable currency. Claim once unlocked. ──
+export type Reward = { key: string; emoji: string; name: string; level: number; tier: "small" | "medium" | "big" | "legendary" };
+export const REWARDS: Reward[] = [
+  { key: "r_break", emoji: "☕", name: "Guilt-free 15-min break", level: 2, tier: "small" },
+  { key: "r_snack", emoji: "🍫", name: "Favorite snack, no guilt", level: 3, tier: "small" },
+  { key: "r_music", emoji: "🎧", name: "Hype playlist, full volume", level: 4, tier: "small" },
+  { key: "r_scroll", emoji: "📱", name: "30 min guilt-free scrolling", level: 5, tier: "small" },
+  { key: "r_game", emoji: "🎮", name: "1 hour of gaming", level: 8, tier: "medium" },
+  { key: "r_show", emoji: "📺", name: "Watch an episode", level: 10, tier: "medium" },
+  { key: "r_coffee", emoji: "☕", name: "Order your favorite coffee", level: 12, tier: "medium" },
+  { key: "r_shower", emoji: "🚿", name: "Long hot shower, no rush", level: 14, tier: "medium" },
+  { key: "r_small_buy", emoji: "🛍️", name: "Buy a small thing you wanted", level: 16, tier: "medium" },
+  { key: "r_takeout", emoji: "🍽️", name: "Order from your favorite spot", level: 20, tier: "big" },
+  { key: "r_gameday", emoji: "🕹️", name: "Full gaming night, zero guilt", level: 24, tier: "big" },
+  { key: "r_gear", emoji: "🏋️", name: "New gym gear / gadget", level: 28, tier: "big" },
+  { key: "r_dayoff", emoji: "🌴", name: "A full day off to recharge", level: 30, tier: "big" },
+  { key: "r_wishlist", emoji: "🎁", name: "Buy something off your wishlist", level: 35, tier: "legendary" },
+  { key: "r_trip", emoji: "✈️", name: "Plan a real trip", level: 40, tier: "legendary" },
+  { key: "r_splurge", emoji: "💎", name: "A genuine splurge — you earned it", level: 50, tier: "legendary" },
+];
