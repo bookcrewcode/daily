@@ -18,6 +18,7 @@ const WINS: { key: WinKey; emoji: string; label: string; link?: string; linkLabe
   { key: "ws_vocab", emoji: "✍️", label: "Vocab word" },
   { key: "ws_chinese", emoji: "🐼", label: "Chinese", link: "https://www.duolingo.com/learn", linkLabel: "Duolingo" },
   { key: "ws_school", emoji: "📚", label: "School" },
+  { key: "ws_affirmations", emoji: "💫", label: "Affirmations" },
   { key: "ws_work", emoji: "💼", label: "BookCrew / research" },
 ];
 
@@ -25,7 +26,7 @@ const EMPTY: DayRow = {
   day: todayStr(),
   ws_meds: false, ws_eat: false, ws_lift: false, ws_stretch: false,
   ws_vocab: false, ws_chinese: false, ws_work: false,
-  ws_water: false, ws_sleep: false, ws_school: false,
+  ws_water: false, ws_sleep: false, ws_school: false, ws_affirmations: false,
   calories: 0, protein: 0, bodyweight: null, vocab_count: 0,
 };
 

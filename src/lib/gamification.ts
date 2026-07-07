@@ -25,6 +25,7 @@ const HABIT_XP: Record<(typeof WIN_KEYS)[number], number> = {
   ws_stretch: 5,
   ws_vocab: 5,
   ws_water: 5,
+  ws_affirmations: 5,
 };
 const MEAL_XP = 3;
 const LIFT_SET_XP = 2;
@@ -32,7 +33,7 @@ const GOAL_DONE_XP = 50;
 const BODYWEIGHT_LOG_XP = 5;
 
 export type GameData = {
-  days: (Pick<DayRow, "day" | "ws_meds" | "ws_eat" | "ws_lift" | "ws_stretch" | "ws_vocab" | "ws_chinese" | "ws_work" | "ws_water" | "ws_sleep" | "ws_school" | "bodyweight">)[];
+  days: (Pick<DayRow, "day" | "ws_meds" | "ws_eat" | "ws_lift" | "ws_stretch" | "ws_vocab" | "ws_chinese" | "ws_work" | "ws_water" | "ws_sleep" | "ws_school" | "ws_affirmations" | "bodyweight">)[];
   mealsCount: number;
   liftSetsDoneCount: number;
   goalsDoneCount: number;

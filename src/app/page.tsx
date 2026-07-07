@@ -11,9 +11,11 @@ import Goals from "@/components/Goals";
 import Money from "@/components/Money";
 import Vocab from "@/components/Vocab";
 import Tools from "@/components/Tools";
+import Learning from "@/components/Learning";
+import Affirmations from "@/components/Affirmations";
 import Board from "@/components/Board";
 
-type Tab = "today" | "goals" | "food" | "lifts" | "vocab" | "money" | "night" | "tools";
+type Tab = "today" | "goals" | "food" | "lifts" | "vocab" | "money" | "night" | "tools" | "learning" | "affirmations";
 const PRIMARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "today", emoji: "✅", label: "Today" },
   { key: "goals", emoji: "🎯", label: "Goals" },
@@ -22,6 +24,8 @@ const PRIMARY: { key: Tab; emoji: string; label: string }[] = [
 ];
 const SECONDARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "vocab", emoji: "✍️", label: "Vocab" },
+  { key: "learning", emoji: "🌳", label: "Learning" },
+  { key: "affirmations", emoji: "💫", label: "Affirm" },
   { key: "money", emoji: "💰", label: "Money" },
   { key: "night", emoji: "🌙", label: "Night" },
   { key: "tools", emoji: "🛠️", label: "Tools" },
@@ -35,6 +39,7 @@ export default function App() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
   const [boardAdvisor, setBoardAdvisor] = useState<string | undefined>(undefined);
+  const [boardTopicId, setBoardTopicId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setChecking(false); });
@@ -42,8 +47,9 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  function openAdvisor(advisor: string) {
+  function openAdvisor(advisor: string, topicId?: string) {
     setBoardAdvisor(advisor);
+    setBoardTopicId(topicId);
     setBoardOpen(true);
   }
   function go(t: Tab) { setTab(t); setMoreOpen(false); }
@@ -81,6 +87,8 @@ export default function App() {
         {tab === "money" && <Money uid={uid} />}
         {tab === "night" && <Night uid={uid} />}
         {tab === "tools" && <Tools />}
+        {tab === "learning" && <Learning uid={uid} onOpenAdvisor={openAdvisor} />}
+        {tab === "affirmations" && <Affirmations uid={uid} />}
 
         <button onClick={() => supabase.auth.signOut()} className="mt-8 mx-auto block text-xs opacity-30 underline md:hidden">Sign out</button>
 
@@ -89,7 +97,7 @@ export default function App() {
           className="fixed z-20 bottom-24 right-4 w-14 h-14 rounded-full bg-[var(--neon)] text-black text-2xl grid place-items-center shadow-lg active:scale-90 md:hidden">
           🎮
         </button>
-        {boardOpen && <Board onClose={() => setBoardOpen(false)} initialAdvisor={boardAdvisor} />}
+        {boardOpen && <Board onClose={() => setBoardOpen(false)} initialAdvisor={boardAdvisor} topicId={boardTopicId} />}
 
         {/* Mobile bottom nav: 4 primary + More */}
         <nav className="fixed bottom-0 left-0 right-0 z-10 border-t border-white/10 bg-[var(--background)]/95 backdrop-blur md:hidden">
@@ -113,7 +121,7 @@ export default function App() {
           <div className="fixed inset-0 z-30 bg-black/60 flex items-end md:hidden" onClick={() => setMoreOpen(false)}>
             <div onClick={(e) => e.stopPropagation()} className="w-full bg-[var(--background)] rounded-t-3xl border-t border-white/10 p-4 pb-8">
               <div className="w-10 h-1 rounded-full bg-white/20 mx-auto mb-4" />
-              <div className="grid grid-cols-4 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 {SECONDARY.map((t) => (
                   <button key={t.key} onClick={() => go(t.key)}
                     className={`flex flex-col items-center gap-1 py-4 rounded-2xl ${tab === t.key ? "bg-[var(--neon)]/15 text-[var(--neon)]" : "bg-white/5 opacity-70"}`}>

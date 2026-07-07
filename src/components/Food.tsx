@@ -1,15 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { supabase, todayStr, dateStr, type Meal, type UserSettings } from "@/lib/supabase";
+import { supabase, todayStr, dateStr, type Meal } from "@/lib/supabase";
 import { SectionTitle, Card, Ring, ProgressBar } from "./ui";
 
-const DEFAULT_SETTINGS: UserSettings = { calorie_goal: 2200, protein_goal: 160 };
+type CalorieSettings = { calorie_goal: number; protein_goal: number };
+const DEFAULT_SETTINGS: CalorieSettings = { calorie_goal: 2200, protein_goal: 160 };
 
 export default function Food({ uid }: { uid: string }) {
   const [meals, setMeals] = useState<Meal[]>([]);
   const [recent, setRecent] = useState<Meal[]>([]);
-  const [settings, setSettings] = useState<UserSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<CalorieSettings>(DEFAULT_SETTINGS);
   const [editingGoals, setEditingGoals] = useState(false);
   const [name, setName] = useState("");
   const [cal, setCal] = useState("");
@@ -24,7 +25,7 @@ export default function Food({ uid }: { uid: string }) {
       supabase.from("meals").select("*").eq("user_id", uid).order("created_at", { ascending: false }).limit(200),
     ]);
     setMeals((data ?? []) as Meal[]);
-    if (settingsRow) setSettings(settingsRow as UserSettings);
+    if (settingsRow) setSettings(settingsRow as CalorieSettings);
 
     // distinct recent meal names for one-tap re-logging
     const seen = new Set<string>();
@@ -165,7 +166,7 @@ export default function Food({ uid }: { uid: string }) {
   );
 }
 
-function GoalEditor({ settings, onSave }: { settings: UserSettings; onSave: (cal: number, pro: number) => void }) {
+function GoalEditor({ settings, onSave }: { settings: CalorieSettings; onSave: (cal: number, pro: number) => void }) {
   const [cal, setCal] = useState(String(settings.calorie_goal));
   const [pro, setPro] = useState(String(settings.protein_goal));
   return (

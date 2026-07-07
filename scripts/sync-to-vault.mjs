@@ -80,6 +80,60 @@ function applyHabitsToVault(content, merged) {
   });
 }
 
+// ── Learning Hub → vault project notes ────────────────────────────────
+// Each active topic gets/updates a note in "30 Areas/Learning/Projects/<title>.md"
+// (created from the Learning Project Template shape if missing). Only the
+// Retrieval log / Weak spots / Brain dumps sections are regenerated each run —
+// fully derived from Supabase, source of truth = the app. The Tree, Goal/Why,
+// and Roadmap sections are hand-authored and NEVER touched by this sync.
+function replaceSection(content, heading, newBody) {
+  const re = new RegExp(`(## ${heading}[^\\n]*\\n)([\\s\\S]*?)(?=\\n## |$)`);
+  if (re.test(content)) return content.replace(re, (full, h) => h + newBody);
+  return content.trimEnd() + `\n\n## ${heading}\n${newBody}`;
+}
+
+async function syncLearningTopics(token, userId) {
+  const topics = await api(token, `learning_topics?user_id=eq.${userId}&status=eq.active`);
+  const projectsDir = path.join(VAULT, "30 Areas", "Learning", "Projects");
+  if (!fs.existsSync(projectsDir)) return;
+
+  for (const t of topics ?? []) {
+    const file = path.join(projectsDir, `${t.title}.md`);
+    let content;
+    if (fs.existsSync(file)) {
+      content = fs.readFileSync(file, "utf8");
+    } else {
+      content = `---\ntype: learning\nstatus: active\ntopic: "${t.title}"\nstarted: ${today}\nnext: \ntags: [area/learning]\ncssclasses: [game]\n---\n\n# 🌳 ${t.title}\n\n> [!note] Built on [[The 3C Protocol (Learning System)]]. Synced from the Daily app.\n> **Goal:** ${t.goal || ""}\n> **Why:** ${t.why || ""}\n\n## 🌳 The Tree (first principles)\n- **Trunk:** ${t.trunk || ""}\n- **Branches:**\n${(t.branches ?? []).map((b) => `  - ${b}`).join("\n") || "  - "}\n- **Leaves:** ${t.leaves || ""}\n\n## 🗺️ Roadmap (90-min blocks)\n- [ ] Block 1 — \n\n## 🔁 Retrieval log (free recall, no peeking)\n\n## ⚠️ Weak spots (loop these back until they stick)\n\n## 🧠 Brain dumps\n\n## ▶️ Where I am / next\n- \n\n→ [[Learning Hub]]\n`;
+    }
+
+    const [retrieval, weakSpots, sessions] = await Promise.all([
+      api(token, `learning_retrieval?topic_id=eq.${t.id}&order=created_at.desc&limit=30`),
+      api(token, `learning_weak_spots?topic_id=eq.${t.id}&resolved=eq.false`),
+      api(token, `learning_sessions?topic_id=eq.${t.id}&order=created_at.desc&limit=10`),
+    ]);
+
+    const rlBody = (retrieval ?? []).length
+      ? "| Date | Question | Got it? |\n|------|----------|---------|\n" +
+        retrieval.map((r) => `| ${r.created_at.slice(0, 10)} | ${r.question.replace(/\|/g, "/")} | ${r.got_it ? "✅" : "❌"} |`).join("\n") + "\n"
+      : "| Date | Question | Got it? |\n|------|----------|---------|\n|      |          |         |\n";
+    content = replaceSection(content, "🔁 Retrieval log", rlBody);
+
+    const wsBody = (weakSpots ?? []).length
+      ? weakSpots.map((w) => `- [ ] ${w.text}`).join("\n") + "\n"
+      : "- [ ] \n";
+    content = replaceSection(content, "⚠️ Weak spots", wsBody);
+
+    const dumps = (sessions ?? []).filter((s) => s.brain_dump?.trim());
+    const bdBody = dumps.length
+      ? dumps.map((s) => `**${s.day}:** ${s.brain_dump}`).join("\n\n") + "\n"
+      : "- \n";
+    content = replaceSection(content, "🧠 Brain dumps", bdBody);
+
+    fs.writeFileSync(file, content);
+  }
+  if ((topics ?? []).length) console.log(`[sync] learning: ${topics.length} topic(s) synced to vault`);
+}
+
 async function main() {
   const auth = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
     method: "POST",
@@ -88,6 +142,7 @@ async function main() {
   }).then((r) => r.json());
   const token = auth.access_token;
   if (!token) throw new Error("login failed: " + JSON.stringify(auth));
+  const userId = auth.user?.id;
 
   const file = path.join(VAULT, "10 Daily", `${today}.md`);
   const vaultExists = fs.existsSync(file);
@@ -178,6 +233,8 @@ async function main() {
   }
   fs.writeFileSync(file, content);
   console.log(`[sync] ${today}: wins ${score}/${wins.length}, ${meals.length} meals, ${lifts.length} lifts, vault-habits merged: ${changed} → ${file}`);
+
+  if (userId) await syncLearningTopics(token, userId);
 }
 
 main().catch((e) => { console.error("[sync] FAILED", e); process.exit(1); });

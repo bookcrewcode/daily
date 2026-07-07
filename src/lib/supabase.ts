@@ -33,6 +33,7 @@ export type DayRow = {
   ws_water: boolean;
   ws_sleep: boolean;
   ws_school: boolean;
+  ws_affirmations: boolean;
   calories: number;
   protein: number;
   bodyweight: number | null;
@@ -50,6 +51,7 @@ export const WIN_KEYS = [
   "ws_water",
   "ws_sleep",
   "ws_school",
+  "ws_affirmations",
 ] as const;
 
 export type Meal = {
@@ -126,7 +128,24 @@ export type VocabWord = {
 export type UserSettings = {
   calorie_goal: number;
   protein_goal: number;
+  affirmation_video_url: string;
 };
+
+export type LearningTopic = {
+  id: string;
+  title: string;
+  goal: string;
+  why: string;
+  trunk: string;
+  branches: string[];
+  leaves: string;
+  status: string;
+  created_at: string;
+};
+
+export type LearningRetrieval = { id: string; topic_id: string; question: string; got_it: boolean; created_at: string };
+export type LearningWeakSpot = { id: string; topic_id: string; text: string; resolved: boolean };
+export type Affirmation = { id: string; day: string; period: "morning" | "night"; text: string; created_at: string };
 
 export function todayStr() {
   const d = new Date();

@@ -12,9 +12,10 @@ const ADVISORS = [
   { key: "rubin", emoji: "🎛️", name: "Rubin" },
   { key: "naval", emoji: "🧭", name: "Naval" },
   { key: "overseer", emoji: "👁️", name: "Overseer" },
+  { key: "tutor", emoji: "🎓", name: "Tutor" },
 ];
 
-export default function Board({ onClose, initialAdvisor }: { onClose: () => void; initialAdvisor?: string }) {
+export default function Board({ onClose, initialAdvisor, topicId }: { onClose: () => void; initialAdvisor?: string; topicId?: string }) {
   const [advisor, setAdvisor] = useState(initialAdvisor ?? "overseer");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
@@ -36,7 +37,7 @@ export default function Board({ onClose, initialAdvisor }: { onClose: () => void
       const res = await fetch(ADVISOR_FN, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ advisor, message: text, history: msgs.slice(-8) }),
+        body: JSON.stringify({ advisor, message: text, history: msgs.slice(-8), topicId }),
       });
       const json = await res.json();
       setMsgs([...next, { role: "assistant", content: json.text || json.error || "No response." }]);
