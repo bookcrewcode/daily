@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase, type Asset, type Subscription } from "@/lib/supabase";
 import { SectionTitle } from "./ui";
+import GigWork from "./GigWork";
 
 const fmt = (n: number) => "$" + n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
@@ -51,6 +52,8 @@ export default function Money({ uid }: { uid: string }) {
         <p className="text-xs uppercase tracking-widest opacity-60">Net worth</p>
         <p className="text-4xl font-extrabold mt-1">{fmt(netWorth)}</p>
       </div>
+
+      <GigWork uid={uid} />
 
       <SectionTitle>Assets & liabilities</SectionTitle>
       <div className="flex gap-2 mb-2">
