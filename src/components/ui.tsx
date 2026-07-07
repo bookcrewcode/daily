@@ -69,27 +69,24 @@ export function Pill({ active, onClick, children }: { active: boolean; onClick: 
   );
 }
 
-// Full-screen-friendly celebration modal — used for achievement unlocks / level-ups.
+// A quiet toast for achievement unlocks — informative, not a takeover screen.
 export function Celebration({ emoji, title, subtitle, onClose }: {
   emoji: string; title: string; subtitle?: string; onClose: () => void;
 }) {
   useEffect(() => {
-    const t = setTimeout(onClose, 3200);
+    const t = setTimeout(onClose, 4000);
     return () => clearTimeout(t);
   }, [onClose]);
   return (
-    <div onClick={onClose} className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm flex items-center justify-center px-6" style={{ animation: "fadeIn 0.2s ease" }}>
-      <div className="text-center" style={{ animation: "popIn 0.4s cubic-bezier(0.34,1.56,0.64,1)" }}>
-        <p className="text-7xl mb-3">{emoji}</p>
-        <p className="text-xs uppercase tracking-widest text-[var(--neon)] mb-1">Unlocked</p>
-        <p className="text-2xl font-extrabold">{title}</p>
-        {subtitle && <p className="opacity-60 text-sm mt-1">{subtitle}</p>}
-        <p className="opacity-30 text-xs mt-6">tap to dismiss</p>
+    <div onClick={onClose} className="fixed top-3 left-3 right-3 z-40 mx-auto max-w-sm cursor-pointer" style={{ animation: "slideDown 0.25s ease" }}>
+      <div className="rounded-2xl border border-[var(--neon)]/30 bg-[var(--background)] shadow-lg px-4 py-3 flex items-center gap-3">
+        <span className="text-2xl shrink-0">{emoji}</span>
+        <div className="min-w-0">
+          <p className="text-xs opacity-50">Achievement unlocked</p>
+          <p className="font-semibold truncate">{title}{subtitle && <span className="opacity-50 font-normal"> · {subtitle}</span>}</p>
+        </div>
       </div>
-      <style>{`
-        @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
-        @keyframes popIn { from { opacity: 0; transform: scale(0.7) } to { opacity: 1; transform: scale(1) } }
-      `}</style>
+      <style>{`@keyframes slideDown { from { opacity: 0; transform: translateY(-8px) } to { opacity: 1; transform: translateY(0) } }`}</style>
     </div>
   );
 }

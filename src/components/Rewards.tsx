@@ -42,7 +42,7 @@ export default function Rewards({ uid, level }: { uid: string; level: number }) 
           const isClaimed = claimed.has(r.key);
           return (
             <Card key={r.key} padded={false}
-              className={`p-3 ${isUnlocked ? TIER_STYLE[r.tier] : "border-white/5 bg-white/[0.02] opacity-40"} ${isUnlocked && !isClaimed ? "animate-pulse" : ""}`}>
+              className={`p-3 ${isUnlocked ? TIER_STYLE[r.tier] : "border-white/5 bg-white/[0.02] opacity-40"}`}>
               <p className="text-2xl">{r.emoji}</p>
               <p className="text-sm font-bold leading-tight mt-1">{r.name}</p>
               <p className="text-[10px] opacity-50 mt-0.5">Lv.{r.level}</p>
