@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { supabase, todayStr, type VocabWord } from "@/lib/supabase";
+import { supabase, todayStr, ADVISOR_FN, SUPABASE_ANON, type VocabWord } from "@/lib/supabase";
 import { SectionTitle, Card } from "./ui";
 
 export default function Vocab({ uid }: { uid: string }) {
@@ -13,6 +13,8 @@ export default function Vocab({ uid }: { uid: string }) {
   const [expanded, setExpanded] = useState(false);
   const [quiz, setQuiz] = useState<VocabWord | null>(null);
   const [showAnswer, setShowAnswer] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState("");
 
   const load = useCallback(async () => {
     const { data } = await supabase.from("vocab").select("*").eq("user_id", uid).order("added", { ascending: false });
@@ -37,6 +39,28 @@ export default function Vocab({ uid }: { uid: string }) {
     if (words.length === 0) return;
     setQuiz(words[Math.floor(Math.random() * words.length)]);
     setShowAnswer(false);
+  }
+
+  async function generateWord() {
+    if (generating) return;
+    setGenerating(true); setGenError("");
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      const res = await fetch(ADVISOR_FN, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ advisor: "vocab-gen", known: words.map((w) => w.word) }),
+      });
+      const json = await res.json();
+      if (json.error) { setGenError(json.error); return; }
+      setWord(json.word ?? ""); setDef(json.definition ?? ""); setSentence(json.sentence ?? ""); setMnemonic(json.mnemonic ?? "");
+      setExpanded(true);
+    } catch {
+      setGenError("Couldn't generate a word — check your connection.");
+    } finally {
+      setGenerating(false);
+    }
   }
 
   return (
@@ -71,6 +95,11 @@ export default function Vocab({ uid }: { uid: string }) {
       )}
 
       <SectionTitle>Add a word</SectionTitle>
+      <button onClick={generateWord} disabled={generating}
+        className="w-full rounded-xl border border-dashed border-white/20 py-3 opacity-70 active:scale-95 disabled:opacity-30 mb-2">
+        {generating ? "…generating" : "✨ Generate a word for me"}
+      </button>
+      {genError && <p className="text-xs opacity-50 mb-2">{genError}</p>}
       <div className="space-y-2">
         <input value={word} onChange={(e) => setWord(e.target.value)} placeholder="the word"
           className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />

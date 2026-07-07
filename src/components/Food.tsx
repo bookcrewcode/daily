@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase, todayStr, dateStr, type Meal } from "@/lib/supabase";
 import { SectionTitle, Card, Ring, ProgressBar } from "./ui";
+import FoodSearch from "./FoodSearch";
 
 type CalorieSettings = { calorie_goal: number; protein_goal: number };
 const DEFAULT_SETTINGS: CalorieSettings = { calorie_goal: 2200, protein_goal: 160 };
@@ -16,6 +17,7 @@ export default function Food({ uid }: { uid: string }) {
   const [cal, setCal] = useState("");
   const [pro, setPro] = useState("");
   const [week, setWeek] = useState<{ day: string; cal: number }[]>([]);
+  const [manualOpen, setManualOpen] = useState(false);
 
   const load = useCallback(async () => {
     const day = todayStr();
@@ -125,18 +127,26 @@ export default function Food({ uid }: { uid: string }) {
         </>
       )}
 
-      <SectionTitle>Add a meal</SectionTitle>
-      <div className="space-y-2">
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="what did you eat?"
-          className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
-        <div className="flex gap-2">
-          <input value={cal} onChange={(e) => setCal(e.target.value)} inputMode="numeric" placeholder="kcal"
-            className="flex-1 rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none text-center" />
-          <input value={pro} onChange={(e) => setPro(e.target.value)} inputMode="numeric" placeholder="protein g"
-            className="flex-1 rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none text-center" />
-          <button onClick={() => addMeal()} className="px-5 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95">Add</button>
+      <SectionTitle>Search a food</SectionTitle>
+      <FoodSearch onAdd={(n, c, p) => addMeal({ name: n, calories: c, protein: p })} />
+
+      {!manualOpen ? (
+        <button onClick={() => setManualOpen(true)} className="mt-3 text-xs text-[var(--neon)]/70 underline underline-offset-2">
+          Can&apos;t find it? Add manually
+        </button>
+      ) : (
+        <div className="space-y-2 mt-3">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="what did you eat?"
+            className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
+          <div className="flex gap-2">
+            <input value={cal} onChange={(e) => setCal(e.target.value)} inputMode="numeric" placeholder="kcal"
+              className="flex-1 rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none text-center" />
+            <input value={pro} onChange={(e) => setPro(e.target.value)} inputMode="numeric" placeholder="protein g"
+              className="flex-1 rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none text-center" />
+            <button onClick={() => addMeal()} className="px-5 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95">Add</button>
+          </div>
         </div>
-      </div>
+      )}
 
       <SectionTitle>Today&apos;s meals</SectionTitle>
       {meals.length === 0 && <p className="opacity-40 text-sm">Nothing logged yet.</p>}

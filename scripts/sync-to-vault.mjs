@@ -13,7 +13,7 @@ import path from "node:path";
 const SUPABASE_URL = "https://pciljeqsrricybdnhvsu.supabase.co";
 const ANON = "sb_publishable_pUix6c1Cx2GaJ1ZUzXJ32w_rJgGUYtZ";
 const EMAIL = "bengarnet@gmail.com";
-const PASSWORD = "lifeos2026";
+const PASSWORD = "Patriots69!";
 const VAULT = "/Users/bengarnet/Library/Mobile Documents/iCloud~md~obsidian/Documents/Ben's brain ";
 
 const today = (() => {

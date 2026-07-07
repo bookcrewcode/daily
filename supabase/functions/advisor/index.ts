@@ -188,7 +188,30 @@ Deno.serve(async (req) => {
     if (!user?.id) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     if (!ANTHROPIC_API_KEY) return new Response(JSON.stringify({ error: "AI key not configured yet. Ask Claude to add ANTHROPIC_API_KEY." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 
-    const { advisor = "overseer", message = "", history = [], topicId = "" } = await req.json();
+    const body = await req.json();
+    const { advisor = "overseer", message = "", history = [], topicId = "" } = body;
+
+    // Vocab word generator — separate fast path, returns strict JSON, no chat context needed.
+    if (advisor === "vocab-gen") {
+      const known: string[] = Array.isArray(body.known) ? body.known : [];
+      const sys = `Generate ONE advanced, genuinely useful English vocabulary word for a sharp adult expanding his working vocabulary. Not obscure/archaic for its own sake — a word a well-read, articulate person would actually use. Avoid these already-known words: ${known.join(", ") || "none yet"}.
+Reply with ONLY valid JSON, no markdown fences, no other text: {"word": "...", "definition": "plain, simple definition", "sentence": "one example sentence using it naturally", "mnemonic": "a short memory trick for the spelling or meaning"}`;
+      const ai = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({ model: "claude-opus-4-8", max_tokens: 300, system: sys, messages: [{ role: "user", content: "Generate one word." }] }),
+      });
+      const data = await ai.json();
+      if (!ai.ok) return new Response(JSON.stringify({ error: data?.error?.message ?? "AI error" }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      const raw = (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
+      try {
+        const parsed = JSON.parse(raw.trim());
+        return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
+      } catch {
+        return new Response(JSON.stringify({ error: "Couldn't parse a word from that — try again." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+    }
+
     const persona = PERSONAS[advisor] ?? PERSONAS.overseer;
     const ctx = await context(token);
     const learnCtx = advisor === "tutor" && topicId ? await learningContext(token, topicId) : "";
