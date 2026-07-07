@@ -8,7 +8,7 @@ const LABEL: Record<string, string> = {
   ws_stretch: "Stretching", ws_vocab: "Vocab", ws_chinese: "Chinese", ws_work: "BookCrew / work",
 };
 
-export default function Overseer({ uid }: { uid: string }) {
+export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?: (advisor: string) => void }) {
   const [msg, setMsg] = useState<{ head: string; body: string; tone: "warn" | "good" } | null>(null);
 
   useEffect(() => {
@@ -52,6 +52,12 @@ export default function Overseer({ uid }: { uid: string }) {
     <div className={`mt-3 rounded-2xl p-4 border ${warn ? "bg-orange-500/10 border-orange-500/40" : "bg-[var(--neon)]/10 border-[var(--neon)]/40"}`}>
       <p className={`text-xs uppercase tracking-widest mb-1 ${warn ? "text-orange-400" : "text-[var(--neon)]"}`}>{msg.head}</p>
       <p className="text-sm font-medium leading-snug">{msg.body}</p>
+      {onOpenChat && (
+        <button onClick={() => onOpenChat("overseer")}
+          className={`mt-2 text-xs font-semibold ${warn ? "text-orange-300" : "text-[var(--neon)]"} underline underline-offset-2`}>
+          Talk it through →
+        </button>
+      )}
     </div>
   );
 }

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase, todayStr, type Goal } from "@/lib/supabase";
 import { SectionTitle } from "./ui";
+import NorthStar from "./NorthStar";
 
 function daysUntil(due: string | null): number | null {
   if (!due) return null;
@@ -96,6 +97,8 @@ export default function Goals({ uid }: { uid: string }) {
           );
         })}
       </div>
+
+      <NorthStar uid={uid} />
     </div>
   );
 }

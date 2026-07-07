@@ -26,6 +26,12 @@ export default function App() {
   const [checking, setChecking] = useState(true);
   const [tab, setTab] = useState<Tab>("today");
   const [boardOpen, setBoardOpen] = useState(false);
+  const [boardAdvisor, setBoardAdvisor] = useState<string | undefined>(undefined);
+
+  function openAdvisor(advisor: string) {
+    setBoardAdvisor(advisor);
+    setBoardOpen(true);
+  }
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setChecking(false); });
@@ -39,7 +45,7 @@ export default function App() {
   const uid = session.user.id;
   return (
     <main className="max-w-md mx-auto px-4 pb-28 min-h-full">
-      {tab === "today" && <Today uid={uid} />}
+      {tab === "today" && <Today uid={uid} onOpenAdvisor={openAdvisor} />}
       {tab === "goals" && <Goals uid={uid} />}
       {tab === "food" && <Food uid={uid} />}
       {tab === "lifts" && <Lifts uid={uid} />}
@@ -48,12 +54,12 @@ export default function App() {
 
       <button onClick={() => supabase.auth.signOut()} className="mt-8 mx-auto block text-xs opacity-30 underline">Sign out</button>
 
-      {/* floating Board button */}
-      <button onClick={() => setBoardOpen(true)}
+      {/* floating Coach button — opens straight into the Overseer, no menu-hunting */}
+      <button onClick={() => openAdvisor("overseer")}
         className="fixed z-20 bottom-24 right-4 w-14 h-14 rounded-full bg-[var(--neon)] text-black text-2xl grid place-items-center shadow-lg active:scale-90">
-        🧠
+        🎮
       </button>
-      {boardOpen && <Board onClose={() => setBoardOpen(false)} />}
+      {boardOpen && <Board onClose={() => setBoardOpen(false)} initialAdvisor={boardAdvisor} />}
 
       <nav className="fixed bottom-0 left-0 right-0 z-10 border-t border-white/10 bg-[var(--background)]/95 backdrop-blur">
         <div className="max-w-md mx-auto grid grid-cols-6">

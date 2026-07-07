@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase, WIN_KEYS, todayStr, dateStr, type DayRow } from "@/lib/supabase";
 import { Ring, NumCard, SectionTitle } from "./ui";
 import Overseer from "./Overseer";
+import GameBar from "./GameBar";
 
 type WinKey = (typeof WIN_KEYS)[number];
 
@@ -24,7 +25,7 @@ const EMPTY: DayRow = {
   calories: 0, protein: 0, bodyweight: null, vocab_count: 0,
 };
 
-export default function Today({ uid }: { uid: string }) {
+export default function Today({ uid, onOpenAdvisor }: { uid: string; onOpenAdvisor?: (advisor: string) => void }) {
   const [row, setRow] = useState<DayRow>(EMPTY);
   const [history, setHistory] = useState<{ day: string; score: number }[]>([]);
   const [now, setNow] = useState("");
@@ -76,7 +77,8 @@ export default function Today({ uid }: { uid: string }) {
         <h1 className="text-2xl font-bold mt-1">Daily Win Stack</h1>
       </div>
 
-      <Overseer uid={uid} />
+      <GameBar uid={uid} />
+      <Overseer uid={uid} onOpenChat={onOpenAdvisor} />
 
       <div className="flex items-center gap-3 my-4">
         <Ring score={score} total={WINS.length} />

@@ -13,8 +13,8 @@ const ADVISORS = [
   { key: "overseer", emoji: "👁️", name: "Overseer" },
 ];
 
-export default function Board({ onClose }: { onClose: () => void }) {
-  const [advisor, setAdvisor] = useState("board");
+export default function Board({ onClose, initialAdvisor }: { onClose: () => void; initialAdvisor?: string }) {
+  const [advisor, setAdvisor] = useState(initialAdvisor ?? "overseer");
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);

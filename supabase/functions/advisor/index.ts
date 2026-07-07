@@ -1,0 +1,136 @@
+// Advisor edge function — proxies to Claude with a board-persona system prompt.
+// verify_jwt is false at the gateway; we validate the Supabase JWT manually so
+// CORS preflight works and only logged-in users can call it.
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
+const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, content-type, apikey",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+// The two long games this whole app points at. Years, not days.
+const NORTH_STAR = { netWorthTarget: 1_000_000, leanWeightTarget: 190 };
+
+const PERSONAS: Record<string, string> = {
+  hormozi:
+    "You are an advisor channeling Alex Hormozi's publicly-shared frameworks ($100M Offers/Leads). Blunt, numbers-first, zero fluff. Use the Value Equation (Dream Outcome x Perceived Likelihood / Time Delay x Effort), LTV:CAC, pricing-as-a-lever, offer stacks + guarantees, and constraint thinking. End with the ONE move to make now. Not the real person.",
+  rubin:
+    "You are an advisor channeling Rick Rubin's publicly-shared philosophy (The Creative Act). Calm, spare, few words. Favor subtraction, essence, and taste over addition. Ask what the thing is really about, what to remove, what to keep sacred. Not the real person.",
+  naval:
+    "You are an advisor channeling Naval Ravikant's publicly-shared thinking. Calm, precise, first-principles, aphoristic. Use leverage (labor/capital/code/media), specific knowledge, long-term games, wealth-not-status, accountability. Reframe to the real question; name the compounding move and what to say no to. Not the real person.",
+  overseer:
+    "You are The Overseer — Ben's accountability coach inside his own gamified life-tracking app. Firm, specific, warm, NEVER shaming — Ben has ADHD; the challenge is activation/retrieval, not character. This app is a MULTI-YEAR game: the two win conditions are (1) $1,000,000 net worth and (2) 190 lb lean bodyweight. Everything he logs (habits, meals, lifts, goals, money) earns real XP toward real levels and achievements — treat that as true and reference it naturally (his level, streak, XP, and how close an action gets him to the next achievement or north-star %). Lead with the facts from his data. Name the one avoided thing. Separate real signal (stable/specific/pattern-based) from distortion (totalizing/shame-heavy/evidence-light). End with ONE 5-minute re-entry action and a line of belief. This is a long game — a slow week is data, not failure, but don't let him hide from a real pattern either.",
+  board:
+    "You are Ben's Board of Advisors — Hormozi (economics/offers), Rubin (taste/essence), Naval (leverage/long-game) — in one room. Give three short, distinct, in-character takes that are allowed to disagree, then a boxed 'Board's Call': one decisive recommendation + the single next action this week. Personas, not the real people.",
+};
+
+async function getUser(token: string) {
+  const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    headers: { apikey: ANON, Authorization: `Bearer ${token}` },
+  });
+  if (!r.ok) return null;
+  return await r.json();
+}
+
+function xpForLevel(level: number) { return 50 * (level - 1) * level; }
+function levelFromXP(xp: number) {
+  let level = 1;
+  while (xpForLevel(level + 1) <= xp) level++;
+  return { level, into: xp - xpForLevel(level), span: xpForLevel(level + 1) - xpForLevel(level) };
+}
+
+async function context(token: string): Promise<string> {
+  const h = { apikey: ANON, Authorization: `Bearer ${token}` };
+  const q = async (p: string) => {
+    try { const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { headers: h }); return r.ok ? await r.json() : []; } catch { return []; }
+  };
+  const since = new Date(Date.now() - 13 * 86400000).toISOString().slice(0, 10);
+  const [days, allDays, goals, assets, meals, liftSets, achievements] = await Promise.all([
+    q(`days?day=gte.${since}&select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,calories,protein,bodyweight&order=day.desc`),
+    q(`days?select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,bodyweight`),
+    q(`goals?status=eq.active&select=title,due,priority`),
+    q(`assets?select=name,kind,value`),
+    q(`meals?select=id`),
+    q(`lift_sets?done=eq.true&select=id`),
+    q(`user_achievements?select=key`),
+  ]);
+
+  type Day = Record<string, unknown>;
+  const winKeys = ["ws_meds", "ws_eat", "ws_lift", "ws_stretch", "ws_vocab", "ws_chinese", "ws_work"];
+  const habitXp: Record<string, number> = { ws_lift: 20, ws_chinese: 10, ws_work: 10, ws_eat: 10, ws_meds: 5, ws_stretch: 5, ws_vocab: 5 };
+  const scoreOf = (d: Day) => winKeys.reduce((s, k) => s + (d[k] ? 1 : 0), 0);
+
+  const wk = (days as Day[]).map((d) => `${d.day}: ${scoreOf(d)}/7 wins, ${d.calories}kcal`).join("; ");
+  const net = (assets as { kind: string; value: number }[]).reduce((s, a) => s + (a.kind === "asset" ? a.value : -a.value), 0);
+  const gl = (goals as { title: string; due: string | null }[]).map((g) => `${g.title}${g.due ? ` (due ${g.due})` : ""}`).join("; ");
+
+  // Base XP (mirrors the client's gamification.ts — kept simple here, achievements bonus omitted for speed)
+  let baseXp = 0;
+  for (const d of allDays as Day[]) {
+    for (const k of winKeys) if (d[k]) baseXp += habitXp[k];
+    if (d.bodyweight != null) baseXp += 5;
+  }
+  baseXp += (meals as unknown[]).length * 3;
+  baseXp += (liftSets as unknown[]).length * 2;
+  const lvl = levelFromXP(baseXp);
+
+  // Current full-win streak (walk back from today, today's incompleteness doesn't break it)
+  const map = new Map((allDays as Day[]).map((d) => [d.day as string, d]));
+  const todayStr = new Date().toISOString().slice(0, 10);
+  let streak = 0;
+  const cursor = new Date(todayStr + "T00:00:00");
+  let first = true;
+  for (;;) {
+    const ds = cursor.toISOString().slice(0, 10);
+    const row = map.get(ds);
+    const won = !!row && scoreOf(row) === 7;
+    if (first && ds === todayStr && !won) { first = false; cursor.setDate(cursor.getDate() - 1); continue; }
+    first = false;
+    if (!won) break;
+    streak++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  const lastWeighIn = (allDays as Day[]).filter((d) => d.bodyweight != null).sort((a, b) => String(a.day).localeCompare(String(b.day))).pop();
+  const weightLine = lastWeighIn ? `${lastWeighIn.bodyweight} lb (target ${NORTH_STAR.leanWeightTarget} lean)` : "not logged yet";
+
+  return `BEN'S LIVE DATA — GAME STATE
+Level ${lvl.level} (${lvl.into}/${lvl.span} XP to next level, ${baseXp} total XP) · 🔥 ${streak}-day full-win streak · ${(achievements as unknown[]).length} achievements unlocked
+North Star 1 — Net worth: $${net} / $${NORTH_STAR.netWorthTarget} (${((net / NORTH_STAR.netWorthTarget) * 100).toFixed(2)}%)
+North Star 2 — Bodyweight: ${weightLine}
+Last 14 days: ${wk || "no data"}
+Active goals: ${gl || "none"}`;
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+  try {
+    const token = (req.headers.get("Authorization") ?? "").replace("Bearer ", "");
+    const user = await getUser(token);
+    if (!user?.id) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
+    if (!ANTHROPIC_API_KEY) return new Response(JSON.stringify({ error: "AI key not configured yet. Ask Claude to add ANTHROPIC_API_KEY." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+
+    const { advisor = "overseer", message = "", history = [] } = await req.json();
+    const persona = PERSONAS[advisor] ?? PERSONAS.overseer;
+    const ctx = await context(token);
+    const system = `${persona}\n\nBen has ADHD; keep it short, scannable, ADHD-friendly, execution over explanation. Use his live data below when relevant.\n\n${ctx}`;
+
+    const msgs = [...(Array.isArray(history) ? history : []), { role: "user", content: message }];
+
+    const ai = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: "claude-opus-4-8", max_tokens: 1500, system, messages: msgs }),
+    });
+    const data = await ai.json();
+    if (!ai.ok) return new Response(JSON.stringify({ error: data?.error?.message ?? "AI error" }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+    const text = (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("\n");
+    return new Response(JSON.stringify({ text }), { headers: { ...cors, "Content-Type": "application/json" } });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: String(e) }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+  }
+});
