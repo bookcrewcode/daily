@@ -4,7 +4,28 @@
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const ENV_ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+
+// The Anthropic key lives encrypted in Supabase Vault, read via the
+// service-role-only get_secret() RPC. An ANTHROPIC_API_KEY env var, if
+// ever set, takes precedence. Cached for the life of the isolate.
+let cachedKey = "";
+async function anthropicKey(): Promise<string> {
+  if (ENV_ANTHROPIC_KEY) return ENV_ANTHROPIC_KEY;
+  if (cachedKey) return cachedKey;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_secret`, {
+      method: "POST",
+      headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ secret_name: "anthropic_api_key" }),
+    });
+    if (r.ok) cachedKey = ((await r.json()) as string | null) ?? "";
+  } catch {
+    // fall through — caller reports "not configured"
+  }
+  return cachedKey;
+}
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -206,6 +227,7 @@ Deno.serve(async (req) => {
     const token = (req.headers.get("Authorization") ?? "").replace("Bearer ", "");
     const user = await getUser(token);
     if (!user?.id) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
+    const ANTHROPIC_API_KEY = await anthropicKey();
     if (!ANTHROPIC_API_KEY) return new Response(JSON.stringify({ error: "AI key not configured yet. Ask Claude to add ANTHROPIC_API_KEY." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 
     const body = await req.json();
