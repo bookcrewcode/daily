@@ -99,14 +99,19 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
   const [weakText, setWeakText] = useState("");
   const [brainDump, setBrainDump] = useState("");
   const [chunks, setChunks] = useState<string[]>(["", "", "", ""]);
+  const [sessions, setSessions] = useState<{ id: string; day: string; chunks: { note: string }[]; brain_dump: string }[]>([]);
+  const [openSession, setOpenSession] = useState<string | null>(null);
+  const [savedFlash, setSavedFlash] = useState(false);
 
   const load = useCallback(async () => {
-    const [{ data: r }, { data: w }] = await Promise.all([
+    const [{ data: r }, { data: w }, { data: s }] = await Promise.all([
       supabase.from("learning_retrieval").select("*").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(20),
       supabase.from("learning_weak_spots").select("*").eq("topic_id", topic.id).eq("resolved", false),
+      supabase.from("learning_sessions").select("id,day,chunks,brain_dump").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(20),
     ]);
     setRetrieval((r ?? []) as LearningRetrieval[]);
     setWeakSpots((w ?? []) as LearningWeakSpot[]);
+    setSessions((s ?? []) as typeof sessions);
   }, [topic.id]);
   useEffect(() => { load(); }, [load]);
 
@@ -134,10 +139,14 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
   }
   async function saveSession() {
     const filledChunks = chunks.filter((c) => c.trim()).map((c) => ({ note: c.trim() }));
+    if (filledChunks.length === 0 && !brainDump.trim()) return;
     await supabase.from("learning_sessions").insert({
       user_id: uid, topic_id: topic.id, day: todayStr(), chunks: filledChunks, brain_dump: brainDump.trim(),
     });
     setChunks(["", "", "", ""]); setBrainDump("");
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 2500);
+    load();
   }
 
   const recentScore = retrieval.length ? Math.round((retrieval.filter((r) => r.got_it).length / retrieval.length) * 100) : null;
@@ -224,7 +233,37 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
       <SectionTitle>🧠 Brain dump — without scrolling, everything you remember</SectionTitle>
       <textarea value={brainDump} onChange={(e) => setBrainDump(e.target.value)} rows={3}
         className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none resize-none" />
-      <button onClick={saveSession} className="mt-2 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">Save session</button>
+      <button onClick={saveSession} className="mt-2 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">
+        {savedFlash ? "✓ Saved — it's in the log below" : "Save session"}
+      </button>
+
+      {sessions.length > 0 && (
+        <>
+          <SectionTitle>📚 Past sessions · {sessions.length}</SectionTitle>
+          <div className="space-y-2">
+            {sessions.map((s) => {
+              const open = openSession === s.id;
+              const chunkNotes = (s.chunks ?? []).map((c) => c.note).filter(Boolean);
+              return (
+                <button key={s.id} onClick={() => setOpenSession(open ? null : s.id)} className="w-full text-left">
+                  <Card padded={false} className="p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold">{new Date(s.day + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</p>
+                      <span className="text-xs opacity-40">{chunkNotes.length} chunk{chunkNotes.length === 1 ? "" : "s"} {open ? "▾" : "▸"}</span>
+                    </div>
+                    {open && (
+                      <div className="mt-2 space-y-1">
+                        {chunkNotes.map((n, i) => <p key={i} className="text-sm opacity-80">• {n}</p>)}
+                        {s.brain_dump && <p className="text-xs opacity-50 italic mt-1.5 whitespace-pre-wrap">{s.brain_dump}</p>}
+                      </div>
+                    )}
+                  </Card>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       <Card tone="default" className="mt-4 opacity-70">
         <p className="text-xs">😴 <b>Consolidate:</b> 10s look-away after dense bits · 20-min real break per ~90 min · sleep locks it in.</p>

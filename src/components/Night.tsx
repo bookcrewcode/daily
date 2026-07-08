@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, dateStr, type Night as NightT, type ScheduleItem } from "@/lib/supabase";
+import { useVoiceInput } from "@/lib/useVoiceInput";
 import { SectionTitle, Card } from "./ui";
 import { parseTime, fmtMinutes, resolveBlocks, gcalTemplateUrl, downloadIcs } from "@/lib/calendar";
 import CalendarCard from "./CalendarCard";
@@ -11,21 +12,45 @@ function tomorrow() {
 }
 
 export default function Night({ uid }: { uid: string }) {
+  // ticks each minute so `day` rolls over correctly in a PWA left open overnight
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 60000);
+    const onVisible = () => setTick((t) => t + 1);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, []);
+
   const day = dateStr(tomorrow());
   const pretty = tomorrow().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
   const [n, setN] = useState<NightT>({ day, items: [], top3: ["", "", ""], notes: "", calendar_synced_at: null });
   const [saved, setSaved] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const noteBase = useRef("");
+  const voice = useVoiceInput((text) => {
+    const combined = (noteBase.current ? noteBase.current.trimEnd() + " " : "") + text;
+    persistRef.current({ ...nRef.current, notes: combined });
+  });
+  const nRef = useRef(n);
+  nRef.current = n;
+  const persistRef = useRef((next: NightT) => { void next; });
 
   const load = useCallback(async () => {
     const { data } = await supabase.from("nights").select("*").eq("user_id", uid).eq("day", day).maybeSingle();
-    if (data) setN({
-      day,
-      items: (data.items as ScheduleItem[]) ?? [],
-      top3: ((data.top3 as string[]) ?? []).concat(["", "", ""]).slice(0, 3),
-      notes: data.notes ?? "",
-      calendar_synced_at: data.calendar_synced_at,
-    });
+    if (data) {
+      setN({
+        day,
+        items: (data.items as ScheduleItem[]) ?? [],
+        top3: ((data.top3 as string[]) ?? []).concat(["", "", ""]).slice(0, 3),
+        notes: data.notes ?? "",
+        calendar_synced_at: data.calendar_synced_at,
+      });
+    } else {
+      // no plan for this target day yet — reset instead of carrying stale
+      // state across a midnight rollover (which would silently copy
+      // yesterday's plan onto the new day on the next keystroke)
+      setN({ day, items: [], top3: ["", "", ""], notes: "", calendar_synced_at: null });
+    }
   }, [uid, day]);
 
   useEffect(() => { load(); }, [load]);
@@ -43,6 +68,7 @@ export default function Night({ uid }: { uid: string }) {
       setSaved(true); setTimeout(() => setSaved(false), 1200);
     }, 600);
   }
+  persistRef.current = persist;
 
   const setItem = (i: number, patch: Partial<ScheduleItem>) =>
     persist({ ...n, items: n.items.map((it, idx) => (idx === i ? { ...it, ...patch } : it)) });
@@ -145,8 +171,17 @@ export default function Night({ uid }: { uid: string }) {
       </div>
 
       <SectionTitle>Brain dump / notes</SectionTitle>
-      <textarea value={n.notes} onChange={(e) => persist({ ...n, notes: e.target.value })} rows={4} placeholder="anything on your mind before bed…"
-        className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none resize-none mb-4" />
+      <div className="relative mb-4">
+        <textarea value={n.notes} onChange={(e) => persist({ ...n, notes: e.target.value })} rows={4}
+          placeholder={voice.listening ? "listening… just talk" : "anything on your mind before bed…"}
+          className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 pr-14 outline-none resize-none" />
+        {voice.supported && (
+          <button onClick={() => { noteBase.current = n.notes; voice.toggle(); }}
+            className={`absolute right-2.5 top-2.5 w-10 h-10 rounded-xl grid place-items-center active:scale-90 ${voice.listening ? "bg-red-500 text-white animate-pulse" : "bg-white/10"}`}>
+            🎤
+          </button>
+        )}
+      </div>
     </div>
   );
 }

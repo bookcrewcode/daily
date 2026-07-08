@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { burstConfetti } from "@/lib/confetti";
+import { REWARDS } from "@/lib/gamification";
 
 export function Ring({ score, total }: { score: number; total: number }) {
   const r = 26, c = 2 * Math.PI * r, pct = total ? score / total : 0;
@@ -71,12 +72,67 @@ export function ProgressBar({ pct, tone = "neon" }: { pct: number; tone?: "neon"
   );
 }
 
+// Multi-series sparkline with optional dashed goal line. Normalized to the
+// combined min/max so series and goal share one scale.
+export function Sparkline({ series, goal, height = 56 }: {
+  series: { values: number[]; color: string; width?: number; opacity?: number }[];
+  goal?: number;
+  height?: number;
+}) {
+  const all = series.flatMap((s) => s.values).concat(goal != null ? [goal] : []);
+  if (all.length < 2) return null;
+  const min = Math.min(...all), max = Math.max(...all);
+  const span = max - min || 1;
+  const y = (v: number) => 38 - ((v - min) / span) * 34; // 2..38 padding
+  const line = (values: number[]) =>
+    values.map((v, i) => `${(i / (values.length - 1)) * 100},${y(v).toFixed(2)}`).join(" ");
+  return (
+    <svg viewBox="0 0 100 40" preserveAspectRatio="none" style={{ width: "100%", height }} aria-hidden>
+      {goal != null && (
+        <line x1="0" x2="100" y1={y(goal)} y2={y(goal)} stroke="rgba(255,255,255,0.35)" strokeWidth="0.7" strokeDasharray="3 2.5" vectorEffect="non-scaling-stroke" />
+      )}
+      {series.map((s, i) => s.values.length >= 2 && (
+        <polyline key={i} points={line(s.values)} fill="none" stroke={s.color}
+          strokeWidth={s.width ?? 1.6} strokeLinejoin="round" strokeLinecap="round"
+          opacity={s.opacity ?? 1} vectorEffect="non-scaling-stroke" />
+      ))}
+    </svg>
+  );
+}
+
 export function Pill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button onClick={onClick}
       className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold transition ${active ? "bg-[var(--neon)] text-black" : "bg-white/5 opacity-70"}`}>
       {children}
     </button>
+  );
+}
+
+// Full-screen level-up moment — there are only ~50 of these, make them count.
+export function LevelUpModal({ level, title, onClose }: { level: number; title: string; onClose: () => void }) {
+  useEffect(() => {
+    burstConfetti("big");
+    import("@/lib/fx").then((fx) => fx.sfx.levelup());
+  }, []);
+  const rewards = REWARDS.filter((r) => r.level === level);
+  return (
+    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm grid place-items-center p-6" onClick={onClose}>
+      <div className="text-center" style={{ animation: "levelPop 0.5s ease" }}>
+        <p className="text-xs uppercase tracking-[0.3em] text-[var(--neon)]/70 mb-3">Level up</p>
+        <p className="text-7xl font-black text-glow text-[var(--neon)]">{level}</p>
+        <p className="text-2xl font-extrabold mt-2">{title}</p>
+        {rewards.map((r) => (
+          <div key={r.key} className="mt-4 rounded-2xl border border-[#ffd54a]/50 bg-[#ffd54a]/10 px-4 py-3">
+            <p className="text-xs uppercase tracking-widest text-[#ffd54a]">🎁 Reward unlocked</p>
+            <p className="font-bold mt-1">{r.emoji} {r.name}</p>
+          </div>
+        ))}
+        <button onClick={onClose} className="mt-8 px-8 py-3 rounded-xl bg-[var(--neon)] text-black font-bold glow-neon active:scale-95">
+          Keep going →
+        </button>
+      </div>
+    </div>
   );
 }
 

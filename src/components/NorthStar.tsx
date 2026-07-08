@@ -1,21 +1,61 @@
 "use client";
 
-import { useGameData, NORTH_STAR } from "@/lib/useGameData";
-import { CATEGORIES } from "@/lib/gamification";
-import { SectionTitle, Card, ProgressBar } from "./ui";
+import { useGame, NORTH_STAR } from "@/lib/useGameData";
+import { ACHIEVEMENTS, CATEGORIES } from "@/lib/gamification";
+import { SectionTitle, Card, ProgressBar, Sparkline } from "./ui";
 import Rewards from "./Rewards";
 import HistoryCalendar from "./HistoryCalendar";
+import YearHeatmap from "./YearHeatmap";
 
 const fmt = (n: number) => "$" + n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
-export default function NorthStar({ uid }: { uid: string }) {
-  const game = useGameData(uid);
+// 7-day trailing average — daily weight is noisy; the trend is the signal.
+function rollingAvg(values: number[], window = 7): number[] {
+  return values.map((_, i) => {
+    const slice = values.slice(Math.max(0, i - window + 1), i + 1);
+    return slice.reduce((s, v) => s + v, 0) / slice.length;
+  });
+}
+
+export default function NorthStar({ uid: _uid }: { uid: string }) {
+  const game = useGame();
   if (game.loading) return null;
 
   const netPct = game.netWorth / NORTH_STAR.netWorthTarget;
   const w = game.latestBodyweight;
   const weightDelta = w != null ? w - NORTH_STAR.leanWeightTarget : null;
   const unlockedKeys = new Set(game.unlocked.map((a) => a.key));
+
+  // bodyweight series (last 90 logged weigh-ins, oldest → newest)
+  const weighIns = [...game.days]
+    .filter((d) => d.bodyweight != null)
+    .sort((a, b) => a.day.localeCompare(b.day))
+    .slice(-90);
+  const weights = weighIns.map((d) => Number(d.bodyweight));
+  const avg = rollingAvg(weights);
+  // trend normalized to CALENDAR days — weigh-ins are sparse, so "7 entries
+  // back" can span weeks and would overstate the weekly rate
+  let lbsPerWeek: number | null = null;
+  if (weighIns.length >= 4) {
+    const lastMs = new Date(weighIns[weighIns.length - 1].day + "T00:00:00").getTime();
+    let j = weighIns.length - 1;
+    while (j > 0 && (lastMs - new Date(weighIns[j].day + "T00:00:00").getTime()) / 86400000 < 7) j--;
+    const spanDays = (lastMs - new Date(weighIns[j].day + "T00:00:00").getTime()) / 86400000;
+    if (spanDays >= 4) lbsPerWeek = (avg[avg.length - 1] - avg[j]) * (7 / spanDays);
+  }
+
+  // next money milestone
+  const NET_MILESTONES: [string, number][] = [
+    ["net_1k", 1_000], ["net_10k", 10_000], ["net_25k", 25_000], ["net_50k", 50_000],
+    ["net_100k", 100_000], ["net_250k", 250_000], ["net_500k", 500_000], ["net_750k", 750_000],
+    ["millionaire", 1_000_000],
+  ];
+  const nextNet = NET_MILESTONES
+    .filter(([key, v]) => !unlockedKeys.has(key) && v > game.netWorth)
+    .map(([key, v]) => ({ a: ACHIEVEMENTS.find((x) => x.key === key)!, threshold: v }))
+    .sort((x, y) => x.threshold - y.threshold)[0];
+
+  const nwValues = game.netWorthHistory.map((h) => h.value);
 
   return (
     <div>
@@ -29,6 +69,17 @@ export default function NorthStar({ uid }: { uid: string }) {
           </div>
           <p className="text-xl font-extrabold mb-2">{fmt(game.netWorth)} <span className="opacity-40 text-sm font-normal">/ {fmt(NORTH_STAR.netWorthTarget)}</span></p>
           <ProgressBar pct={netPct} />
+          {nwValues.length >= 2 && (
+            <div className="mt-3">
+              <Sparkline series={[{ values: nwValues, color: "#34d399" }]} height={48} />
+              <p className="text-[10px] opacity-40 mt-1">net worth over time · daily snapshots</p>
+            </div>
+          )}
+          {nextNet && (
+            <p className="text-xs opacity-60 mt-2">
+              Next: {nextNet.a.emoji} <b>{nextNet.a.name}</b> — {fmt(nextNet.threshold - game.netWorth)} away (+{nextNet.a.xp} XP)
+            </p>
+          )}
         </Card>
 
         <Card>
@@ -37,18 +88,34 @@ export default function NorthStar({ uid }: { uid: string }) {
             <p className="text-sm opacity-60 mt-1">Log your weight on Today to start tracking this.</p>
           ) : (
             <>
-              <p className="text-xl font-extrabold mb-2">
+              <p className="text-xl font-extrabold mb-1">
                 {w} lb <span className="opacity-40 text-sm font-normal">/ {NORTH_STAR.leanWeightTarget} target</span>
               </p>
-              <p className="text-xs opacity-60">
+              {weights.length >= 2 && (
+                <Sparkline
+                  series={[
+                    { values: weights, color: "rgba(255,255,255,0.35)", width: 1, opacity: 0.7 },
+                    { values: avg, color: "#34d399", width: 2 },
+                  ]}
+                  goal={NORTH_STAR.leanWeightTarget}
+                  height={56}
+                />
+              )}
+              <p className="text-xs opacity-60 mt-1">
                 {weightDelta === 0 ? "🎉 At target." : weightDelta! > 0 ? `${weightDelta!.toFixed(1)} lb to lose` : `${Math.abs(weightDelta!).toFixed(1)} lb to gain`}
+                {lbsPerWeek != null && Math.abs(lbsPerWeek) > 0.05 && (
+                  <span className={lbsPerWeek < 0 ? "text-[var(--neon)]" : "text-orange-300"}>
+                    {" "}· {lbsPerWeek > 0 ? "+" : ""}{lbsPerWeek.toFixed(1)} lb/wk trend
+                  </span>
+                )}
               </p>
             </>
           )}
         </Card>
       </div>
 
-      <HistoryCalendar uid={uid} />
+      <HistoryCalendar uid={game.uid} />
+      <YearHeatmap />
 
       <SectionTitle id="achievements">🏆 Achievements · {game.unlocked.length}/{game.unlocked.length + game.locked.length}</SectionTitle>
       <div className="space-y-4">
@@ -79,7 +146,7 @@ export default function NorthStar({ uid }: { uid: string }) {
         })}
       </div>
 
-      <Rewards uid={uid} level={game.level.level} />
+      <Rewards uid={game.uid} level={game.level.level} />
     </div>
   );
 }

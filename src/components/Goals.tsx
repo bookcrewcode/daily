@@ -2,8 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase, todayStr, type Goal } from "@/lib/supabase";
+import { GOAL_DONE_XP } from "@/lib/gamification";
+import { useGame } from "@/lib/useGameData";
+import { burstConfetti } from "@/lib/confetti";
+import { xpToast } from "@/lib/fx";
 import { SectionTitle, Pill } from "./ui";
 import NorthStar from "./NorthStar";
+import WeeklyRecap from "./WeeklyRecap";
 
 const JUMPS = [
   { id: "top", label: "🎯 Goals" },
@@ -29,6 +34,7 @@ function urgency(g: Goal): { rank: number; badge: string; color: string } {
 }
 
 export default function Goals({ uid }: { uid: string }) {
+  const game = useGame();
   const [goals, setGoals] = useState<Goal[]>([]);
   const [title, setTitle] = useState("");
   const [due, setDue] = useState("");
@@ -50,6 +56,10 @@ export default function Goals({ uid }: { uid: string }) {
   async function complete(id: string) {
     setGoals((x) => x.filter((g) => g.id !== id));
     await supabase.from("goals").update({ status: "done" }).eq("id", id);
+    // the single biggest per-action reward in the app — make it FELT
+    xpToast(GOAL_DONE_XP, "goal crushed");
+    burstConfetti("small");
+    game.refresh();
   }
   async function remove(id: string) {
     setGoals((x) => x.filter((g) => g.id !== id));
@@ -113,6 +123,8 @@ export default function Goals({ uid }: { uid: string }) {
           );
         })}
       </div>
+
+      <WeeklyRecap />
 
       <NorthStar uid={uid} />
     </div>

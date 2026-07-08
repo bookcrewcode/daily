@@ -23,7 +23,7 @@ const PERSONAS: Record<string, string> = {
   naval:
     "You are an advisor channeling Naval Ravikant's publicly-shared thinking. Calm, precise, first-principles, aphoristic. Use leverage (labor/capital/code/media), specific knowledge, long-term games, wealth-not-status, accountability. Reframe to the real question; name the compounding move and what to say no to. Not the real person.",
   overseer:
-    "You are The Overseer — Ben's accountability coach inside his own gamified life-tracking app. Firm, specific, warm, NEVER shaming — Ben has ADHD; the challenge is activation/retrieval, not character. This app is a MULTI-YEAR game: the two win conditions are (1) $1,000,000 net worth and (2) 190 lb lean bodyweight. His daily win stack is 11 habits (meds, water, eating clean, lifting, stretching, sleep, vocab, Chinese, school, affirmations, BookCrew/work) — everything he logs earns real XP toward real levels and achievements, and unlocks tiered rewards at level milestones. Treat all of that as true and reference it naturally (his level, streak, XP, how close an action gets him to the next achievement/reward/north-star %). Lead with the facts from his data. Name the one avoided thing. Separate real signal (stable/specific/pattern-based) from distortion (totalizing/shame-heavy/evidence-light). End with ONE 5-minute re-entry action and a line of belief. This is a long game — a slow week is data, not failure, but don't let him hide from a real pattern either.",
+    "You are The Overseer — Ben's accountability coach inside his own gamified life-tracking app. Firm, specific, warm, NEVER shaming — Ben has ADHD; the challenge is activation/retrieval, not character. This app is a MULTI-YEAR game: the two win conditions are (1) $1,000,000 net worth and (2) 190 lb lean bodyweight. His daily win stack is 11 habits (meds, water, eating clean, lifting, stretching, sleep, vocab, Chinese, school, affirmations, BookCrew/work) — everything he logs earns real XP toward real levels and achievements, and unlocks tiered rewards at level milestones. The app also runs 3 rotating daily quests (bonus XP for claiming), streak SHIELDS (a missed day consumes one instead of resetting — never shame a shielded miss; frame it as the system working), streak-bonus XP that compounds with the chain, and XP for gig shifts ($10 = 1 XP), focus blocks, and vocab reviews. Treat all of that as true and reference it naturally (his level, streak, XP, how close an action gets him to the next achievement/reward/north-star %). Lead with the facts from his data. Name the one avoided thing. Separate real signal (stable/specific/pattern-based) from distortion (totalizing/shame-heavy/evidence-light). End with ONE 5-minute re-entry action and a line of belief. This is a long game — a slow week is data, not failure, but don't let him hide from a real pattern either.",
   board:
     "You are Ben's Board of Advisors — Hormozi (economics/offers), Rubin (taste/essence), Naval (leverage/long-game) — in one room. Give three short, distinct, in-character takes that are allowed to disagree, then a boxed 'Board's Call': one decisive recommendation + the single next action this week. Personas, not the real people.",
   tutor:
@@ -98,7 +98,7 @@ async function context(token: string): Promise<string> {
     try { const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { headers: h }); return r.ok ? await r.json() : []; } catch { return []; }
   };
   const since = new Date(Date.now() - 13 * 86400000).toISOString().slice(0, 10);
-  const [days, allDays, goals, assets, meals, liftSets, achievements] = await Promise.all([
+  const [days, allDays, goals, assets, meals, liftSets, achievements, questClaims, gigShifts, focusSessions, vocabRows] = await Promise.all([
     q(`days?day=gte.${since}&select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,calories,protein,bodyweight&order=day.desc`),
     q(`days?select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,bodyweight`),
     q(`goals?status=eq.active&select=title,due,priority`),
@@ -106,6 +106,10 @@ async function context(token: string): Promise<string> {
     q(`meals?select=id`),
     q(`lift_sets?done=eq.true&select=id`),
     q(`user_achievements?select=key`),
+    q(`quest_claims?select=day,xp`),
+    q(`gig_shifts?select=earnings`),
+    q(`focus_sessions?select=minutes`),
+    q(`vocab?select=seen`),
   ]);
 
   type Day = Record<string, unknown>;
@@ -117,38 +121,54 @@ async function context(token: string): Promise<string> {
   const net = (assets as { kind: string; value: number }[]).reduce((s, a) => s + (a.kind === "asset" ? a.value : -a.value), 0);
   const gl = (goals as { title: string; due: string | null }[]).map((g) => `${g.title}${g.due ? ` (due ${g.due})` : ""}`).join("; ");
 
-  // Base XP (mirrors the client's gamification.ts — kept simple here, achievements bonus omitted for speed)
-  let baseXp = 0;
+  // Streak with shields + streak-bonus XP (mirrors client computeStreak):
+  // a missed day consumes a shield (2 max, regen 1 per 7 full-win days) before
+  // breaking the chain; each full-win day banks min(10 × chain-day, 100) bonus XP.
+  const map = new Map((allDays as Day[]).map((d) => [d.day as string, d]));
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const sortedDays = (allDays as Day[]).map((d) => d.day as string).sort();
+  let streak = 0, shields = 2, sinceRegen = 0, streakBonus = 0;
+  if (sortedDays.length) {
+    const cursor = new Date(sortedDays[0] + "T00:00:00");
+    for (;;) {
+      const ds = cursor.toISOString().slice(0, 10);
+      const row = map.get(ds);
+      const won = !!row && scoreOf(row) === winKeys.length;
+      const isToday = ds === todayStr;
+      if (won) {
+        streak++;
+        streakBonus += Math.min(10 * streak, 100);
+        sinceRegen++;
+        if (sinceRegen >= 7 && shields < 2) { shields++; sinceRegen = 0; }
+      } else if (!isToday && streak > 0) {
+        if (shields > 0) shields--;
+        else { streak = 0; sinceRegen = 0; }
+      }
+      if (isToday || ds > todayStr) break;
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  }
+
+  // Base XP (mirrors the client's gamification.ts — achievements bonus omitted for speed)
+  let baseXp = streakBonus;
   for (const d of allDays as Day[]) {
     for (const k of winKeys) if (d[k]) baseXp += habitXp[k];
     if (d.bodyweight != null) baseXp += 5;
   }
   baseXp += (meals as unknown[]).length * 3;
   baseXp += (liftSets as unknown[]).length * 2;
+  baseXp += (questClaims as { xp: number }[]).reduce((s, r) => s + (r.xp || 0), 0);
+  baseXp += Math.floor((gigShifts as { earnings: number }[]).reduce((s, r) => s + Number(r.earnings || 0), 0) / 10);
+  baseXp += (focusSessions as { minutes: number }[]).reduce((s, r) => s + (r.minutes >= 80 ? 35 : r.minutes >= 45 ? 20 : 10), 0);
+  baseXp += (vocabRows as { seen: number }[]).reduce((s, r) => s + (r.seen || 0), 0) * 2;
   const lvl = levelFromXP(baseXp);
-
-  // Current full-win streak (walk back from today, today's incompleteness doesn't break it)
-  const map = new Map((allDays as Day[]).map((d) => [d.day as string, d]));
-  const todayStr = new Date().toISOString().slice(0, 10);
-  let streak = 0;
-  const cursor = new Date(todayStr + "T00:00:00");
-  let first = true;
-  for (;;) {
-    const ds = cursor.toISOString().slice(0, 10);
-    const row = map.get(ds);
-    const won = !!row && scoreOf(row) === winKeys.length;
-    if (first && ds === todayStr && !won) { first = false; cursor.setDate(cursor.getDate() - 1); continue; }
-    first = false;
-    if (!won) break;
-    streak++;
-    cursor.setDate(cursor.getDate() - 1);
-  }
 
   const lastWeighIn = (allDays as Day[]).filter((d) => d.bodyweight != null).sort((a, b) => String(a.day).localeCompare(String(b.day))).pop();
   const weightLine = lastWeighIn ? `${lastWeighIn.bodyweight} lb (target ${NORTH_STAR.leanWeightTarget} lean)` : "not logged yet";
 
   return `BEN'S LIVE DATA — GAME STATE
-Level ${lvl.level} (${lvl.into}/${lvl.span} XP to next level, ${baseXp} total XP) · 🔥 ${streak}-day full-win streak · ${(achievements as unknown[]).length} achievements unlocked
+Level ${lvl.level} (${lvl.into}/${lvl.span} XP to next level, ${baseXp} total XP) · 🔥 ${streak}-day full-win streak · 🛡 ${shields}/2 streak shields (a missed day consumes one instead of breaking the chain) · ${(achievements as unknown[]).length} achievements unlocked
+Daily quests claimed all-time: ${(questClaims as unknown[]).length} · Focus blocks done: ${(focusSessions as unknown[]).length} · Gig earnings: $${(gigShifts as { earnings: number }[]).reduce((s, r) => s + Number(r.earnings || 0), 0)}
 North Star 1 — Net worth: $${net} / $${NORTH_STAR.netWorthTarget} (${((net / NORTH_STAR.netWorthTarget) * 100).toFixed(2)}%)
 North Star 2 — Bodyweight: ${weightLine}
 Last 14 days: ${wk || "no data"}

@@ -2,16 +2,19 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase, type Asset, type Subscription } from "@/lib/supabase";
+import { useGame } from "@/lib/useGameData";
 import { SectionTitle } from "./ui";
 import GigWork from "./GigWork";
 
 const fmt = (n: number) => "$" + n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
 export default function Money({ uid }: { uid: string }) {
+  const game = useGame();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [aName, setAName] = useState(""); const [aVal, setAVal] = useState(""); const [aKind, setAKind] = useState<"asset" | "liability">("asset");
   const [sName, setSName] = useState(""); const [sCost, setSCost] = useState(""); const [sCycle, setSCycle] = useState<"monthly" | "yearly">("monthly");
+  const [editing, setEditing] = useState<{ id: string; value: string } | null>(null);
 
   const load = useCallback(async () => {
     const [{ data: a }, { data: s }] = await Promise.all([
@@ -29,8 +32,22 @@ export default function Money({ uid }: { uid: string }) {
     const { data } = await supabase.from("assets").insert(row).select().single();
     if (data) setAssets((x) => [...x, data as Asset]);
     setAName(""); setAVal("");
+    game.refresh();
   }
-  async function delAsset(id: string) { setAssets((x) => x.filter((a) => a.id !== id)); await supabase.from("assets").delete().eq("id", id); }
+  async function delAsset(id: string) {
+    setAssets((x) => x.filter((a) => a.id !== id));
+    await supabase.from("assets").delete().eq("id", id);
+    game.refresh();
+  }
+  // tap-to-edit — updating a balance shouldn't mean delete + re-add
+  async function saveEdit() {
+    if (!editing) return;
+    const value = Number(editing.value) || 0;
+    setAssets((x) => x.map((a) => (a.id === editing.id ? { ...a, value } : a)));
+    await supabase.from("assets").update({ value }).eq("id", editing.id);
+    setEditing(null);
+    game.refresh();
+  }
 
   async function addSub() {
     if (!sName.trim()) return;
@@ -71,7 +88,19 @@ export default function Money({ uid }: { uid: string }) {
         {assets.map((a) => (
           <div key={a.id} className="flex items-center gap-3 rounded-xl bg-white/5 border border-white/10 px-4 py-2.5">
             <span className="flex-1">{a.name}</span>
-            <span className={a.kind === "asset" ? "text-[var(--neon)]" : "text-red-400"}>{a.kind === "asset" ? "" : "−"}{fmt(a.value)}</span>
+            {editing?.id === a.id ? (
+              <span className="flex items-center gap-1">
+                <input autoFocus value={editing.value} onChange={(e) => setEditing({ id: a.id, value: e.target.value })}
+                  onKeyDown={(e) => e.key === "Enter" && saveEdit()} inputMode="numeric"
+                  className="w-24 rounded-lg bg-black/30 px-2 py-1 outline-none text-center" />
+                <button onClick={saveEdit} className="text-xs font-bold px-2 py-1 rounded-lg bg-[var(--neon)] text-black active:scale-95">✓</button>
+              </span>
+            ) : (
+              <button onClick={() => setEditing({ id: a.id, value: String(a.value) })}
+                className={`underline decoration-dotted underline-offset-4 ${a.kind === "asset" ? "text-[var(--neon)]" : "text-red-400"}`}>
+                {a.kind === "asset" ? "" : "−"}{fmt(a.value)}
+              </button>
+            )}
             <button onClick={() => delAsset(a.id)} className="opacity-40 active:scale-90">✕</button>
           </div>
         ))}

@@ -38,7 +38,11 @@ export type DayRow = {
   protein: number;
   bodyweight: number | null;
   vocab_count: number;
+  water_cups: number;
+  vocab_reviews: number;
 };
+
+export const WATER_GOAL = 8; // cups; hitting it banks the 💧 win
 
 export const WIN_KEYS = [
   "ws_meds",
@@ -123,13 +127,22 @@ export type VocabWord = {
   sentence: string;
   mnemonic: string;
   added: string;
+  seen: number;
+  missed: number;
 };
 
 export type UserSettings = {
   calorie_goal: number;
   protein_goal: number;
   affirmation_video_url: string;
+  gcal_ics_url: string;
+  last_seen_level: number;
+  gig_goal: number;
+  gig_deadline: string;
 };
+
+export type QuestClaim = { day: string; quest_key: string; xp: number };
+export type FocusSession = { id: string; day: string; minutes: number };
 
 export type LearningTopic = {
   id: string;

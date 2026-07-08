@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
+import { GameProvider, useGame } from "@/lib/useGameData";
+import { Celebration, LevelUpModal } from "@/components/ui";
 import Today from "@/components/Today";
 import Food from "@/components/Food";
 import Lifts from "@/components/Lifts";
@@ -36,6 +38,46 @@ const isTab = (v: string | null): v is Tab => !!v && ALL.some((t) => t.key === v
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setChecking(false); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  if (checking) {
+    return (
+      <main className="min-h-screen grid place-items-center">
+        <div className="text-center">
+          <div className="text-4xl mb-3 flame">✅</div>
+          <p className="opacity-40 text-sm">Loading your day…</p>
+        </div>
+      </main>
+    );
+  }
+  if (!session) return <Login />;
+
+  return (
+    <GameProvider uid={session.user.id}>
+      <Shell uid={session.user.id} />
+      <GameOverlays />
+    </GameProvider>
+  );
+}
+
+// Root-level game moments — achievements and level-ups now fire on ANY tab.
+function GameOverlays() {
+  const game = useGame();
+  const toast = game.newlyUnlocked[0];
+  return (
+    <>
+      {toast && <Celebration emoji={toast.emoji} title={toast.name} subtitle={`+${toast.xp} XP`} onClose={game.dismissNew} />}
+      {game.levelUp && <LevelUpModal level={game.levelUp.level} title={game.levelUp.title} onClose={game.dismissLevelUp} />}
+    </>
+  );
+}
+
+function Shell({ uid }: { uid: string }) {
   const [tab, setTab] = useState<Tab>("today");
   const [moreOpen, setMoreOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
@@ -43,11 +85,8 @@ export default function App() {
   const [boardTopicId, setBoardTopicId] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setChecking(false); });
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     const remembered = localStorage.getItem("daily.tab");
     if (isTab(remembered)) setTab(remembered);
-    return () => sub.subscription.unsubscribe();
   }, []);
 
   function openAdvisor(advisor: string, topicId?: string) {
@@ -62,19 +101,6 @@ export default function App() {
     window.scrollTo({ top: 0 });
   }
 
-  if (checking) {
-    return (
-      <main className="min-h-screen grid place-items-center">
-        <div className="text-center">
-          <div className="text-4xl mb-3 flame">✅</div>
-          <p className="opacity-40 text-sm">Loading your day…</p>
-        </div>
-      </main>
-    );
-  }
-  if (!session) return <Login />;
-
-  const uid = session.user.id;
   const activeMeta = ALL.find((t) => t.key === tab)!;
 
   return (
@@ -97,7 +123,7 @@ export default function App() {
 
       <main className="flex-1 max-w-md md:max-w-2xl mx-auto px-4 pb-28 md:pb-10 md:pt-8 min-h-full w-full">
         <div key={tab} className="tab-enter">
-          {tab === "today" && <Today uid={uid} onOpenAdvisor={openAdvisor} />}
+          {tab === "today" && <Today uid={uid} onOpenAdvisor={openAdvisor} onGoTab={(t) => go(t as Tab)} />}
           {tab === "goals" && <Goals uid={uid} />}
           {tab === "food" && <Food uid={uid} />}
           {tab === "lifts" && <Lifts uid={uid} />}

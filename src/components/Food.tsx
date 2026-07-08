@@ -2,6 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase, todayStr, dateStr, type Meal } from "@/lib/supabase";
+import { MEAL_XP } from "@/lib/gamification";
+import { useGame } from "@/lib/useGameData";
+import { xpToast } from "@/lib/fx";
 import { SectionTitle, Card, Ring, ProgressBar } from "./ui";
 import FoodSearch from "./FoodSearch";
 
@@ -9,6 +12,7 @@ type CalorieSettings = { calorie_goal: number; protein_goal: number };
 const DEFAULT_SETTINGS: CalorieSettings = { calorie_goal: 2200, protein_goal: 160 };
 
 export default function Food({ uid }: { uid: string }) {
+  const game = useGame();
   const [meals, setMeals] = useState<Meal[]>([]);
   const [recent, setRecent] = useState<Meal[]>([]);
   const [settings, setSettings] = useState<CalorieSettings>(DEFAULT_SETTINGS);
@@ -50,12 +54,19 @@ export default function Food({ uid }: { uid: string }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // midnight rollover guard — resumed PWAs must not log meals onto yesterday
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [load]);
+
   async function addMeal(preset?: { name: string; calories: number; protein: number }) {
     const m = preset ?? { name: name || "Meal", calories: Number(cal) || 0, protein: Number(pro) || 0 };
     if (!preset && !name && !cal) return;
     const meal = { user_id: uid, day: todayStr(), ...m };
     const { data } = await supabase.from("meals").insert(meal).select().single();
-    if (data) setMeals((x) => [...x, data as Meal]);
+    if (data) { setMeals((x) => [...x, data as Meal]); xpToast(MEAL_XP, "meal"); }
     setName(""); setCal(""); setPro("");
     syncDayTotals();
   }
@@ -79,6 +90,7 @@ export default function Food({ uid }: { uid: string }) {
     const p = (data ?? []).reduce((s, m: { protein: number }) => s + m.protein, 0);
     await supabase.from("days").upsert({ user_id: uid, day: todayStr(), calories: c, protein: p }, { onConflict: "user_id,day" });
     load();
+    game.refresh();
   }
 
   const totalCal = meals.reduce((s, m) => s + m.calories, 0);

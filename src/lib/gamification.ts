@@ -1,13 +1,20 @@
-// The game layer: XP, levels, achievements — all DERIVED from real logged
-// data (days/meals/lift_sets/goals/assets). No separate mutable XP counter
-// that can drift from reality. Only `user_achievements` is persisted, so a
-// milestone bonus (e.g. hitting $100k net worth) stays banked even if net
-// worth later dips, and so we can detect + celebrate NEW unlocks.
+// The game layer: XP, levels, streaks, achievements — all DERIVED from real
+// logged data (days/meals/lift_sets/goals/assets/gig_shifts/focus_sessions/
+// vocab). No separate mutable XP counter that can drift from reality. Only
+// user_achievements and quest_claims are persisted, so banked bonuses stay
+// banked even if the underlying data later changes.
+//
+// Design principles (from Duolingo/Habitica/ADHD research):
+// - Zero loss mechanics. The ledger only goes up. A missed day earns nothing;
+//   it never subtracts.
+// - Streaks have shields (Duolingo streak freezes: +48% streak length). A miss
+//   consumes a shield instead of resetting. Shields regenerate 1 per 7 full-win
+//   days, cap 2. A shield-free run shows as a gold "perfect" streak.
+// - Streak bonus XP compounds with the chain (goal-gradient effect).
 
 import { WIN_KEYS, todayStr, dateStr, type DayRow } from "./supabase";
 
 // ── The two long games ──────────────────────────────────────────────
-// Defaults — easy to change here if the real targets differ.
 export const NORTH_STAR = {
   netWorthTarget: 1_000_000,
   leanWeightTarget: 190,
@@ -27,17 +34,33 @@ export const HABIT_XP: Record<(typeof WIN_KEYS)[number], number> = {
   ws_water: 5,
   ws_affirmations: 5,
 };
-const MEAL_XP = 3;
-const LIFT_SET_XP = 2;
-const GOAL_DONE_XP = 50;
-const BODYWEIGHT_LOG_XP = 5;
+export const MEAL_XP = 3;
+export const LIFT_SET_XP = 2;
+export const GOAL_DONE_XP = 50;
+export const BODYWEIGHT_LOG_XP = 5;
+export const VOCAB_REVIEW_XP = 2; // per quiz answer (derived from vocab.seen)
+export const GIG_XP_PER_DOLLARS = 10; // 1 XP per $10 hustled
+
+export function focusXP(minutes: number): number {
+  if (minutes >= 80) return 35;
+  if (minutes >= 45) return 20;
+  return 10;
+}
 
 export type GameData = {
-  days: (Pick<DayRow, "day" | "ws_meds" | "ws_eat" | "ws_lift" | "ws_stretch" | "ws_vocab" | "ws_chinese" | "ws_work" | "ws_water" | "ws_sleep" | "ws_school" | "ws_affirmations" | "bodyweight">)[];
+  days: (Pick<DayRow, "day" | "ws_meds" | "ws_eat" | "ws_lift" | "ws_stretch" | "ws_vocab" | "ws_chinese" | "ws_work" | "ws_water" | "ws_sleep" | "ws_school" | "ws_affirmations" | "bodyweight" | "water_cups">)[];
   mealsCount: number;
   liftSetsDoneCount: number;
   goalsDoneCount: number;
   netWorth: number;
+  questXP: number;        // banked sum from quest_claims
+  questClaimCount: number;
+  gigEarnings: number;
+  focusMinutesList: number[]; // one entry per completed focus session
+  vocabReviews: number;   // sum of vocab.seen
+  vocabWordCount: number;
+  learningSessionsCount: number;
+  prCount: number;        // lift personal records, derived from lift_sets history
 };
 
 export function scoreOf(d: Record<string, unknown>): number {
@@ -45,6 +68,75 @@ export function scoreOf(d: Record<string, unknown>): number {
 }
 
 export const WIN_TOTAL = WIN_KEYS.length;
+
+// ── Streak with shields — one calendar walk computes everything ─────
+export type StreakData = {
+  streak: number;    // current chain length (full-win days; shielded gaps don't break it)
+  shields: number;   // 0–2 remaining
+  perfect: boolean;  // current run never needed a shield (gold flame)
+  shieldSpentRecently: boolean; // a shield was consumed in the last 3 days (show the save)
+  bonusXP: number;   // lifetime streak-bonus XP: min(10 × chain-day, 100) per full-win day
+};
+
+export function computeStreak(days: GameData["days"]): StreakData {
+  const won = new Map(days.map((d) => [d.day, scoreOf(d) === WIN_TOTAL]));
+  if (days.length === 0) return { streak: 0, shields: 2, perfect: true, shieldSpentRecently: false, bonusXP: 0 };
+
+  const first = [...days].map((d) => d.day).sort()[0];
+  const today = todayStr();
+  const cursor = new Date(first + "T00:00:00");
+  let streak = 0, shields = 2, sinceRegen = 0, usedInRun = false, bonusXP = 0;
+  let lastShieldDay: string | null = null;
+
+  for (;;) {
+    const ds = dateStr(cursor);
+    const isToday = ds === today;
+    if (won.get(ds)) {
+      streak++;
+      bonusXP += Math.min(10 * streak, 100);
+      sinceRegen++;
+      if (sinceRegen >= 7 && shields < 2) { shields++; sinceRegen = 0; }
+    } else if (!isToday) {
+      // a real missed day (today doesn't count against you until it's over)
+      if (streak > 0) {
+        if (shields > 0) { shields--; usedInRun = true; lastShieldDay = ds; }
+        else { streak = 0; usedInRun = false; sinceRegen = 0; }
+      }
+    }
+    if (isToday) break;
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  const recent = lastShieldDay != null &&
+    (new Date(today + "T00:00:00").getTime() - new Date(lastShieldDay + "T00:00:00").getTime()) <= 3 * 86400000;
+  return { streak, shields, perfect: !usedInRun, shieldSpentRecently: !!recent && streak > 0, bonusXP };
+}
+
+// Back-compat: plain streak number.
+export function currentFullStreak(days: GameData["days"]): number {
+  return computeStreak(days).streak;
+}
+
+// ── Lift PRs — count the days an exercise's top done set beat all history ──
+export function countPRs(rows: { exercise: string; weight: number | null; day: string; done: boolean }[]): number {
+  const byDay = new Map<string, Map<string, number>>(); // day -> exercise -> max weight
+  for (const r of rows) {
+    if (!r.done || r.weight == null || r.weight <= 0) continue;
+    if (!byDay.has(r.day)) byDay.set(r.day, new Map());
+    const m = byDay.get(r.day)!;
+    m.set(r.exercise, Math.max(m.get(r.exercise) ?? 0, Number(r.weight)));
+  }
+  const best = new Map<string, number>();
+  let prs = 0;
+  for (const day of [...byDay.keys()].sort()) {
+    for (const [ex, w] of byDay.get(day)!) {
+      const prev = best.get(ex);
+      if (prev != null && w > prev) prs++;
+      if (prev == null || w > prev) best.set(ex, w);
+    }
+  }
+  return prs;
+}
 
 export function baseXP(g: GameData): number {
   let xp = 0;
@@ -55,31 +147,12 @@ export function baseXP(g: GameData): number {
   xp += g.mealsCount * MEAL_XP;
   xp += g.liftSetsDoneCount * LIFT_SET_XP;
   xp += g.goalsDoneCount * GOAL_DONE_XP;
+  xp += computeStreak(g.days).bonusXP;
+  xp += g.questXP;
+  xp += Math.floor(g.gigEarnings / GIG_XP_PER_DOLLARS);
+  xp += g.focusMinutesList.reduce((s, m) => s + focusXP(m), 0);
+  xp += g.vocabReviews * VOCAB_REVIEW_XP;
   return xp;
-}
-
-// Current streak of full 7/7 "won" days, counting backward from today.
-// Today doesn't have to be complete yet to keep yesterday's streak alive.
-export function currentFullStreak(days: GameData["days"]): number {
-  const map = new Map(days.map((d) => [d.day, d]));
-  let streak = 0;
-  const cursor = new Date(todayStr() + "T00:00:00");
-  let first = true;
-  for (;;) {
-    const ds = dateStr(cursor);
-    const row = map.get(ds);
-    const won = !!row && scoreOf(row) === WIN_TOTAL;
-    if (first && ds === todayStr() && !won) {
-      first = false;
-      cursor.setDate(cursor.getDate() - 1);
-      continue;
-    }
-    first = false;
-    if (!won) break;
-    streak++;
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  return streak;
 }
 
 // ── Levels — a multi-year curve on purpose. This is not a 30-day app. ──
@@ -136,15 +209,25 @@ export const ACHIEVEMENTS: Achievement[] = [
 
   // ── Streaks (the real game) ──
   { key: "streak_3", emoji: "🔥", name: "On Fire", desc: "3-day full win streak", xp: 50,
-    check: (g) => currentFullStreak(g.days) >= 3 },
+    check: (g) => computeStreak(g.days).streak >= 3 },
   { key: "streak_14", emoji: "🔥", name: "Two Weeks Strong", desc: "14-day full win streak", xp: 200,
-    check: (g) => currentFullStreak(g.days) >= 14 },
+    check: (g) => computeStreak(g.days).streak >= 14 },
   { key: "streak_30", emoji: "🔥", name: "Iron Habit", desc: "30-day full win streak", xp: 500,
-    check: (g) => currentFullStreak(g.days) >= 30 },
+    check: (g) => computeStreak(g.days).streak >= 30 },
   { key: "streak_90", emoji: "🔥", name: "The Unbreakable", desc: "90-day full win streak", xp: 1000,
-    check: (g) => currentFullStreak(g.days) >= 90 },
+    check: (g) => computeStreak(g.days).streak >= 90 },
   { key: "streak_365", emoji: "👑", name: "Year One", desc: "365-day full win streak", xp: 5000,
-    check: (g) => currentFullStreak(g.days) >= 365 },
+    check: (g) => computeStreak(g.days).streak >= 365 },
+  { key: "perfect_14", emoji: "🏅", name: "Gold Standard", desc: "14-day streak without using a shield", xp: 300,
+    check: (g) => { const s = computeStreak(g.days); return s.streak >= 14 && s.perfect; } },
+
+  // ── Daily quests ──
+  { key: "quests_10", emoji: "🗡️", name: "Questing Habit", desc: "Claim 10 daily quests", xp: 100,
+    check: (g) => g.questClaimCount >= 10 },
+  { key: "quests_50", emoji: "🗡️", name: "Quest Machine", desc: "Claim 50 daily quests", xp: 250,
+    check: (g) => g.questClaimCount >= 50 },
+  { key: "quests_200", emoji: "⚔️", name: "Quest Legend", desc: "Claim 200 daily quests", xp: 750,
+    check: (g) => g.questClaimCount >= 200 },
 
   // ── Volume / mastery ──
   { key: "days_50", emoji: "📅", name: "50 Logged Days", desc: "50 total days logged", xp: 100,
@@ -157,12 +240,38 @@ export const ACHIEVEMENTS: Achievement[] = [
     check: (g) => daysWith(g, (d) => d.ws_chinese) >= 30 },
   { key: "vocab_50", emoji: "✍️", name: "Wordsmith", desc: "50 vocab days logged", xp: 100,
     check: (g) => daysWith(g, (d) => d.ws_vocab) >= 50 },
+  { key: "words_100", emoji: "📖", name: "Century of Words", desc: "100 words in your bank", xp: 250,
+    check: (g) => g.vocabWordCount >= 100 },
   { key: "meals_100", emoji: "🍎", name: "Century of Meals", desc: "100 meals logged", xp: 100,
     check: (g) => g.mealsCount >= 100 },
   { key: "sets_500", emoji: "💪", name: "Iron Volume", desc: "500 lift sets completed", xp: 250,
     check: (g) => g.liftSetsDoneCount >= 500 },
   { key: "goals_10", emoji: "🏁", name: "Goal Machine", desc: "10 goals completed", xp: 200,
     check: (g) => g.goalsDoneCount >= 10 },
+  { key: "hydro_7", emoji: "💧", name: "Hydro Week", desc: "Hit 8 cups on 7 days", xp: 75,
+    check: (g) => daysWith(g, (d) => (d.water_cups ?? 0) >= 8) >= 7 },
+
+  // ── Strength PRs ──
+  { key: "pr_10", emoji: "🏆", name: "PR Hunter", desc: "Set 10 lift PRs", xp: 150,
+    check: (g) => g.prCount >= 10 },
+  { key: "pr_50", emoji: "🏆", name: "Strength Curve", desc: "Set 50 lift PRs", xp: 500,
+    check: (g) => g.prCount >= 50 },
+
+  // ── Deep work ──
+  { key: "focus_10", emoji: "⏱️", name: "Deep Ten", desc: "Finish 10 focus blocks", xp: 100,
+    check: (g) => g.focusMinutesList.length >= 10 },
+  { key: "focus_100", emoji: "🧠", name: "Monk Mode", desc: "Finish 100 focus blocks", xp: 500,
+    check: (g) => g.focusMinutesList.length >= 100 },
+
+  // ── Hustle ──
+  { key: "gig_1k", emoji: "🚗", name: "$1k Hustled", desc: "Earn $1,000 in gig shifts", xp: 150,
+    check: (g) => g.gigEarnings >= 1000 },
+  { key: "gig_5k", emoji: "🚗", name: "$5k Hustled", desc: "Earn $5,000 in gig shifts", xp: 400,
+    check: (g) => g.gigEarnings >= 5000 },
+
+  // ── Learning ──
+  { key: "sessions_20", emoji: "🌳", name: "Twenty Sessions", desc: "Save 20 learning sessions", xp: 150,
+    check: (g) => g.learningSessionsCount >= 20 },
 
   // ── The 190-lean north star ──
   { key: "lean_190", emoji: "🏆", name: "190 Lean", desc: "Reach your target bodyweight", xp: 1000,
@@ -196,8 +305,10 @@ export function computeUnlocked(g: GameData): Achievement[] {
 export type Category = { key: string; label: string; emoji: string; keys: string[] };
 export const CATEGORIES: Category[] = [
   { key: "start", label: "Getting Started", emoji: "🌱", keys: ["first_day", "perfect_day", "on_scale", "first_goal"] },
-  { key: "streaks", label: "Streaks", emoji: "🔥", keys: ["streak_3", "streak_14", "streak_30", "streak_90", "streak_365"] },
-  { key: "volume", label: "Volume & Mastery", emoji: "💪", keys: ["days_50", "days_100", "lift_30", "chinese_30", "vocab_50", "meals_100", "sets_500", "goals_10"] },
+  { key: "streaks", label: "Streaks", emoji: "🔥", keys: ["streak_3", "streak_14", "streak_30", "streak_90", "streak_365", "perfect_14"] },
+  { key: "quests", label: "Daily Quests", emoji: "🗡️", keys: ["quests_10", "quests_50", "quests_200"] },
+  { key: "volume", label: "Volume & Mastery", emoji: "💪", keys: ["days_50", "days_100", "lift_30", "chinese_30", "vocab_50", "words_100", "meals_100", "sets_500", "goals_10", "hydro_7"] },
+  { key: "strength", label: "Strength & Focus", emoji: "🏆", keys: ["pr_10", "pr_50", "focus_10", "focus_100", "gig_1k", "gig_5k", "sessions_20"] },
   { key: "body", label: "190 Lean", emoji: "🏆", keys: ["lean_190"] },
   { key: "money", label: "Millionaire", emoji: "👑", keys: ["net_1k", "net_10k", "net_25k", "net_50k", "net_100k", "net_250k", "net_500k", "net_750k", "millionaire"] },
 ];

@@ -1,20 +1,50 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { supabase, SUPABASE_URL, SUPABASE_ANON } from "@/lib/supabase";
-import { SectionTitle, Card } from "./ui";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { supabase, todayStr, SUPABASE_URL, SUPABASE_ANON } from "@/lib/supabase";
+import { focusXP } from "@/lib/gamification";
+import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
+import { xpToast, sfx, soundOn, setSoundOn } from "@/lib/fx";
+import { SectionTitle, Card } from "./ui";
 
 const TRANSCRIPT_FN = `${SUPABASE_URL}/functions/v1/transcript`;
 
-// ── Focus timer — ultradian blocks, pairs with the Learning tab ──────
+// ── Focus timer — ultradian blocks that BANK: session row + XP + ws_work ──
 const PRESETS = [25, 50, 90];
 
 function FocusTimer() {
+  const game = useGame();
   const [total, setTotal] = useState(50 * 60);
   const [left, setLeft] = useState(50 * 60);
   const [running, setRunning] = useState(false);
+  const [todayStats, setTodayStats] = useState({ blocks: 0, minutes: 0 });
   const endAt = useRef<number | null>(null);
+
+  const loadToday = useCallback(async () => {
+    const { data } = await supabase.from("focus_sessions").select("minutes").eq("user_id", game.uid).eq("day", todayStr());
+    const mins = (data ?? []).reduce((s, r) => s + r.minutes, 0);
+    setTodayStats({ blocks: (data ?? []).length, minutes: mins });
+  }, [game.uid]);
+  useEffect(() => { loadToday(); }, [loadToday]);
+
+  const complete = useCallback(async () => {
+    const minutes = Math.round(total / 60);
+    burstConfetti("big");
+    sfx.fanfare();
+    document.title = "⏰ Focus block done!";
+    setTimeout(() => (document.title = "Daily"), 5000);
+
+    const { error } = await supabase.from("focus_sessions").insert({ user_id: game.uid, day: todayStr(), minutes });
+    if (!error) {
+      xpToast(focusXP(minutes), `${minutes}-min block`);
+      if (minutes >= 50) {
+        await supabase.from("days").upsert({ user_id: game.uid, day: todayStr(), ws_work: true }, { onConflict: "user_id,day" });
+      }
+      loadToday();
+      game.refresh();
+    }
+  }, [total, game, loadToday]);
 
   useEffect(() => {
     if (!running) return;
@@ -23,13 +53,11 @@ function FocusTimer() {
       setLeft(remaining);
       if (remaining === 0) {
         setRunning(false);
-        burstConfetti("big");
-        document.title = "⏰ Focus block done!";
-        setTimeout(() => (document.title = "Daily"), 5000);
+        complete();
       }
     }, 500);
     return () => clearInterval(id);
-  }, [running]);
+  }, [running, complete]);
 
   function start() {
     endAt.current = Date.now() + left * 1000;
@@ -52,7 +80,7 @@ function FocusTimer() {
         {PRESETS.map((p) => (
           <button key={p} onClick={() => reset(p)}
             className={`flex-1 rounded-xl py-2 text-sm font-semibold active:scale-95 ${total === p * 60 ? "bg-[var(--neon)] text-black" : "bg-white/5"}`}>
-            {p}m
+            {p}m <span className="opacity-60 text-[10px]">+{focusXP(p)}xp</span>
           </button>
         ))}
       </div>
@@ -70,7 +98,63 @@ function FocusTimer() {
         )}
         <button onClick={() => reset()} className="px-5 rounded-xl bg-white/10 font-bold active:scale-95">↺</button>
       </div>
-      <p className="text-[10px] opacity-40 mt-2">90 min = one ultradian cycle. Then take a real 20-min break — that&apos;s where it consolidates.</p>
+      <p className="text-[10px] opacity-40 mt-2">
+        {todayStats.blocks > 0
+          ? <>Today: <span className="text-[var(--neon)] opacity-100 font-bold">{todayStats.blocks} block{todayStats.blocks > 1 ? "s" : ""} · {todayStats.minutes} min</span> · 50+ min banks the 💼 win</>
+          : <>Finished blocks bank XP and count toward achievements. 50+ min auto-banks the 💼 work win.</>}
+      </p>
+    </Card>
+  );
+}
+
+// ── Box breathing — 4-4-4-4, for the Consolidate step / general downshift ──
+const PHASES = [
+  { label: "Breathe in", scale: 1 },
+  { label: "Hold", scale: 1 },
+  { label: "Breathe out", scale: 0.55 },
+  { label: "Hold", scale: 0.55 },
+];
+
+function Breathing() {
+  const [on, setOn] = useState(false);
+  const [phase, setPhase] = useState(0);
+  const [cycles, setCycles] = useState(0);
+
+  useEffect(() => {
+    if (!on) return;
+    const id = setInterval(() => {
+      setPhase((p) => {
+        const next = (p + 1) % 4;
+        if (next === 0) setCycles((c) => c + 1);
+        return next;
+      });
+    }, 4000);
+    return () => clearInterval(id);
+  }, [on]);
+
+  function toggle() {
+    if (on) { setOn(false); setPhase(0); setCycles(0); }
+    else { setOn(true); setPhase(0); }
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center gap-4">
+        <div className="relative w-24 h-24 shrink-0 grid place-items-center">
+          <div className="absolute inset-0 rounded-full bg-[var(--neon)]/10 border border-[var(--neon)]/30"
+            style={{ transform: `scale(${on ? PHASES[phase].scale : 0.75})`, transition: "transform 3.8s ease-in-out" }} />
+          <span className="text-2xl relative">🫁</span>
+        </div>
+        <div className="flex-1">
+          <p className="font-bold">{on ? PHASES[phase].label : "Box breathing"}</p>
+          <p className="text-xs opacity-50 mt-0.5">
+            {on ? `4s each side · ${cycles} cycle${cycles === 1 ? "" : "s"}` : "4-4-4-4 — the fastest legal downshift for your nervous system."}
+          </p>
+          <button onClick={toggle} className={`mt-2 px-4 py-2 rounded-xl text-sm font-bold active:scale-95 ${on ? "bg-white/10" : "bg-[var(--neon)] text-black"}`}>
+            {on ? "Stop" : "Start"}
+          </button>
+        </div>
+      </div>
     </Card>
   );
 }
@@ -81,6 +165,9 @@ export default function Tools() {
   const [result, setResult] = useState<{ title: string; text: string } | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [sound, setSound] = useState(true);
+
+  useEffect(() => { setSound(soundOn()); }, []);
 
   async function getTranscript() {
     if (!url.trim() || busy) return;
@@ -118,6 +205,9 @@ export default function Tools() {
       <SectionTitle>⏱️ Focus timer</SectionTitle>
       <FocusTimer />
 
+      <SectionTitle>🫁 Breathe</SectionTitle>
+      <Breathing />
+
       <SectionTitle>📺 YouTube transcript</SectionTitle>
       <p className="text-xs opacity-40 mb-2">Free, no login needed — pulls the video&apos;s own caption track.</p>
       <div className="flex gap-2">
@@ -143,14 +233,16 @@ export default function Tools() {
         </Card>
       )}
 
-      <SectionTitle>📸 Instagram transcript</SectionTitle>
-      <Card className="opacity-70">
-        <p className="text-sm">
-          No free, reliable option exists for this one — Instagram doesn&apos;t expose captions like YouTube does. Every real option
-          (even the open-source ones) has to download the reel and pay for Whisper/AssemblyAI transcription per minute, and scrapers
-          break constantly against Instagram&apos;s terms.
-        </p>
-        <p className="text-xs opacity-50 mt-2">Want it anyway? Say so and I&apos;ll wire a paid-API version (few cents per reel) — just didn&apos;t want to ship something flaky.</p>
+      <SectionTitle>⚙️ Settings</SectionTitle>
+      <Card padded={false} className="p-3">
+        <button onClick={() => { const next = !sound; setSound(next); setSoundOn(next); if (next) sfx.coin(); }}
+          className="flex items-center gap-3 w-full text-left">
+          <span className="text-xl">{sound ? "🔊" : "🔇"}</span>
+          <span className="flex-1 text-sm font-medium">Sound effects</span>
+          <span className={`w-11 h-6 rounded-full p-0.5 transition ${sound ? "bg-[var(--neon)]" : "bg-white/15"}`}>
+            <span className={`block w-5 h-5 rounded-full bg-white transition ${sound ? "translate-x-5" : ""}`} />
+          </span>
+        </button>
       </Card>
     </div>
   );

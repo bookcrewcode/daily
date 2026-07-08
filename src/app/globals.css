@@ -58,6 +58,31 @@ textarea {
   0%   { background-position: -200% 0; }
   100% { background-position: 200% 0; }
 }
+@keyframes xpToastUp {
+  0%   { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.9); }
+  12%  { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+  80%  { opacity: 1; }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-24px) scale(0.96); }
+}
+@keyframes levelPop {
+  0%   { transform: scale(0.4); opacity: 0; }
+  60%  { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes chestShake {
+  0%, 100% { transform: rotate(0); }
+  20% { transform: rotate(-12deg); }
+  40% { transform: rotate(10deg); }
+  60% { transform: rotate(-8deg); }
+  80% { transform: rotate(6deg); }
+}
+.chest-shake { display: inline-block; animation: chestShake 0.6s ease; }
+
+/* gold "perfect streak" flame (shield-free run) */
+.flame-gold {
+  filter: hue-rotate(-15deg) saturate(1.6) brightness(1.25);
+  text-shadow: 0 0 12px rgba(251, 191, 36, 0.8);
+}
 
 .tab-enter { animation: fadeSlide 0.22s ease; }
 .pop-check { animation: popCheck 0.25s ease; }

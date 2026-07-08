@@ -1,10 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr, ADVISOR_FN, SUPABASE_ANON, type VocabWord } from "@/lib/supabase";
+import { VOCAB_REVIEW_XP } from "@/lib/gamification";
+import { useGame } from "@/lib/useGameData";
+import { xpToast, sfx } from "@/lib/fx";
 import { SectionTitle, Card } from "./ui";
 
 export default function Vocab({ uid }: { uid: string }) {
+  const game = useGame();
   const [words, setWords] = useState<VocabWord[]>([]);
   const [word, setWord] = useState("");
   const [def, setDef] = useState("");
@@ -15,6 +19,7 @@ export default function Vocab({ uid }: { uid: string }) {
   const [showAnswer, setShowAnswer] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
+  const reviewsToday = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     const { data } = await supabase.from("vocab").select("*").eq("user_id", uid).order("added", { ascending: false });
@@ -27,18 +32,51 @@ export default function Vocab({ uid }: { uid: string }) {
     const row = { user_id: uid, word: word.trim(), definition: def.trim(), sentence: sentence.trim(), mnemonic: mnemonic.trim(), added: todayStr() };
     const { data } = await supabase.from("vocab").insert(row).select().single();
     if (data) setWords((w) => [data as VocabWord, ...w]);
-    await supabase.from("days").upsert({ user_id: uid, day: todayStr(), ws_vocab: true }, { onConflict: "user_id,day" });
+    const addedToday = words.filter((w) => w.added === todayStr()).length + 1;
+    await supabase.from("days").upsert(
+      { user_id: uid, day: todayStr(), ws_vocab: true, vocab_count: addedToday },
+      { onConflict: "user_id,day" },
+    );
     setWord(""); setDef(""); setSentence(""); setMnemonic(""); setExpanded(false);
+    game.refresh();
   }
   async function remove(id: string) {
     setWords((w) => w.filter((x) => x.id !== id));
     await supabase.from("vocab").delete().eq("id", id);
   }
 
+  // Spaced-ish repetition: words you missed come back first, then the ones
+  // you've seen least. Random tiebreak keeps it from feeling like a fixed loop.
   function startQuiz() {
     if (words.length === 0) return;
-    setQuiz(words[Math.floor(Math.random() * words.length)]);
+    const ranked = [...words].sort((a, b) => {
+      const aScore = (a.missed ?? 0) * 3 - (a.seen ?? 0) + Math.random() * 2;
+      const bScore = (b.missed ?? 0) * 3 - (b.seen ?? 0) + Math.random() * 2;
+      return bScore - aScore;
+    });
+    const pool = ranked.slice(0, Math.min(5, ranked.length));
+    setQuiz(pool[Math.floor(Math.random() * pool.length)]);
     setShowAnswer(false);
+  }
+
+  async function answer(gotIt: boolean) {
+    if (!quiz) return;
+    const patch = { seen: (quiz.seen ?? 0) + 1, missed: (quiz.missed ?? 0) + (gotIt ? 0 : 1) };
+    setWords((w) => w.map((x) => (x.id === quiz.id ? { ...x, ...patch } : x)));
+    await supabase.from("vocab").update(patch).eq("id", quiz.id);
+    // per-day review counter feeds the "⚡ +N today" badge (session-safe via ref)
+    if (reviewsToday.current == null) {
+      reviewsToday.current = game.days.find((d) => d.day === todayStr())?.vocab_reviews ?? 0;
+    }
+    reviewsToday.current += 1;
+    await supabase.from("days").upsert(
+      { user_id: uid, day: todayStr(), vocab_reviews: reviewsToday.current },
+      { onConflict: "user_id,day" },
+    );
+    if (gotIt) sfx.pop();
+    xpToast(VOCAB_REVIEW_XP, gotIt ? "recalled" : "reviewed");
+    game.refresh();
+    startQuiz();
   }
 
   async function generateWord() {
@@ -77,9 +115,13 @@ export default function Vocab({ uid }: { uid: string }) {
               <p className="text-sm mt-2">{quiz.definition || "(no definition saved)"}</p>
               {quiz.sentence && <p className="text-sm opacity-60 italic mt-1">&ldquo;{quiz.sentence}&rdquo;</p>}
               <div className="flex gap-2 mt-3">
-                <button onClick={startQuiz} className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95">Next word</button>
-                <button onClick={() => setQuiz(null)} className="px-4 rounded-xl bg-white/10 active:scale-95">Done</button>
+                <button onClick={() => answer(true)} className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95">✓ Knew it</button>
+                <button onClick={() => answer(false)} className="flex-1 rounded-xl bg-white/10 font-semibold py-2.5 active:scale-95">✗ Missed it</button>
+                <button onClick={() => setQuiz(null)} className="px-3 rounded-xl bg-white/5 opacity-60 active:scale-95">Done</button>
               </div>
+              {(quiz.seen ?? 0) > 0 && (
+                <p className="text-[10px] opacity-40 mt-2">seen {quiz.seen}× · missed {quiz.missed}×</p>
+              )}
             </>
           ) : (
             <button onClick={() => setShowAnswer(true)} className="mt-3 w-full rounded-xl bg-white/10 py-2.5 font-semibold active:scale-95">Reveal meaning</button>
@@ -90,7 +132,7 @@ export default function Vocab({ uid }: { uid: string }) {
       {!quiz && (
         <button onClick={startQuiz} disabled={words.length === 0}
           className="mt-4 w-full rounded-xl border border-dashed border-white/20 py-3 opacity-70 active:scale-95 disabled:opacity-30">
-          🎲 Quiz me on a random word
+          🎲 Quiz me — missed words come back first · +{VOCAB_REVIEW_XP} XP each
         </button>
       )}
 
