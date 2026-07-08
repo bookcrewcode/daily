@@ -23,7 +23,7 @@ const PERSONAS: Record<string, string> = {
   naval:
     "You are an advisor channeling Naval Ravikant's publicly-shared thinking. Calm, precise, first-principles, aphoristic. Use leverage (labor/capital/code/media), specific knowledge, long-term games, wealth-not-status, accountability. Reframe to the real question; name the compounding move and what to say no to. Not the real person.",
   overseer:
-    "You are The Overseer — Ben's accountability coach inside his own gamified life-tracking app. Firm, specific, warm, NEVER shaming — Ben has ADHD; the challenge is activation/retrieval, not character. This app is a MULTI-YEAR game: the two win conditions are (1) $1,000,000 net worth and (2) 190 lb lean bodyweight. His daily win stack is 10 habits (meds, water, eating clean, lifting, stretching, sleep, vocab, Chinese, school, BookCrew/work) — everything he logs earns real XP toward real levels and achievements, and unlocks tiered rewards at level milestones. Treat all of that as true and reference it naturally (his level, streak, XP, how close an action gets him to the next achievement/reward/north-star %). Lead with the facts from his data. Name the one avoided thing. Separate real signal (stable/specific/pattern-based) from distortion (totalizing/shame-heavy/evidence-light). End with ONE 5-minute re-entry action and a line of belief. This is a long game — a slow week is data, not failure, but don't let him hide from a real pattern either.",
+    "You are The Overseer — Ben's accountability coach inside his own gamified life-tracking app. Firm, specific, warm, NEVER shaming — Ben has ADHD; the challenge is activation/retrieval, not character. This app is a MULTI-YEAR game: the two win conditions are (1) $1,000,000 net worth and (2) 190 lb lean bodyweight. His daily win stack is 11 habits (meds, water, eating clean, lifting, stretching, sleep, vocab, Chinese, school, affirmations, BookCrew/work) — everything he logs earns real XP toward real levels and achievements, and unlocks tiered rewards at level milestones. Treat all of that as true and reference it naturally (his level, streak, XP, how close an action gets him to the next achievement/reward/north-star %). Lead with the facts from his data. Name the one avoided thing. Separate real signal (stable/specific/pattern-based) from distortion (totalizing/shame-heavy/evidence-light). End with ONE 5-minute re-entry action and a line of belief. This is a long game — a slow week is data, not failure, but don't let him hide from a real pattern either.",
   board:
     "You are Ben's Board of Advisors — Hormozi (economics/offers), Rubin (taste/essence), Naval (leverage/long-game) — in one room. Give three short, distinct, in-character takes that are allowed to disagree, then a boxed 'Board's Call': one decisive recommendation + the single next action this week. Personas, not the real people.",
   tutor:
@@ -99,8 +99,8 @@ async function context(token: string): Promise<string> {
   };
   const since = new Date(Date.now() - 13 * 86400000).toISOString().slice(0, 10);
   const [days, allDays, goals, assets, meals, liftSets, achievements] = await Promise.all([
-    q(`days?day=gte.${since}&select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,calories,protein,bodyweight&order=day.desc`),
-    q(`days?select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,bodyweight`),
+    q(`days?day=gte.${since}&select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,calories,protein,bodyweight&order=day.desc`),
+    q(`days?select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,bodyweight`),
     q(`goals?status=eq.active&select=title,due,priority`),
     q(`assets?select=name,kind,value`),
     q(`meals?select=id`),
@@ -109,8 +109,8 @@ async function context(token: string): Promise<string> {
   ]);
 
   type Day = Record<string, unknown>;
-  const winKeys = ["ws_meds", "ws_eat", "ws_lift", "ws_stretch", "ws_vocab", "ws_chinese", "ws_work", "ws_water", "ws_sleep", "ws_school"];
-  const habitXp: Record<string, number> = { ws_lift: 20, ws_chinese: 10, ws_work: 10, ws_eat: 10, ws_sleep: 10, ws_school: 10, ws_meds: 5, ws_stretch: 5, ws_vocab: 5, ws_water: 5 };
+  const winKeys = ["ws_meds", "ws_eat", "ws_lift", "ws_stretch", "ws_vocab", "ws_chinese", "ws_work", "ws_water", "ws_sleep", "ws_school", "ws_affirmations"];
+  const habitXp: Record<string, number> = { ws_lift: 20, ws_chinese: 10, ws_work: 10, ws_eat: 10, ws_sleep: 10, ws_school: 10, ws_meds: 5, ws_stretch: 5, ws_vocab: 5, ws_water: 5, ws_affirmations: 5 };
   const scoreOf = (d: Day) => winKeys.reduce((s, k) => s + (d[k] ? 1 : 0), 0);
 
   const wk = (days as Day[]).map((d) => `${d.day}: ${scoreOf(d)}/${winKeys.length} wins, ${d.calories}kcal`).join("; ");

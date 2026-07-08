@@ -101,7 +101,8 @@ export default function Vocab({ uid }: { uid: string }) {
       </button>
       {genError && <p className="text-xs opacity-50 mb-2">{genError}</p>}
       <div className="space-y-2">
-        <input value={word} onChange={(e) => setWord(e.target.value)} placeholder="the word"
+        <input value={word} onChange={(e) => setWord(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()}
+          placeholder="the word"
           className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
         {!expanded ? (
           <button onClick={() => setExpanded(true)} className="text-xs text-[var(--neon)]/70 underline underline-offset-2">+ definition, sentence, mnemonic (optional)</button>

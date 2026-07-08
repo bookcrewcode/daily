@@ -1,13 +1,20 @@
 @import "tailwindcss";
 
 :root {
-  --background: #15171b;
-  --foreground: #eceef0;
+  --background: #0b0f0e;
+  --surface: rgba(255, 255, 255, 0.05);
+  --foreground: #edf2ef;
   --neon: #34d399;
+  --neon-dim: rgba(52, 211, 153, 0.14);
+  --gold: #fbbf24;
 }
 
 body {
-  background: var(--background);
+  background:
+    radial-gradient(1100px 520px at 85% -10%, rgba(52, 211, 153, 0.09), transparent 60%),
+    radial-gradient(900px 480px at -15% 110%, rgba(56, 189, 248, 0.06), transparent 60%),
+    var(--background);
+  background-attachment: fixed;
   color: var(--foreground);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   -webkit-tap-highlight-color: transparent;
@@ -18,7 +25,70 @@ body {
   -webkit-user-select: none;
   user-select: none;
 }
-input {
+input,
+textarea {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* ── Motion vocabulary ─────────────────────────────────────────── */
+@keyframes fadeSlide {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-10px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes popCheck {
+  0%   { transform: scale(0.6); }
+  60%  { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}
+@keyframes xpFloat {
+  0%   { opacity: 0; transform: translateY(4px) scale(0.9); }
+  15%  { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-30px) scale(1); }
+}
+@keyframes flamePulse {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.15); }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.tab-enter { animation: fadeSlide 0.22s ease; }
+.pop-check { animation: popCheck 0.25s ease; }
+.xp-float {
+  position: absolute;
+  top: -6px;
+  right: 8px;
+  pointer-events: none;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--neon);
+  text-shadow: 0 0 10px rgba(52, 211, 153, 0.7);
+  animation: xpFloat 0.9s ease forwards;
+  z-index: 5;
+}
+.flame { display: inline-block; animation: flamePulse 1.6s ease-in-out infinite; }
+
+.skeleton {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04) 25%, rgba(255, 255, 255, 0.09) 50%, rgba(255, 255, 255, 0.04) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 0.75rem;
+}
+
+.glow-neon { box-shadow: 0 0 22px rgba(52, 211, 153, 0.22); }
+.text-glow { text-shadow: 0 0 14px rgba(52, 211, 153, 0.55); }
+
+/* confetti canvas sits above everything, ignores taps */
+#confetti-canvas {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
 }

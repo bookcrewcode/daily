@@ -14,7 +14,7 @@ export const NORTH_STAR = {
 };
 
 // ── XP per action (mirrors the Obsidian vault's XP conventions) ────
-const HABIT_XP: Record<(typeof WIN_KEYS)[number], number> = {
+export const HABIT_XP: Record<(typeof WIN_KEYS)[number], number> = {
   ws_lift: 20,
   ws_chinese: 10,
   ws_work: 10,

@@ -4,8 +4,9 @@ import { useEffect, useState } from "react";
 import { supabase, WIN_KEYS, todayStr, dateStr } from "@/lib/supabase";
 
 const LABEL: Record<string, string> = {
-  ws_meds: "Meds + water", ws_eat: "Clean eating", ws_lift: "Lifts",
-  ws_stretch: "Stretching", ws_vocab: "Vocab", ws_chinese: "Chinese", ws_work: "BookCrew / work",
+  ws_meds: "Meds", ws_water: "Water", ws_eat: "Clean eating", ws_lift: "Lifts",
+  ws_stretch: "Stretching", ws_sleep: "Sleep", ws_vocab: "Vocab", ws_chinese: "Chinese",
+  ws_school: "School", ws_affirmations: "Affirmations", ws_work: "BookCrew / work",
 };
 
 export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?: (advisor: string) => void }) {
@@ -35,11 +36,11 @@ export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?
       if (urgent > 0) {
         setMsg({ head: "👁️ Overseer", body: `${urgent} goal${urgent > 1 ? "s" : ""} due in ≤2 days. That's the fire — hit Goals and move one now.`, tone: "warn" });
       } else if (weakCount <= 2 && rows.length >= 3) {
-        setMsg({ head: "👁️ Overseer", body: `${LABEL[weakest]} is your weak link — only ${weakCount}/7 this week. Don't negotiate it. Do it today.`, tone: "warn" });
+        setMsg({ head: "👁️ Overseer", body: `${LABEL[weakest] ?? weakest} is your weak link — only ${weakCount}/7 days this week. Don't negotiate it. Do it today.`, tone: "warn" });
       } else if (hour >= 15 && todayScore === 0) {
         setMsg({ head: "👁️ Overseer", body: "It's past 3pm and zero wins banked. Pick the easiest toggle and break the seal — momentum follows action.", tone: "warn" });
-      } else if (todayScore >= 6) {
-        setMsg({ head: "👁️ Overseer", body: `${todayScore}/7 today. That's the standard. Keep the chain alive.`, tone: "good" });
+      } else if (todayScore >= Math.ceil(WIN_KEYS.length * 0.7)) {
+        setMsg({ head: "👁️ Overseer", body: `${todayScore}/${WIN_KEYS.length} today. That's the standard. Keep the chain alive.`, tone: "good" });
       } else {
         setMsg(null);
       }

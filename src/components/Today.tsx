@@ -1,10 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { supabase, WIN_KEYS, todayStr, dateStr, type DayRow } from "@/lib/supabase";
+import { supabase, WIN_KEYS, todayStr, dateStr, type DayRow, type ScheduleItem } from "@/lib/supabase";
+import { HABIT_XP } from "@/lib/gamification";
+import { burstConfetti } from "@/lib/confetti";
+import { parseTime, fmtMinutes } from "@/lib/calendar";
 import { Ring, NumCard, SectionTitle, Card } from "./ui";
 import Overseer from "./Overseer";
 import GameBar from "./GameBar";
+import CalendarCard from "./CalendarCard";
 
 type WinKey = (typeof WIN_KEYS)[number];
 
@@ -30,10 +34,24 @@ const EMPTY: DayRow = {
   calories: 0, protein: 0, bodyweight: null, vocab_count: 0,
 };
 
+function greeting(): string {
+  const h = new Date().getHours();
+  if (h < 5) return "Late night, Ben 🌌";
+  if (h < 12) return "Good morning, Ben 🌅";
+  if (h < 17) return "Good afternoon, Ben ☀️";
+  if (h < 21) return "Good evening, Ben 🌆";
+  return "Wind down, Ben 🌙";
+}
+
+type Plan = { top3: string[]; items: ScheduleItem[] } | null;
+
 export default function Today({ uid, onOpenAdvisor }: { uid: string; onOpenAdvisor?: (advisor: string) => void }) {
   const [row, setRow] = useState<DayRow>(EMPTY);
   const [history, setHistory] = useState<{ day: string; score: number }[]>([]);
   const [now, setNow] = useState("");
+  const [plan, setPlan] = useState<Plan>(null);
+  const [floats, setFloats] = useState<Record<string, number>>({});
+  const [doneTop3, setDoneTop3] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     const tick = () => {
@@ -48,8 +66,16 @@ export default function Today({ uid, onOpenAdvisor }: { uid: string; onOpenAdvis
 
   const load = useCallback(async () => {
     const day = todayStr();
-    const { data } = await supabase.from("days").select("*").eq("user_id", uid).eq("day", day).maybeSingle();
+    const [{ data }, { data: nightRow }] = await Promise.all([
+      supabase.from("days").select("*").eq("user_id", uid).eq("day", day).maybeSingle(),
+      supabase.from("nights").select("top3,items").eq("user_id", uid).eq("day", day).maybeSingle(),
+    ]);
     setRow(data ? { ...EMPTY, ...data, day } : { ...EMPTY, day });
+    if (nightRow) {
+      const top3 = ((nightRow.top3 as string[]) ?? []).filter((t) => t.trim());
+      const items = ((nightRow.items as ScheduleItem[]) ?? []).filter((it) => it.what.trim());
+      setPlan(top3.length || items.length ? { top3, items } : null);
+    }
 
     const since = new Date(); since.setDate(since.getDate() - 6);
     const { data: hist } = await supabase.from("days").select("*").eq("user_id", uid).gte("day", dateStr(since)).order("day");
@@ -73,17 +99,67 @@ export default function Today({ uid, onOpenAdvisor }: { uid: string; onOpenAdvis
       ? { ...d, score: WIN_KEYS.reduce((s, k) => s + (next[k] ? 1 : 0), 0) } : d));
   }
 
+  function toggleWin(key: WinKey, on: boolean) {
+    save({ [key]: !on } as Partial<DayRow>);
+    if (!on) {
+      if ("vibrate" in navigator) navigator.vibrate(15);
+      setFloats((f) => ({ ...f, [key]: Date.now() }));
+      setTimeout(() => setFloats((f) => { const { [key]: _, ...rest } = f; return rest; }), 950);
+      const willBe = WIN_KEYS.reduce((s, k) => s + ((k === key ? true : row[k]) ? 1 : 0), 0);
+      if (willBe === WIN_KEYS.length) setTimeout(() => burstConfetti("big"), 150);
+    }
+  }
+
   const score = WIN_KEYS.reduce((s, k) => s + (row[k] ? 1 : 0), 0);
 
   return (
     <div>
       <div className="pt-3 pb-1">
         <p className="text-xs uppercase tracking-widest text-[var(--neon)]/70">{now}</p>
-        <h1 className="text-2xl font-bold mt-1">Daily Win Stack</h1>
+        <h1 className="text-2xl font-bold mt-1">{greeting()}</h1>
       </div>
 
       <GameBar uid={uid} />
       <Overseer uid={uid} onOpenChat={onOpenAdvisor} />
+
+      {plan && (
+        <Card tone="neon" className="mt-3">
+          <p className="text-xs uppercase tracking-widest text-[var(--neon)]/80 mb-2">📋 Today&apos;s plan — set last night</p>
+          {plan.top3.length > 0 && (
+            <div className="space-y-1.5 mb-2">
+              {plan.top3.map((t, i) => {
+                const done = doneTop3.has(i);
+                return (
+                  <button key={i} onClick={() => setDoneTop3((s) => { const n = new Set(s); if (done) n.delete(i); else n.add(i); return n; })}
+                    className="flex items-center gap-2.5 w-full text-left">
+                    <span className={`w-5 h-5 shrink-0 rounded-full grid place-items-center text-[10px] font-bold ${done ? "bg-[var(--neon)] text-black pop-check" : "border border-[var(--neon)]/50 text-[var(--neon)]"}`}>
+                      {done ? "✓" : i + 1}
+                    </span>
+                    <span className={`text-sm font-medium ${done ? "line-through opacity-40" : ""}`}>{t}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {plan.items.length > 0 && (
+            <div className="space-y-0.5 pt-1 border-t border-[var(--neon)]/15">
+              {plan.items.map((it, i) => {
+                const mins = parseTime(it.time);
+                return (
+                  <p key={i} className="text-xs opacity-70">
+                    <span className="text-[var(--neon)]/80 font-semibold tabular-nums mr-2">{mins !== null ? fmtMinutes(mins) : it.time}</span>
+                    {it.what}
+                  </p>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      )}
+
+      <div className="mt-3">
+        <CalendarCard uid={uid} day={new Date()} title="Today · Google Calendar" />
+      </div>
 
       <div className="flex items-center gap-3 my-4">
         <Ring score={score} total={WINS.length} />
@@ -97,11 +173,12 @@ export default function Today({ uid, onOpenAdvisor }: { uid: string; onOpenAdvis
         {WINS.map((w) => {
           const on = row[w.key];
           return (
-            <Card key={w.key} padded={false} tone={on ? "neon" : "default"} className="p-3">
-              <button onClick={() => save({ [w.key]: !on } as Partial<DayRow>)} className="flex items-center gap-2.5 w-full text-left">
+            <Card key={w.key} padded={false} tone={on ? "neon" : "default"} className="p-3 relative">
+              {floats[w.key] && <span className="xp-float">+{HABIT_XP[w.key]} XP</span>}
+              <button onClick={() => toggleWin(w.key, on)} className="flex items-center gap-2.5 w-full text-left">
                 <span className="text-xl shrink-0">{w.emoji}</span>
                 <span className="flex-1 text-sm font-medium leading-tight">{w.label}</span>
-                <span className={`w-6 h-6 shrink-0 rounded-full grid place-items-center text-xs font-bold ${on ? "bg-[var(--neon)] text-black" : "border border-white/30"}`}>{on ? "✓" : ""}</span>
+                <span className={`w-6 h-6 shrink-0 rounded-full grid place-items-center text-xs font-bold ${on ? "bg-[var(--neon)] text-black pop-check" : "border border-white/30"}`}>{on ? "✓" : ""}</span>
               </button>
               {w.link && (
                 <a href={w.link} target="_blank" rel="noreferrer"
@@ -127,7 +204,7 @@ export default function Today({ uid, onOpenAdvisor }: { uid: string; onOpenAdvis
           return (
             <div key={d.day} className="flex-1 flex flex-col items-center gap-1">
               <div className="w-full h-20 rounded-lg bg-white/5 flex items-end overflow-hidden">
-                <div className="w-full rounded-lg bg-[var(--neon)]" style={{ height: `${Math.max(pct * 100, d.score ? 8 : 0)}%` }} />
+                <div className="w-full rounded-lg bg-[var(--neon)]" style={{ height: `${Math.max(pct * 100, d.score ? 8 : 0)}%`, opacity: 0.45 + pct * 0.55 }} />
               </div>
               <span className="text-[10px] opacity-50">{label}</span>
             </div>

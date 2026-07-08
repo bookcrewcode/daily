@@ -29,7 +29,7 @@ export function useGameData(uid: string): GameState {
   const load = useCallback(async () => {
     const [{ data: days }, { count: mealsCount }, { count: liftSetsDoneCount }, { count: goalsDoneCount }, { data: assets }, { data: existing }] =
       await Promise.all([
-        supabase.from("days").select("day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,bodyweight").eq("user_id", uid),
+        supabase.from("days").select("day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,bodyweight").eq("user_id", uid),
         supabase.from("meals").select("id", { count: "exact", head: true }).eq("user_id", uid),
         supabase.from("lift_sets").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("done", true),
         supabase.from("goals").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("status", "done"),

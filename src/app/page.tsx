@@ -31,6 +31,7 @@ const SECONDARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "tools", emoji: "🛠️", label: "Tools" },
 ];
 const ALL = [...PRIMARY, ...SECONDARY];
+const isTab = (v: string | null): v is Tab => !!v && ALL.some((t) => t.key === v);
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -44,6 +45,8 @@ export default function App() {
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setChecking(false); });
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
+    const remembered = localStorage.getItem("daily.tab");
+    if (isTab(remembered)) setTab(remembered);
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -52,9 +55,23 @@ export default function App() {
     setBoardTopicId(topicId);
     setBoardOpen(true);
   }
-  function go(t: Tab) { setTab(t); setMoreOpen(false); }
+  function go(t: Tab) {
+    setTab(t);
+    setMoreOpen(false);
+    localStorage.setItem("daily.tab", t);
+    window.scrollTo({ top: 0 });
+  }
 
-  if (checking) return <main className="min-h-full grid place-items-center"><p className="opacity-50">Loading…</p></main>;
+  if (checking) {
+    return (
+      <main className="min-h-screen grid place-items-center">
+        <div className="text-center">
+          <div className="text-4xl mb-3 flame">✅</div>
+          <p className="opacity-40 text-sm">Loading your day…</p>
+        </div>
+      </main>
+    );
+  }
   if (!session) return <Login />;
 
   const uid = session.user.id;
@@ -63,54 +80,59 @@ export default function App() {
   return (
     <div className="md:flex md:min-h-full">
       {/* Desktop sidebar */}
-      <nav className="hidden md:flex md:flex-col md:w-56 md:shrink-0 md:border-r md:border-white/10 md:py-6 md:px-3 md:gap-1">
+      <nav className="hidden md:flex md:flex-col md:w-56 md:shrink-0 md:border-r md:border-white/10 md:py-6 md:px-3 md:gap-1 md:sticky md:top-0 md:h-screen">
         <p className="px-3 pb-4 font-extrabold text-lg">✅ Daily</p>
         {ALL.map((t) => (
           <button key={t.key} onClick={() => go(t.key)}
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition ${tab === t.key ? "bg-[var(--neon)]/15 text-[var(--neon)]" : "opacity-60 hover:opacity-100 hover:bg-white/5"}`}>
+            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition ${tab === t.key ? "bg-[var(--neon)]/15 text-[var(--neon)] glow-neon" : "opacity-60 hover:opacity-100 hover:bg-white/5"}`}>
             <span className="text-lg">{t.emoji}</span><span className="text-sm font-semibold">{t.label}</span>
           </button>
         ))}
         <button onClick={() => openAdvisor("overseer")}
-          className="mt-4 flex items-center gap-3 px-3 py-2.5 rounded-xl text-left bg-[var(--neon)] text-black font-bold">
+          className="mt-4 flex items-center gap-3 px-3 py-2.5 rounded-xl text-left bg-[var(--neon)] text-black font-bold glow-neon active:scale-95">
           <span className="text-lg">🎮</span><span className="text-sm">Coach</span>
         </button>
         <button onClick={() => supabase.auth.signOut()} className="mt-auto px-3 py-2 text-xs opacity-30 underline text-left">Sign out</button>
       </nav>
 
       <main className="flex-1 max-w-md md:max-w-2xl mx-auto px-4 pb-28 md:pb-10 md:pt-8 min-h-full w-full">
-        {tab === "today" && <Today uid={uid} onOpenAdvisor={openAdvisor} />}
-        {tab === "goals" && <Goals uid={uid} />}
-        {tab === "food" && <Food uid={uid} />}
-        {tab === "lifts" && <Lifts uid={uid} />}
-        {tab === "vocab" && <Vocab uid={uid} />}
-        {tab === "money" && <Money uid={uid} />}
-        {tab === "night" && <Night uid={uid} />}
-        {tab === "tools" && <Tools />}
-        {tab === "learning" && <Learning uid={uid} onOpenAdvisor={openAdvisor} />}
-        {tab === "affirmations" && <Affirmations uid={uid} />}
+        <div key={tab} className="tab-enter">
+          {tab === "today" && <Today uid={uid} onOpenAdvisor={openAdvisor} />}
+          {tab === "goals" && <Goals uid={uid} />}
+          {tab === "food" && <Food uid={uid} />}
+          {tab === "lifts" && <Lifts uid={uid} />}
+          {tab === "vocab" && <Vocab uid={uid} />}
+          {tab === "money" && <Money uid={uid} />}
+          {tab === "night" && <Night uid={uid} />}
+          {tab === "tools" && <Tools />}
+          {tab === "learning" && <Learning uid={uid} onOpenAdvisor={openAdvisor} />}
+          {tab === "affirmations" && <Affirmations uid={uid} />}
+        </div>
 
         <button onClick={() => supabase.auth.signOut()} className="mt-8 mx-auto block text-xs opacity-30 underline md:hidden">Sign out</button>
 
         {/* floating Coach button — mobile only (desktop has it in the sidebar) */}
         <button onClick={() => openAdvisor("overseer")}
-          className="fixed z-20 bottom-24 right-4 w-14 h-14 rounded-full bg-[var(--neon)] text-black text-2xl grid place-items-center shadow-lg active:scale-90 md:hidden">
+          className="fixed z-20 bottom-24 right-4 w-14 h-14 rounded-full bg-[var(--neon)] text-black text-2xl grid place-items-center glow-neon active:scale-90 md:hidden">
           🎮
         </button>
         {boardOpen && <Board onClose={() => setBoardOpen(false)} initialAdvisor={boardAdvisor} topicId={boardTopicId} />}
 
         {/* Mobile bottom nav: 4 primary + More */}
-        <nav className="fixed bottom-0 left-0 right-0 z-10 border-t border-white/10 bg-[var(--background)]/95 backdrop-blur md:hidden">
+        <nav className="fixed bottom-0 left-0 right-0 z-10 border-t border-white/10 bg-[var(--background)]/90 backdrop-blur-lg md:hidden"
+          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
           <div className="max-w-md mx-auto grid grid-cols-5">
             {PRIMARY.map((t) => (
               <button key={t.key} onClick={() => go(t.key)}
-                className={`flex flex-col items-center gap-0.5 py-3 ${tab === t.key ? "text-[var(--neon)]" : "opacity-50"}`}>
+                className={`relative flex flex-col items-center gap-0.5 py-3 transition ${tab === t.key ? "text-[var(--neon)]" : "opacity-50"}`}>
+                {tab === t.key && <span className="absolute top-0 w-8 h-0.5 rounded-full bg-[var(--neon)]" />}
                 <span className="text-lg">{t.emoji}</span>
                 <span className="text-[9px] font-medium">{t.label}</span>
               </button>
             ))}
             <button onClick={() => setMoreOpen(true)}
-              className={`flex flex-col items-center gap-0.5 py-3 ${SECONDARY.some((t) => t.key === tab) ? "text-[var(--neon)]" : "opacity-50"}`}>
+              className={`relative flex flex-col items-center gap-0.5 py-3 transition ${SECONDARY.some((t) => t.key === tab) ? "text-[var(--neon)]" : "opacity-50"}`}>
+              {SECONDARY.some((t) => t.key === tab) && <span className="absolute top-0 w-8 h-0.5 rounded-full bg-[var(--neon)]" />}
               <span className="text-lg">{SECONDARY.some((t) => t.key === tab) ? activeMeta.emoji : "☰"}</span>
               <span className="text-[9px] font-medium">More</span>
             </button>
@@ -118,13 +140,14 @@ export default function App() {
         </nav>
 
         {moreOpen && (
-          <div className="fixed inset-0 z-30 bg-black/60 flex items-end md:hidden" onClick={() => setMoreOpen(false)}>
-            <div onClick={(e) => e.stopPropagation()} className="w-full bg-[var(--background)] rounded-t-3xl border-t border-white/10 p-4 pb-8">
+          <div className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm flex items-end md:hidden" onClick={() => setMoreOpen(false)}>
+            <div onClick={(e) => e.stopPropagation()} className="w-full bg-[var(--background)] rounded-t-3xl border-t border-white/10 p-4 pb-8"
+              style={{ animation: "fadeSlide 0.2s ease" }}>
               <div className="w-10 h-1 rounded-full bg-white/20 mx-auto mb-4" />
               <div className="grid grid-cols-3 gap-2">
                 {SECONDARY.map((t) => (
                   <button key={t.key} onClick={() => go(t.key)}
-                    className={`flex flex-col items-center gap-1 py-4 rounded-2xl ${tab === t.key ? "bg-[var(--neon)]/15 text-[var(--neon)]" : "bg-white/5 opacity-70"}`}>
+                    className={`flex flex-col items-center gap-1 py-4 rounded-2xl active:scale-95 transition ${tab === t.key ? "bg-[var(--neon)]/15 text-[var(--neon)]" : "bg-white/5 opacity-70"}`}>
                     <span className="text-2xl">{t.emoji}</span>
                     <span className="text-[10px] font-medium">{t.label}</span>
                   </button>
@@ -155,18 +178,18 @@ function Login() {
   return (
     <main className="max-w-xs mx-auto px-4">
       <div className="min-h-screen flex flex-col justify-center">
-        <div className="text-center mb-8">
+        <div className="text-center mb-8" style={{ animation: "fadeSlide 0.4s ease" }}>
           <div className="text-5xl mb-3">✅</div>
           <h1 className="text-2xl font-bold">Daily</h1>
           <p className="opacity-50 text-sm mt-1">Your day, one place. Private.</p>
         </div>
         <form onSubmit={go} className="space-y-3">
           <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="email"
-            className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
+            className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none focus:border-[var(--neon)]/50 transition" />
           <input value={pw} onChange={(e) => setPw(e.target.value)} type="password" placeholder="password"
-            className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
+            className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none focus:border-[var(--neon)]/50 transition" />
           {err && <p className="text-red-400 text-sm">{err}</p>}
-          <button disabled={busy} className="w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95 disabled:opacity-50">
+          <button disabled={busy} className="w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95 disabled:opacity-50 glow-neon">
             {busy ? "…" : "Enter"}
           </button>
         </form>

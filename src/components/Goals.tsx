@@ -82,7 +82,8 @@ export default function Goals({ uid }: { uid: string }) {
 
       <SectionTitle>Add a goal</SectionTitle>
       <div className="space-y-2">
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="what's the goal?"
+        <input value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()}
+          placeholder="what's the goal?"
           className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
         <div className="flex gap-2">
           <input value={due} onChange={(e) => setDue(e.target.value)} type="date"
