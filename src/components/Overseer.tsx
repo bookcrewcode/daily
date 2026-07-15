@@ -1,7 +1,14 @@
 "use client";
 
+// The Overseer strip — one message, picked for the moment. Research-tuned:
+// morning = gain-framing + yesterday's intention (implementation intentions
+// have real ADHD evidence); evening = the streak/loss frame lives in the
+// UrgencyCard, so here we stay on patterns and momentum. Never leads with
+// failure — RSD-safe by design.
+
 import { useEffect, useState } from "react";
 import { supabase, WIN_KEYS, todayStr, dateStr } from "@/lib/supabase";
+import { useGame } from "@/lib/useGameData";
 
 const LABEL: Record<string, string> = {
   ws_meds: "Meds", ws_water: "Water", ws_eat: "Clean eating", ws_lift: "Lifts",
@@ -10,42 +17,55 @@ const LABEL: Record<string, string> = {
 };
 
 export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?: (advisor: string) => void }) {
+  const game = useGame();
   const [msg, setMsg] = useState<{ head: string; body: string; tone: "warn" | "good" } | null>(null);
 
   useEffect(() => {
     (async () => {
       const since = new Date(); since.setDate(since.getDate() - 6);
-      const { data } = await supabase.from("days").select("*").eq("user_id", uid).gte("day", dateStr(since));
+      const [{ data }, { data: todayPlan }] = await Promise.all([
+        supabase.from("days").select("*").eq("user_id", uid).gte("day", dateStr(since)),
+        supabase.from("nights").select("top3").eq("user_id", uid).eq("day", todayStr()).maybeSingle(),
+      ]);
       const rows = data ?? [];
       const today = rows.find((r) => r.day === todayStr());
+      const hour = new Date().getHours();
+      const todayScore = today ? WIN_KEYS.reduce((s, k) => s + (today[k] ? 1 : 0), 0) : 0;
+      const top3 = ((todayPlan?.top3 as string[]) ?? []).filter((t) => t?.trim());
 
-      // count hits per win over the window
+      // weakest habit this week
       const counts: Record<string, number> = {};
       WIN_KEYS.forEach((k) => (counts[k] = rows.reduce((s, r) => s + (r[k] ? 1 : 0), 0)));
       const weakest = [...WIN_KEYS].sort((a, b) => counts[a] - counts[b])[0];
       const weakCount = counts[weakest];
 
-      // urgent goals
-      const { data: goals } = await supabase.from("goals").select("due").eq("user_id", uid).eq("status", "active");
-      const now = new Date(todayStr() + "T00:00:00");
-      const urgent = (goals ?? []).filter((g) => g.due && new Date(g.due + "T00:00:00").getTime() <= now.getTime() + 2 * 86400000).length;
-
-      const hour = new Date().getHours();
-      const todayScore = today ? WIN_KEYS.reduce((s, k) => s + (today[k] ? 1 : 0), 0) : 0;
-
-      if (urgent > 0) {
-        setMsg({ head: "👁️ Overseer", body: `${urgent} goal${urgent > 1 ? "s" : ""} due in ≤2 days. That's the fire — hit Goals and move one now.`, tone: "warn" });
-      } else if (weakCount <= 2 && rows.length >= 3) {
-        setMsg({ head: "👁️ Overseer", body: `${LABEL[weakest] ?? weakest} is your weak link — only ${weakCount}/7 days this week. Don't negotiate it. Do it today.`, tone: "warn" });
-      } else if (hour >= 15 && todayScore === 0) {
-        setMsg({ head: "👁️ Overseer", body: "It's past 3pm and zero wins banked. Pick the easiest toggle and break the seal — momentum follows action.", tone: "warn" });
-      } else if (todayScore >= Math.ceil(WIN_KEYS.length * 0.7)) {
-        setMsg({ head: "👁️ Overseer", body: `${todayScore}/${WIN_KEYS.length} today. That's the standard. Keep the chain alive.`, tone: "good" });
-      } else {
-        setMsg(null);
+      // MORNING: yesterday-you left instructions. Honor them.
+      if (hour < 12 && top3.length > 0 && todayScore < 3) {
+        setMsg({
+          head: "👁️ Overseer",
+          body: `Last night you chose: “${top3[0]}”. Don't decide anything — just do its first 2 minutes. Deciding is the trap; starting is the win.`,
+          tone: "good",
+        });
+        return;
       }
+      // stalled afternoon — smallest possible re-entry
+      if (hour >= 15 && hour < 19 && todayScore === 0) {
+        setMsg({ head: "👁️ Overseer", body: "Zero taps yet today — that's not failure, that's a blocked start. Break the seal with the easiest toggle on this screen. One tap. Momentum follows action, not the other way around.", tone: "warn" });
+        return;
+      }
+      // strong day — bank the identity, not just the points
+      if (todayScore >= Math.ceil(WIN_KEYS.length * 0.7)) {
+        setMsg({ head: "👁️ Overseer", body: `${todayScore}/${WIN_KEYS.length} today. This is what consistent looks like — remember this feeling tomorrow morning.`, tone: "good" });
+        return;
+      }
+      // recurring weak link — pattern, not character
+      if (weakCount <= 2 && rows.length >= 3) {
+        setMsg({ head: "👁️ Overseer", body: `${LABEL[weakest] ?? weakest} keeps slipping — ${weakCount}/7 days this week. That's a pattern, not a flaw. Do it FIRST tomorrow, before anything gets a vote.`, tone: "warn" });
+        return;
+      }
+      setMsg(null);
     })();
-  }, [uid]);
+  }, [uid, game.streak.streak]);
 
   if (!msg) return null;
   const warn = msg.tone === "warn";

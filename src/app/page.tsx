@@ -16,15 +16,19 @@ import Tools from "@/components/Tools";
 import Learning from "@/components/Learning";
 import Affirmations from "@/components/Affirmations";
 import Board from "@/components/Board";
+import Plan from "@/components/Plan";
+import { useVoiceInput } from "@/lib/useVoiceInput";
+import { sfx, buzz } from "@/lib/fx";
 
-type Tab = "today" | "goals" | "food" | "lifts" | "vocab" | "money" | "night" | "tools" | "learning" | "affirmations";
+type Tab = "today" | "plan" | "goals" | "food" | "lifts" | "vocab" | "money" | "night" | "tools" | "learning" | "affirmations";
 const PRIMARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "today", emoji: "✅", label: "Today" },
-  { key: "goals", emoji: "🎯", label: "Goals" },
+  { key: "plan", emoji: "🧭", label: "Plan" },
   { key: "food", emoji: "🍎", label: "Food" },
   { key: "lifts", emoji: "🏋️", label: "Lifts" },
 ];
 const SECONDARY: { key: Tab; emoji: string; label: string }[] = [
+  { key: "goals", emoji: "🎯", label: "Goals" },
   { key: "vocab", emoji: "✍️", label: "Vocab" },
   { key: "learning", emoji: "🌳", label: "Learning" },
   { key: "affirmations", emoji: "💫", label: "Affirm" },
@@ -124,6 +128,7 @@ function Shell({ uid }: { uid: string }) {
       <main className="flex-1 max-w-md md:max-w-2xl mx-auto px-4 pb-28 md:pb-10 md:pt-8 min-h-full w-full">
         <div key={tab} className="tab-enter">
           {tab === "today" && <Today uid={uid} onOpenAdvisor={openAdvisor} onGoTab={(t) => go(t as Tab)} />}
+          {tab === "plan" && <Plan uid={uid} onGoTab={(t) => go(t as Tab)} />}
           {tab === "goals" && <Goals uid={uid} />}
           {tab === "food" && <Food uid={uid} />}
           {tab === "lifts" && <Lifts uid={uid} />}
@@ -137,7 +142,9 @@ function Shell({ uid }: { uid: string }) {
 
         <button onClick={() => supabase.auth.signOut()} className="mt-8 mx-auto block text-xs opacity-30 underline md:hidden">Sign out</button>
 
-        {/* floating Coach button — mobile only (desktop has it in the sidebar) */}
+        {/* floating buttons — capture (top) + coach. Capture is ALWAYS one tap
+            away: an un-captured thought is an open loop eating working memory. */}
+        <QuickCapture uid={uid} />
         <button onClick={() => openAdvisor("overseer")}
           className="fixed z-20 bottom-24 right-4 w-14 h-14 rounded-full bg-[var(--neon)] text-black text-2xl grid place-items-center glow-neon active:scale-90 md:hidden">
           🎮
@@ -184,6 +191,57 @@ function Shell({ uid }: { uid: string }) {
         )}
       </main>
     </div>
+  );
+}
+
+// One-tap capture from anywhere in the app — type or dictate, it lands in
+// the Plan tab's inbox. Zero decisions at capture time.
+function QuickCapture({ uid }: { uid: string }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [flash, setFlash] = useState(false);
+  const voice = useVoiceInput((t) => setText(t));
+
+  async function save() {
+    const t = text.trim();
+    if (!t) return;
+    setText("");
+    sfx.pop(); buzz(15);
+    setFlash(true);
+    setTimeout(() => { setFlash(false); setOpen(false); }, 900);
+    await supabase.from("captures").insert({ user_id: uid, text: t });
+  }
+
+  return (
+    <>
+      <button onClick={() => setOpen(true)}
+        className="fixed z-20 bottom-[10.5rem] right-4 w-11 h-11 rounded-full bg-white/10 border border-white/20 backdrop-blur text-lg grid place-items-center active:scale-90 md:bottom-8 md:right-8">
+        ✍️
+      </button>
+      {open && (
+        <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-end md:items-center md:justify-center" onClick={() => setOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="w-full md:max-w-md bg-[var(--background)] rounded-t-3xl md:rounded-3xl border-t md:border border-white/10 p-4 pb-8 md:pb-4" style={{ animation: "fadeSlide 0.2s ease" }}>
+            <div className="w-10 h-1 rounded-full bg-white/20 mx-auto mb-3 md:hidden" />
+            <p className="text-xs uppercase tracking-widest opacity-50 mb-2">✍️ Get it out of your head</p>
+            {flash ? (
+              <p className="text-center py-4 text-[var(--neon)] font-bold">Captured. It&apos;s safe — mind off it. ✓</p>
+            ) : (
+              <div className="flex gap-2">
+                <input autoFocus value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()}
+                  placeholder={voice.listening ? "listening…" : "thought, task, worry, idea…"}
+                  className="flex-1 min-w-0 rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
+                {voice.supported && (
+                  <button onClick={voice.toggle}
+                    className={`w-12 rounded-xl font-bold active:scale-95 ${voice.listening ? "bg-red-500 text-white animate-pulse" : "bg-white/10"}`}>🎤</button>
+                )}
+                <button onClick={save} className="px-4 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95">＋</button>
+              </div>
+            )}
+            <p className="text-[10px] opacity-40 mt-2">Lands in 🧭 Plan → Inbox. Sort it later — or never. Captured beats organized.</p>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

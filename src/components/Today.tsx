@@ -13,6 +13,7 @@ import GameBar from "./GameBar";
 import CalendarCard from "./CalendarCard";
 import Quests from "./Quests";
 import WeatherStrip from "./WeatherStrip";
+import UrgencyCard from "./UrgencyCard";
 
 type WinKey = (typeof WIN_KEYS)[number];
 
@@ -58,7 +59,6 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   const [history, setHistory] = useState<{ day: string; score: number }[]>([]);
   const [now, setNow] = useState("");
   const [plan, setPlan] = useState<Plan>(null);
-  const [nextGoal, setNextGoal] = useState<Goal | null>(null);
   const [floats, setFloats] = useState<Record<string, number>>({});
   const [doneTop3, setDoneTop3] = useState<Set<number>>(new Set());
   const dayRef = useRef(todayStr());
@@ -66,10 +66,9 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   const load = useCallback(async () => {
     const day = todayStr();
     dayRef.current = day;
-    const [{ data }, { data: nightRow }, { data: goals }] = await Promise.all([
+    const [{ data }, { data: nightRow }] = await Promise.all([
       supabase.from("days").select("*").eq("user_id", uid).eq("day", day).maybeSingle(),
       supabase.from("nights").select("top3,items").eq("user_id", uid).eq("day", day).maybeSingle(),
-      supabase.from("goals").select("*").eq("user_id", uid).eq("status", "active").not("due", "is", null).order("due").limit(1),
     ]);
     setRow(data ? { ...EMPTY, ...data, day } : { ...EMPTY, day });
     if (nightRow) {
@@ -79,7 +78,6 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
     } else {
       setPlan(null);
     }
-    setNextGoal((goals?.[0] as Goal) ?? null);
 
     const since = new Date(); since.setDate(since.getDate() - 6);
     const { data: hist } = await supabase.from("days").select("*").eq("user_id", uid).gte("day", dateStr(since)).order("day");
@@ -156,7 +154,6 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   }
 
   const score = WIN_KEYS.reduce((s, k) => s + (row[k] ? 1 : 0), 0);
-  const due = nextGoal?.due ? Math.round((new Date(nextGoal.due + "T00:00:00").getTime() - new Date(todayStr() + "T00:00:00").getTime()) / 86400000) : null;
 
   return (
     <div>
@@ -168,18 +165,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
 
       <GameBar />
       <Overseer uid={uid} onOpenChat={onOpenAdvisor} />
-
-      {nextGoal && due != null && due <= 7 && (
-        <button onClick={() => onGoTab?.("goals")} className="mt-3 w-full text-left">
-          <div className={`rounded-xl border px-3 py-2 flex items-center gap-2 text-sm ${due <= 1 ? "border-red-500/40 bg-red-500/10" : "border-orange-400/30 bg-orange-400/10"}`}>
-            <span>⏳</span>
-            <span className="flex-1 min-w-0 truncate font-medium">{nextGoal.title}</span>
-            <span className={`shrink-0 text-xs font-bold ${due <= 1 ? "text-red-400" : "text-orange-300"}`}>
-              {due < 0 ? `${-due}d overdue` : due === 0 ? "due today" : `${due}d left`}
-            </span>
-          </div>
-        </button>
-      )}
+      <UrgencyCard todayRow={row} onGoTab={onGoTab} />
 
       {plan && (
         <Card tone="neon" className="mt-3">

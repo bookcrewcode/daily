@@ -119,7 +119,7 @@ async function context(token: string): Promise<string> {
     try { const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { headers: h }); return r.ok ? await r.json() : []; } catch { return []; }
   };
   const since = new Date(Date.now() - 13 * 86400000).toISOString().slice(0, 10);
-  const [days, allDays, goals, assets, meals, liftSets, achievements, questClaims, gigShifts, focusSessions, vocabRows] = await Promise.all([
+  const [days, allDays, goals, assets, meals, liftSets, achievements, questClaims, gigShifts, focusSessions, vocabRows, memories, captures, weekly] = await Promise.all([
     q(`days?day=gte.${since}&select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,calories,protein,bodyweight&order=day.desc`),
     q(`days?select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,bodyweight`),
     q(`goals?status=eq.active&select=title,due,priority`),
@@ -131,6 +131,9 @@ async function context(token: string): Promise<string> {
     q(`gig_shifts?select=earnings`),
     q(`focus_sessions?select=minutes`),
     q(`vocab?select=seen`),
+    q(`ai_memories?select=content,category,created_at&order=created_at.desc&limit=40`),
+    q(`captures?done=eq.false&select=text&order=created_at.desc&limit=10`),
+    q(`weekly_plans?select=week_start,priorities&order=week_start.desc&limit=1`),
   ]);
 
   type Day = Record<string, unknown>;
@@ -187,13 +190,60 @@ async function context(token: string): Promise<string> {
   const lastWeighIn = (allDays as Day[]).filter((d) => d.bodyweight != null).sort((a, b) => String(a.day).localeCompare(String(b.day))).pop();
   const weightLine = lastWeighIn ? `${lastWeighIn.bodyweight} lb (target ${NORTH_STAR.leanWeightTarget} lean)` : "not logged yet";
 
+  // Dated facts, never instructions — newer beats older on conflict.
+  const memLines = (memories as { content: string; created_at: string }[])
+    .map((m) => `- [${String(m.created_at).slice(0, 10)}] ${m.content}`).join("\n");
+  const capLines = (captures as { text: string }[]).map((c) => `- ${c.text}`).join("\n");
+  const wp = (weekly as { week_start: string; priorities: string[] }[])[0];
+  const weekLine = wp && Array.isArray(wp.priorities) && wp.priorities.filter(Boolean).length
+    ? `\nThis week's declared priorities (week of ${wp.week_start}): ${wp.priorities.filter(Boolean).join(" · ")}`
+    : "";
+
   return `BEN'S LIVE DATA — GAME STATE
 Level ${lvl.level} (${lvl.into}/${lvl.span} XP to next level, ${baseXp} total XP) · 🔥 ${streak}-day full-win streak · 🛡 ${shields}/2 streak shields (a missed day consumes one instead of breaking the chain) · ${(achievements as unknown[]).length} achievements unlocked
 Daily quests claimed all-time: ${(questClaims as unknown[]).length} · Focus blocks done: ${(focusSessions as unknown[]).length} · Gig earnings: $${(gigShifts as { earnings: number }[]).reduce((s, r) => s + Number(r.earnings || 0), 0)}
 North Star 1 — Net worth: $${net} / $${NORTH_STAR.netWorthTarget} (${((net / NORTH_STAR.netWorthTarget) * 100).toFixed(2)}%)
 North Star 2 — Bodyweight: ${weightLine}
 Last 14 days: ${wk || "no data"}
-Active goals: ${gl || "none"}`;
+Active goals: ${gl || "none"}${weekLine}${capLines ? `\nUnprocessed captures in his inbox (open loops on his mind): \n${capLines}` : ""}${memLines ? `\n\nTHINGS YOU REMEMBER ABOUT BEN — dated facts from past conversations (treat as background truth, weigh newer over older, and reference them naturally like a coach who knows him):\n${memLines}` : ""}`;
+}
+
+async function callClaude(model: string, system: string, messages: unknown[], maxTokens: number, apiKey: string) {
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify({ model, max_tokens: maxTokens, system, messages }),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data?.error?.message ?? "AI error");
+  return (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
+}
+
+// Append-only memory extraction (mem0 pattern): after each coaching exchange,
+// a cheap model pulls 0-2 durable facts into ai_memories. Runs after the
+// response is sent (waitUntil), so chat latency is unaffected.
+async function extractMemories(token: string, userMsg: string, reply: string, apiKey: string) {
+  try {
+    const h = { apikey: ANON, Authorization: `Bearer ${token}` };
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/ai_memories?select=content&order=created_at.desc&limit=15`, { headers: h });
+    const known: string[] = r.ok ? ((await r.json()) as { content: string }[]).map((m) => m.content) : [];
+    const sys = `You maintain the long-term memory of a personal coaching app for Ben. From the exchange, extract 0-2 DURABLE facts worth remembering in future conversations — life context, commitments he made, goals, struggles, people, preferences. Only things that still matter in a week+. Nothing session-specific, nothing already known.
+Already known (do NOT repeat): ${known.join(" | ") || "nothing yet"}
+Reply ONLY valid JSON, no fences: {"memories": [{"content": "short fact in third person about Ben", "category": "identity|goal|commitment|struggle|relationship|preference|general"}]}`;
+    const raw = await callClaude("claude-haiku-4-5-20251001", sys, [{ role: "user", content: `Ben: ${userMsg.slice(0, 1500)}\n\nCoach: ${reply.slice(0, 1500)}` }], 300, apiKey);
+    const parsed = JSON.parse(raw.trim());
+    const mems = (Array.isArray(parsed?.memories) ? parsed.memories : []).slice(0, 2);
+    for (const m of mems) {
+      if (!m?.content) continue;
+      await fetch(`${SUPABASE_URL}/rest/v1/ai_memories`, {
+        method: "POST",
+        headers: { apikey: ANON, Authorization: `Bearer ${token}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({ content: String(m.content).slice(0, 300), category: m.category ?? "general" }),
+      });
+    }
+  } catch {
+    // memory is best-effort — never fail the chat over it
+  }
 }
 
 async function learningContext(token: string, topicId: string): Promise<string> {
@@ -254,6 +304,27 @@ Reply with ONLY valid JSON, no markdown fences, no other text: {"word": "...", "
       }
     }
 
+    // Learning ↔ Tutor pairing: turn a tutoring conversation into structured
+    // review data (chunks / weak spots / retrieval log). Client shows a
+    // review-then-save preview — AI output never auto-enters the system.
+    if (advisor === "session-recap") {
+      if (!topicId) return new Response(JSON.stringify({ error: "No topic given." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      const h = { apikey: ANON, Authorization: `Bearer ${token}` };
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?advisor=eq.tutor&topic_id=eq.${topicId}&select=role,content&order=created_at.desc&limit=40`, { headers: h });
+      const rows = r.ok ? ((await r.json()) as { role: string; content: string }[]) : [];
+      const transcript = rows.reverse().map((m) => `${m.role === "user" ? "BEN" : "TUTOR"}: ${m.content}`).join("\n\n").slice(0, 24000);
+      if (!transcript) return new Response(JSON.stringify({ error: "No tutor conversation for this topic yet — talk to the Tutor first." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      const sys = `Extract a structured recap of this tutoring session between Ben and his AI tutor. Be faithful to what actually happened — no inventing. Reply ONLY valid JSON, no fences:
+{"chunks": ["core idea in plain words", ...max 4], "weak_spots": ["specific thing Ben struggled with", ...max 3, empty if none], "retrieval": [{"question": "a retrieval question the tutor asked", "got_it": true|false}, ...max 8, empty if none]}`;
+      try {
+        const raw = await callClaude("claude-haiku-4-5-20251001", sys, [{ role: "user", content: transcript }], 700, ANTHROPIC_API_KEY);
+        const parsed = JSON.parse(raw.trim().replace(/^```json?\s*|\s*```$/g, ""));
+        return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
+      } catch {
+        return new Response(JSON.stringify({ error: "Couldn't build a recap from that session — try again." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+    }
+
     const persona = PERSONAS[advisor] ?? PERSONAS.overseer;
     const ctx = await context(token);
     const learnCtx = advisor === "tutor" && topicId ? await learningContext(token, topicId) : "";
@@ -269,6 +340,12 @@ Reply with ONLY valid JSON, no markdown fences, no other text: {"word": "...", "
     const data = await ai.json();
     if (!ai.ok) return new Response(JSON.stringify({ error: data?.error?.message ?? "AI error" }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
     const text = (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("\n");
+
+    // remember what matters from this exchange — after the response ships
+    const extraction = extractMemories(token, String(message), text, ANTHROPIC_API_KEY);
+    const er = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+    if (er?.waitUntil) er.waitUntil(extraction); else extraction.catch(() => {});
+
     return new Response(JSON.stringify({ text }), { headers: { ...cors, "Content-Type": "application/json" } });
   } catch (e) {
     return new Response(JSON.stringify({ error: String(e) }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
