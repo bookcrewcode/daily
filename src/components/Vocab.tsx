@@ -19,7 +19,36 @@ export default function Vocab({ uid }: { uid: string }) {
   const [showAnswer, setShowAnswer] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
+  const [lookingUp, setLookingUp] = useState(false);
   const reviewsToday = useRef<number | null>(null);
+
+  // Free dictionary lookup (dictionaryapi.dev) — type a word, tap once,
+  // definition + example fill themselves. No key, no backend.
+  async function lookup() {
+    const w = word.trim();
+    if (!w || lookingUp) return;
+    setLookingUp(true); setGenError("");
+    try {
+      const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(w)}`);
+      if (!r.ok) { setGenError(`No dictionary entry found for “${w}”.`); return; }
+      const j = await r.json();
+      const meanings = j?.[0]?.meanings ?? [];
+      const firstDef = meanings[0]?.definitions?.[0];
+      const example = meanings.flatMap((m: { definitions: { example?: string }[] }) => m.definitions).find((d: { example?: string }) => d.example)?.example;
+      if (firstDef?.definition) {
+        setDef(firstDef.definition);
+        if (example) setSentence(example);
+        setExpanded(true);
+        sfx.pop();
+      } else {
+        setGenError(`No definition found for “${w}”.`);
+      }
+    } catch {
+      setGenError("Couldn't reach the dictionary — check your connection.");
+    } finally {
+      setLookingUp(false);
+    }
+  }
 
   const load = useCallback(async () => {
     const { data } = await supabase.from("vocab").select("*").eq("user_id", uid).order("added", { ascending: false });
@@ -143,9 +172,15 @@ export default function Vocab({ uid }: { uid: string }) {
       </button>
       {genError && <p className="text-xs opacity-50 mb-2">{genError}</p>}
       <div className="space-y-2">
-        <input value={word} onChange={(e) => setWord(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()}
-          placeholder="the word"
-          className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
+        <div className="flex gap-2">
+          <input value={word} onChange={(e) => setWord(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()}
+            placeholder="the word"
+            className="flex-1 min-w-0 rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
+          <button onClick={lookup} disabled={!word.trim() || lookingUp}
+            className="px-4 rounded-xl bg-white/10 font-bold active:scale-95 disabled:opacity-30" title="Auto-fill definition">
+            {lookingUp ? "…" : "📖"}
+          </button>
+        </div>
         {!expanded ? (
           <button onClick={() => setExpanded(true)} className="text-xs text-[var(--neon)]/70 underline underline-offset-2">+ definition, sentence, mnemonic (optional)</button>
         ) : (

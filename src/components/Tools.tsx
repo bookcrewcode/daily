@@ -159,15 +159,47 @@ function Breathing() {
   );
 }
 
+const EXPORT_TABLES = [
+  "days", "meals", "lift_sets", "nights", "goals", "assets", "subscriptions",
+  "vocab", "user_achievements", "quest_claims", "focus_sessions",
+  "net_worth_snapshots", "gig_shifts", "affirmations", "learning_topics",
+  "learning_sessions", "learning_retrieval", "learning_weak_spots",
+  "claimed_rewards", "user_settings", "captures", "weekly_plans", "ai_memories", "chat_messages",
+];
+
 export default function Tools() {
+  const game = useGame();
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ title: string; text: string } | null>(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [sound, setSound] = useState(true);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => { setSound(soundOn()); }, []);
+
+  // Your data is YOURS — one tap dumps every table to a JSON file.
+  async function exportAll() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const dump: Record<string, unknown> = { exported_at: new Date().toISOString(), app: "daily" };
+      await Promise.all(EXPORT_TABLES.map(async (t) => {
+        const { data } = await supabase.from(t).select("*").eq("user_id", game.uid);
+        dump[t] = data ?? [];
+      }));
+      const blob = new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `daily-export-${todayStr()}.json`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      sfx.coin();
+    } finally {
+      setExporting(false);
+    }
+  }
 
   async function getTranscript() {
     if (!url.trim() || busy) return;
@@ -232,6 +264,17 @@ export default function Tools() {
           <p className="text-sm opacity-70 whitespace-pre-wrap max-h-80 overflow-y-auto leading-relaxed">{result.text}</p>
         </Card>
       )}
+
+      <SectionTitle>💾 Your data</SectionTitle>
+      <Card padded={false} className="p-3">
+        <button onClick={exportAll} disabled={exporting} className="flex items-center gap-3 w-full text-left disabled:opacity-50">
+          <span className="text-xl">📦</span>
+          <span className="flex-1">
+            <span className="block text-sm font-medium">{exporting ? "Exporting…" : "Export everything as JSON"}</span>
+            <span className="block text-[10px] opacity-40">every habit, meal, lift, quest, and dollar — yours to keep</span>
+          </span>
+        </button>
+      </Card>
 
       <SectionTitle>⚙️ Settings</SectionTitle>
       <Card padded={false} className="p-3">

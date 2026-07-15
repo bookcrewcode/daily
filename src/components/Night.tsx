@@ -3,9 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, dateStr, type Night as NightT, type ScheduleItem } from "@/lib/supabase";
 import { useVoiceInput } from "@/lib/useVoiceInput";
+import { acquireToken } from "@/lib/gcal";
+import { burstConfetti } from "@/lib/confetti";
 import { SectionTitle, Card } from "./ui";
 import { parseTime, fmtMinutes, resolveBlocks, gcalTemplateUrl, downloadIcs } from "@/lib/calendar";
 import CalendarCard from "./CalendarCard";
+import WeatherStrip from "./WeatherStrip";
+import { pushBlocks } from "./CalendarEditor";
 
 function tomorrow() {
   const d = new Date(); d.setDate(d.getDate() + 1); return d;
@@ -25,6 +29,8 @@ export default function Night({ uid }: { uid: string }) {
   const pretty = tomorrow().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
   const [n, setN] = useState<NightT>({ day, items: [], top3: ["", "", ""], notes: "", calendar_synced_at: null });
   const [saved, setSaved] = useState(false);
+  const [clientId, setClientId] = useState("");
+  const [pushState, setPushState] = useState<"idle" | "pushing" | "done" | "error">("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noteBase = useRef("");
   const voice = useVoiceInput((text) => {
@@ -55,6 +61,10 @@ export default function Night({ uid }: { uid: string }) {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  useEffect(() => {
+    supabase.from("user_settings").select("gcal_client_id").eq("user_id", uid).maybeSingle()
+      .then(({ data }) => setClientId(data?.gcal_client_id ?? ""));
+  }, [uid]);
 
   // Update UI instantly; write to the DB at most ~once per pause in typing.
   function persist(next: NightT) {
@@ -93,12 +103,34 @@ export default function Night({ uid }: { uid: string }) {
     markSynced();
   }
 
+  // Direct API push — one tap, events land in Google Calendar instantly.
+  async function pushAllApi() {
+    if (!blocks.length || !clientId || pushState === "pushing") return;
+    setPushState("pushing");
+    try {
+      const t = (await acquireToken(clientId, false)) ?? (await acquireToken(clientId, true));
+      if (!t) { setPushState("error"); return; }
+      const created = await pushBlocks(clientId, blocks);
+      if (created > 0) {
+        burstConfetti("small");
+        markSynced();
+        setPushState("done");
+        setTimeout(() => setPushState("idle"), 4000);
+      } else {
+        setPushState("error");
+      }
+    } catch {
+      setPushState("error");
+    }
+  }
+
   return (
     <div>
       <h1 className="text-2xl font-bold pt-3">🌙 Nightly Planner</h1>
       <p className="opacity-50 text-sm mt-1">
         Plan tomorrow — {pretty}. <span className={`text-[var(--neon)] transition-opacity ${saved ? "opacity-100" : "opacity-0"}`}>saved ✓</span>
       </p>
+      <p className="mt-0.5"><WeatherStrip dayOffset={1} /></p>
 
       <SectionTitle>Already on the calendar</SectionTitle>
       <CalendarCard uid={uid} day={tomorrow()} title={`Tomorrow · Google Calendar`} />
@@ -147,12 +179,21 @@ export default function Night({ uid }: { uid: string }) {
                 </div>
               ))}
             </div>
-            <button onClick={pushAllIcs}
-              className="mt-3 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">
-              📅 Add all {blocks.length} to calendar (.ics)
-            </button>
+            {clientId ? (
+              <button onClick={pushAllApi} disabled={pushState === "pushing"}
+                className="mt-3 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95 disabled:opacity-50">
+                {pushState === "pushing" ? "Pushing…" : pushState === "done" ? "✓ On your calendar" : pushState === "error" ? "Failed — tap to retry" : `⚡ Push all ${blocks.length} to Google Calendar`}
+              </button>
+            ) : (
+              <button onClick={pushAllIcs}
+                className="mt-3 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">
+                📅 Add all {blocks.length} to calendar (.ics)
+              </button>
+            )}
             <p className="text-[10px] opacity-40 mt-2">
-              The .ics opens in your calendar app and imports every block at once. Single blocks: the ↗ buttons prefill Google Calendar directly.
+              {clientId
+                ? "Writes each block straight into Google Calendar. Edit or move them afterwards with ✏️ Edit on the calendar card."
+                : "The .ics opens in your calendar app and imports every block at once. Connect editing in the calendar card's setup for one-tap direct push."}
               {n.calendar_synced_at && <span className="text-[var(--neon)]/70"> · last pushed {new Date(n.calendar_synced_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}</span>}
             </p>
           </Card>

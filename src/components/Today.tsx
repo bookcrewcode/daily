@@ -12,6 +12,7 @@ import Overseer from "./Overseer";
 import GameBar from "./GameBar";
 import CalendarCard from "./CalendarCard";
 import Quests from "./Quests";
+import WeatherStrip from "./WeatherStrip";
 
 type WinKey = (typeof WIN_KEYS)[number];
 
@@ -162,6 +163,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       <div className="pt-3 pb-1">
         <p className="text-xs uppercase tracking-widest text-[var(--neon)]/70">{now}</p>
         <h1 className="text-2xl font-bold mt-1">{greeting()}</h1>
+        <WeatherStrip dayOffset={0} />
       </div>
 
       <GameBar />

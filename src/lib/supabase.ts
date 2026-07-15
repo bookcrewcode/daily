@@ -136,6 +136,7 @@ export type UserSettings = {
   protein_goal: number;
   affirmation_video_url: string;
   gcal_ics_url: string;
+  gcal_client_id: string;
   last_seen_level: number;
   gig_goal: number;
   gig_deadline: string;
