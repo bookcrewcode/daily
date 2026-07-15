@@ -45,7 +45,14 @@ export default function Food({ uid }: { uid: string }) {
   async function snapMeal(file: File) {
     setSnapBusy(true); setSnapError(""); setSnap(null);
     try {
-      const { b64, mediaType } = await fileToB64(file);
+      let b64: string, mediaType: string;
+      try {
+        ({ b64, mediaType } = await fileToB64(file));
+      } catch {
+        // HEIC from the gallery etc. — decode failure, not a network problem
+        setSnapError("Couldn't read that image format — take the photo with the camera button instead.");
+        return;
+      }
       const { data: session } = await supabase.auth.getSession();
       const res = await fetch(ADVISOR_FN, {
         method: "POST",
@@ -101,14 +108,17 @@ export default function Food({ uid }: { uid: string }) {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [load]);
 
-  async function addMeal(preset?: { name: string; calories: number; protein: number }) {
+  async function addMeal(preset?: { name: string; calories: number; protein: number }): Promise<boolean> {
     const m = preset ?? { name: name || "Meal", calories: Number(cal) || 0, protein: Number(pro) || 0 };
-    if (!preset && !name && !cal) return;
+    if (!preset && !name && !cal) return false;
     const meal = { user_id: uid, day: todayStr(), ...m };
-    const { data } = await supabase.from("meals").insert(meal).select().single();
-    if (data) { setMeals((x) => [...x, data as Meal]); xpToast(MEAL_XP, "meal"); }
+    const { data, error } = await supabase.from("meals").insert(meal).select().single();
+    if (error || !data) return false; // caller decides how to surface it
+    setMeals((x) => [...x, data as Meal]);
+    xpToast(MEAL_XP, "meal");
     setName(""); setCal(""); setPro("");
     syncDayTotals();
+    return true;
   }
 
   async function removeMeal(id: string) {
@@ -209,7 +219,13 @@ export default function Food({ uid }: { uid: string }) {
           </div>
           <div className="flex gap-2 mt-3">
             <button onClick={() => setSnap(null)} className="flex-1 rounded-xl bg-white/10 py-2.5 active:scale-95">Discard</button>
-            <button onClick={() => { addMeal({ name: snap.name, calories: snap.calories, protein: snap.protein }); setSnap(null); }}
+            <button onClick={async () => {
+                // keep the estimate on screen until the write actually lands —
+                // a vision estimate is paid for and unrecoverable
+                const ok = await addMeal({ name: snap.name, calories: snap.calories, protein: snap.protein });
+                if (ok) setSnap(null);
+                else setSnapError("Couldn't save — your estimate is still here. Check connection and tap again.");
+              }}
               className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95">Add to log</button>
           </div>
         </Card>

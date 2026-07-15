@@ -32,6 +32,12 @@ export default function BossCard() {
     setClaimed((data ?? []).length > 0);
   }, [game.uid, ws]);
   useEffect(() => { checkClaim(); }, [checkClaim]);
+  // a stale tab left open across midnight must not offer a second kill
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") checkClaim(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [checkClaim]);
 
   if (game.loading || claimed === null) return null;
 
@@ -77,12 +83,18 @@ export default function BossCard() {
   const beaten = boss.progress >= boss.target;
 
   async function claim() {
-    const ok = await game.bankQuestXP(`boss_${ws}`, BOSS_XP);
-    if (ok) {
-      setClaimed(true);
+    // insert with day = the week's Monday, so the (user_id, day, quest_key)
+    // unique constraint makes one-claim-per-week a DATABASE guarantee, not a
+    // client hope — a stale second tab physically cannot double-bank it
+    const { error } = await supabase.from("quest_claims").insert({
+      user_id: game.uid, day: ws, quest_key: `boss_${ws}`, xp: BOSS_XP,
+    });
+    setClaimed(true);
+    if (!error) {
       burstConfetti("big");
       sfx.levelup();
       xpToast(BOSS_XP, "boss defeated");
+      game.refresh();
     }
   }
 

@@ -27,6 +27,7 @@ export default function BriefingCard({ uid }: { uid: string }) {
       if (json.text) {
         setText(json.text);
         setState("ready");
+        localStorage.setItem(`daily.brief.${todayStr()}`, json.text);
         await supabase.from("days").upsert({ user_id: uid, day: todayStr(), briefing: json.text }, { onConflict: "user_id,day" });
       } else {
         setState("failed");
@@ -38,17 +39,36 @@ export default function BriefingCard({ uid }: { uid: string }) {
     }
   }, [uid]);
 
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.from("days").select("briefing").eq("user_id", uid).eq("day", todayStr()).maybeSingle();
-      if (data?.briefing) {
-        setText(data.briefing);
-        setState("ready");
-      } else {
-        generate(); // first open of the day — write it fresh
-      }
-    })();
+  const loadedDay = useRef("");
+  const loadForToday = useCallback(async () => {
+    const day = todayStr();
+    if (loadedDay.current === day) return;
+    loadedDay.current = day;
+    // localStorage backstop: if the DB cache write ever fails persistently,
+    // this stops a fresh Opus call on every single app open
+    const local = localStorage.getItem(`daily.brief.${day}`);
+    if (local) { setText(local); setState("ready"); return; }
+    const { data } = await supabase.from("days").select("briefing").eq("user_id", uid).eq("day", day).maybeSingle();
+    if (data?.briefing) {
+      setText(data.briefing);
+      setState("ready");
+      localStorage.setItem(`daily.brief.${day}`, data.briefing);
+    } else {
+      generate(); // first open of the day — write it fresh
+    }
   }, [uid, generate]);
+
+  useEffect(() => { loadForToday(); }, [loadForToday]);
+
+  // midnight rollover: a PWA left open overnight must not present yesterday's
+  // text as "Today's briefing" — same guard the other date-keyed cards carry
+  useEffect(() => {
+    const check = () => { if (todayStr() !== loadedDay.current) { setState("loading"); loadForToday(); } };
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    const id = setInterval(check, 60000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, [loadForToday]);
 
   if (state === "loading") return null;
 
