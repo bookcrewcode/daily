@@ -125,7 +125,7 @@ function Shell({ uid }: { uid: string }) {
         <button onClick={() => supabase.auth.signOut()} className="mt-auto px-3 py-2 text-xs opacity-30 underline text-left">Sign out</button>
       </nav>
 
-      <main className="flex-1 max-w-md md:max-w-2xl mx-auto px-4 pb-28 md:pb-10 md:pt-8 min-h-full w-full">
+      <main className="flex-1 max-w-md md:max-w-2xl mx-auto px-4 pb-32 md:pb-10 md:pt-8 min-h-full w-full">
         <div key={tab} className="tab-enter">
           {tab === "today" && <Today uid={uid} onOpenAdvisor={openAdvisor} onGoTab={(t) => go(t as Tab)} />}
           {tab === "plan" && <Plan uid={uid} onGoTab={(t) => go(t as Tab)} />}
@@ -151,9 +151,9 @@ function Shell({ uid }: { uid: string }) {
         </button>
         {boardOpen && <Board onClose={() => setBoardOpen(false)} initialAdvisor={boardAdvisor} topicId={boardTopicId} />}
 
-        {/* Mobile bottom nav: 4 primary + More */}
-        <nav className="fixed bottom-0 left-0 right-0 z-10 border-t border-white/10 bg-[var(--background)]/90 backdrop-blur-lg md:hidden"
-          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+        {/* Mobile bottom nav: floating dock */}
+        <nav className="fixed left-3 right-3 z-10 rounded-[1.75rem] border border-white/10 bg-[var(--background)]/85 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.55)] md:hidden"
+          style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
           <div className="max-w-md mx-auto grid grid-cols-5">
             {PRIMARY.map((t) => (
               <button key={t.key} onClick={() => go(t.key)}

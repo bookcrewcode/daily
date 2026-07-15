@@ -80,7 +80,7 @@ export default function Quests({ refreshKey }: { refreshKey?: unknown }) {
                   <div className="flex items-center gap-2 mt-1">
                     <div className="flex-1 h-1.5 rounded-full bg-white/10 overflow-hidden">
                       <div className="h-full rounded-full transition-[width] duration-500"
-                        style={{ width: `${Math.min((p.now / p.total) * 100, 100)}%`, background: isClaimed ? "rgba(255,255,255,0.3)" : "linear-gradient(90deg,#34d399,#2dd4bf)" }} />
+                        style={{ width: `${Math.min((p.now / p.total) * 100, 100)}%`, background: isClaimed ? "rgba(255,255,255,0.3)" : "linear-gradient(90deg,#a78bfa,#818cf8)" }} />
                     </div>
                     <span className="text-[10px] opacity-40 tabular-nums shrink-0">{p.now}/{p.total}</span>
                   </div>

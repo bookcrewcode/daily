@@ -32,7 +32,7 @@ export default function GameBar() {
         </div>
         <div className="h-2 rounded-full bg-white/10 mt-2 overflow-hidden">
           <div className="h-full rounded-full transition-[width] duration-500"
-            style={{ width: `${Math.min(level.pct * 100, 100)}%`, background: "linear-gradient(90deg,#34d399,#2dd4bf)" }} />
+            style={{ width: `${Math.min(level.pct * 100, 100)}%`, background: "linear-gradient(90deg,#a78bfa,#818cf8)" }} />
         </div>
         <p className="text-[10px] opacity-40 mt-1">
           {level.into.toLocaleString()} / {level.span.toLocaleString()} XP to Lv.{level.level + 1} · {level.totalXP.toLocaleString()} total

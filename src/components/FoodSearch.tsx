@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Card } from "./ui";
 
-type Result = { description: string; kcal100: number; protein100: number; dataType: string };
+type Result = { description: string; kcal100: number; protein100: number; carb100: number; fat100: number; dataType: string };
 
 const USDA_KEY = "DEMO_KEY"; // works out of the box; swap for a free key at fdc.nal.usda.gov if you hit rate limits
 
@@ -13,11 +13,13 @@ async function searchFoods(query: string): Promise<Result[]> {
   return (json.foods ?? []).map((f: { description: string; dataType: string; foodNutrients: { nutrientName: string; unitName: string; value: number }[] }) => {
     const kcal = f.foodNutrients.find((n) => n.nutrientName === "Energy" && n.unitName === "KCAL")?.value ?? 0;
     const protein = f.foodNutrients.find((n) => n.nutrientName === "Protein")?.value ?? 0;
-    return { description: f.description, kcal100: kcal, protein100: protein, dataType: f.dataType };
+    const carbs = f.foodNutrients.find((n) => n.nutrientName === "Carbohydrate, by difference")?.value ?? 0;
+    const fat = f.foodNutrients.find((n) => n.nutrientName === "Total lipid (fat)")?.value ?? 0;
+    return { description: f.description, kcal100: kcal, protein100: protein, carb100: carbs, fat100: fat, dataType: f.dataType };
   }).filter((r: Result) => r.kcal100 > 0);
 }
 
-export default function FoodSearch({ onAdd }: { onAdd: (name: string, calories: number, protein: number) => void }) {
+export default function FoodSearch({ onAdd }: { onAdd: (name: string, calories: number, protein: number, carbs: number, fat: number) => void }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Result[]>([]);
   const [busy, setBusy] = useState(false);
@@ -42,10 +44,12 @@ export default function FoodSearch({ onAdd }: { onAdd: (name: string, calories: 
   const g = Number(grams) || 0;
   const previewCal = selected ? Math.round((selected.kcal100 / 100) * g) : 0;
   const previewPro = selected ? Math.round((selected.protein100 / 100) * g * 10) / 10 : 0;
+  const previewCarb = selected ? Math.round((selected.carb100 / 100) * g) : 0;
+  const previewFat = selected ? Math.round((selected.fat100 / 100) * g) : 0;
 
   function add() {
     if (!selected) return;
-    onAdd(`${selected.description} (${g}g)`, previewCal, previewPro);
+    onAdd(`${selected.description} (${g}g)`, previewCal, previewPro, previewCarb, previewFat);
     setQuery(""); setResults([]); setSelected(null); setGrams("100");
   }
 

@@ -165,7 +165,216 @@ const EXPORT_TABLES = [
   "net_worth_snapshots", "gig_shifts", "affirmations", "learning_topics",
   "learning_sessions", "learning_retrieval", "learning_weak_spots",
   "claimed_rewards", "user_settings", "captures", "weekly_plans", "ai_memories", "chat_messages",
+  "engine_rows", "engine_reps", "goal_steps", "meal_favorites", "workout_templates", "countdowns",
 ];
+
+// ── Soundscape — brown/pink noise straight from WebAudio, loops forever ──
+// ADHD focus staple: steady broadband noise masks the distracting spikes.
+function makeNoiseBuffer(ctx: AudioContext, kind: "brown" | "pink"): AudioBuffer {
+  const len = ctx.sampleRate * 5;
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  if (kind === "brown") {
+    let last = 0;
+    for (let i = 0; i < len; i++) {
+      const white = Math.random() * 2 - 1;
+      last = (last + 0.02 * white) / 1.02;
+      data[i] = last * 3.5;
+    }
+  } else {
+    let b0 = 0, b1 = 0, b2 = 0;
+    for (let i = 0; i < len; i++) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99765 * b0 + white * 0.099046;
+      b1 = 0.963 * b1 + white * 0.2965164;
+      b2 = 0.57 * b2 + white * 1.0526913;
+      data[i] = (b0 + b1 + b2 + white * 0.1848) * 0.18;
+    }
+  }
+  return buf;
+}
+
+function Soundscape() {
+  const [playing, setPlaying] = useState<"" | "brown" | "pink">("");
+  const [volume, setVolume] = useState(0.5);
+  const ctxRef = useRef<AudioContext | null>(null);
+  const srcRef = useRef<AudioBufferSourceNode | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
+
+  const stop = useCallback(() => {
+    try { srcRef.current?.stop(); } catch { /* already stopped */ }
+    srcRef.current = null;
+    setPlaying("");
+  }, []);
+
+  function play(kind: "brown" | "pink") {
+    if (playing === kind) { stop(); return; }
+    try { srcRef.current?.stop(); } catch { /* switching */ }
+    const ctx = ctxRef.current ?? new AudioContext();
+    ctxRef.current = ctx;
+    if (ctx.state === "suspended") ctx.resume();
+    const gain = gainRef.current ?? ctx.createGain();
+    if (!gainRef.current) { gain.connect(ctx.destination); gainRef.current = gain; }
+    gain.gain.value = volume * 0.4;
+    const src = ctx.createBufferSource();
+    src.buffer = makeNoiseBuffer(ctx, kind);
+    src.loop = true;
+    src.connect(gain);
+    src.start();
+    srcRef.current = src;
+    setPlaying(kind);
+  }
+
+  useEffect(() => {
+    if (gainRef.current) gainRef.current.gain.value = volume * 0.4;
+  }, [volume]);
+  // stop cleanly when the tab unmounts — no ghost noise
+  useEffect(() => () => { try { srcRef.current?.stop(); } catch { /* fine */ } ctxRef.current?.close(); }, []);
+
+  return (
+    <Card tone={playing ? "neon" : "default"}>
+      <div className="flex gap-2">
+        <button onClick={() => play("brown")}
+          className={`flex-1 rounded-xl py-3 font-semibold text-sm active:scale-95 ${playing === "brown" ? "bg-[var(--neon)] text-black" : "bg-white/5"}`}>
+          🟤 Brown noise {playing === "brown" ? "· on" : ""}
+        </button>
+        <button onClick={() => play("pink")}
+          className={`flex-1 rounded-xl py-3 font-semibold text-sm active:scale-95 ${playing === "pink" ? "bg-[var(--neon)] text-black" : "bg-white/5"}`}>
+          🌸 Pink noise {playing === "pink" ? "· on" : ""}
+        </button>
+      </div>
+      <div className="flex items-center gap-3 mt-3">
+        <span className="text-xs opacity-50">vol</span>
+        <input type="range" min={0} max={1} step={0.05} value={volume} onChange={(e) => setVolume(Number(e.target.value))}
+          className="flex-1 accent-[var(--neon)]" />
+      </div>
+      <p className="text-[10px] opacity-40 mt-2">Generated on-device, loops forever, zero data. Pair it with a focus block.</p>
+    </Card>
+  );
+}
+
+// ── Decision wheel — for the "I can't pick so I pick nothing" spiral ──
+function DecisionWheel() {
+  const [optsText, setOptsText] = useState("");
+  const [spinning, setSpinning] = useState(false);
+  const [highlight, setHighlight] = useState(-1);
+  const [winner, setWinner] = useState<string | null>(null);
+
+  const opts = optsText.split("\n").map((s) => s.trim()).filter(Boolean);
+
+  function spin() {
+    if (opts.length < 2 || spinning) return;
+    setSpinning(true); setWinner(null);
+    const target = Math.floor(Math.random() * opts.length);
+    // ease-out: fast cycling that slows into the pick — the anticipation IS the fun
+    let i = 0;
+    const totalSteps = opts.length * 3 + target + 1;
+    const tick = (step: number) => {
+      setHighlight(i % opts.length);
+      i++;
+      if (step >= totalSteps) {
+        setSpinning(false);
+        setWinner(opts[target]);
+        setHighlight(target);
+        sfx.coin();
+        return;
+      }
+      setTimeout(() => tick(step + 1), 40 + Math.pow(step / totalSteps, 2) * 260);
+    };
+    tick(0);
+  }
+
+  return (
+    <Card>
+      <textarea value={optsText} onChange={(e) => { setOptsText(e.target.value); setWinner(null); setHighlight(-1); }}
+        rows={3} placeholder={"one option per line…\ngym now\ngym after dinner"}
+        className="w-full rounded-xl bg-black/30 px-3 py-2.5 outline-none resize-none text-sm" />
+      {opts.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {opts.map((o, i) => (
+            <span key={i} className={`text-xs px-3 py-1.5 rounded-full border transition ${i === highlight ? "bg-[var(--neon)] text-black border-[var(--neon)] font-bold" : "bg-white/5 border-white/10"}`}>
+              {o}
+            </span>
+          ))}
+        </div>
+      )}
+      <button onClick={spin} disabled={opts.length < 2 || spinning}
+        className="mt-3 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95 disabled:opacity-40">
+        {spinning ? "…" : winner ? `→ ${winner} — go.` : "🎡 Decide for me"}
+      </button>
+      <p className="text-[10px] opacity-40 mt-2">Deciding costs more dopamine than doing. Outsource the pick, keep the action.</p>
+    </Card>
+  );
+}
+
+// ── Countdowns — deadlines you can SEE get closer (now/not-now needs a number) ──
+type Countdown = { id: string; emoji: string; name: string; date: string };
+
+function Countdowns() {
+  const game = useGame();
+  const [items, setItems] = useState<Countdown[]>([]);
+  const [name, setName] = useState("");
+  const [date, setDate] = useState("");
+  const [adding, setAdding] = useState(false);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.from("countdowns").select("id,emoji,name,date").eq("user_id", game.uid).order("date");
+    setItems((data ?? []) as Countdown[]);
+  }, [game.uid]);
+  useEffect(() => { load(); }, [load]);
+
+  async function add() {
+    if (!name.trim() || !date) return;
+    const { data, error } = await supabase.from("countdowns")
+      .insert({ user_id: game.uid, name: name.trim(), date })
+      .select("id,emoji,name,date").single();
+    if (error || !data) return;
+    setItems((x) => [...x, data as Countdown].sort((a, b) => a.date.localeCompare(b.date)));
+    setName(""); setDate(""); setAdding(false);
+  }
+  async function remove(id: string) {
+    const { error } = await supabase.from("countdowns").delete().eq("id", id);
+    if (!error) setItems((x) => x.filter((c) => c.id !== id));
+  }
+
+  const now = new Date(todayStr() + "T00:00:00").getTime();
+
+  return (
+    <Card>
+      {items.length === 0 && !adding && <p className="text-sm opacity-40">Nothing counting down. Exams, trips, deadlines — future-you sees them coming.</p>}
+      <div className="space-y-2">
+        {items.map((c) => {
+          const days = Math.round((new Date(c.date + "T00:00:00").getTime() - now) / 86400000);
+          const urgent = days >= 0 && days <= 7;
+          return (
+            <div key={c.id} className="flex items-center gap-3">
+              <span className="text-xl">{c.emoji}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium truncate">{c.name}</p>
+                <p className="text-[10px] opacity-40">{new Date(c.date + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</p>
+              </div>
+              <span className={`font-display font-extrabold tabular-nums ${days < 0 ? "opacity-40 line-through" : urgent ? "text-orange-400 text-lg" : "text-[var(--neon)]"}`}>
+                {days < 0 ? "past" : days === 0 ? "TODAY" : `${days}d`}
+              </span>
+              <button onClick={() => remove(c.id)} className="opacity-30 text-xs active:scale-90">✕</button>
+            </div>
+          );
+        })}
+      </div>
+      {adding ? (
+        <div className="flex gap-2 mt-3">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="what's coming?"
+            className="flex-1 min-w-0 rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" />
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
+            className="w-32 rounded-xl bg-black/30 px-2 py-2.5 outline-none text-sm" />
+          <button onClick={add} className="px-3 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95">✓</button>
+        </div>
+      ) : (
+        <button onClick={() => setAdding(true)} className="mt-3 w-full rounded-xl border border-dashed border-white/20 py-2.5 text-sm opacity-70 active:scale-95">+ Add a countdown</button>
+      )}
+    </Card>
+  );
+}
 
 export default function Tools() {
   const game = useGame();
@@ -236,6 +445,15 @@ export default function Tools() {
 
       <SectionTitle>⏱️ Focus timer</SectionTitle>
       <FocusTimer />
+
+      <SectionTitle>🎧 Soundscape</SectionTitle>
+      <Soundscape />
+
+      <SectionTitle>⏳ Countdowns</SectionTitle>
+      <Countdowns />
+
+      <SectionTitle>🎡 Decision wheel</SectionTitle>
+      <DecisionWheel />
 
       <SectionTitle>🫁 Breathe</SectionTitle>
       <Breathing />

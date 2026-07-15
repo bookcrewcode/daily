@@ -102,16 +102,19 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
   const [sessions, setSessions] = useState<{ id: string; day: string; chunks: { note: string }[]; brain_dump: string }[]>([]);
   const [openSession, setOpenSession] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [lastChat, setLastChat] = useState<{ role: string; content: string; created_at: string }[]>([]);
 
   const load = useCallback(async () => {
-    const [{ data: r }, { data: w }, { data: s }] = await Promise.all([
+    const [{ data: r }, { data: w }, { data: s }, { data: chat }] = await Promise.all([
       supabase.from("learning_retrieval").select("*").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(20),
       supabase.from("learning_weak_spots").select("*").eq("topic_id", topic.id).eq("resolved", false),
       supabase.from("learning_sessions").select("id,day,chunks,brain_dump").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(20),
+      supabase.from("chat_messages").select("role,content,created_at").eq("topic_id", topic.id).eq("advisor", "tutor").order("created_at", { ascending: false }).limit(2),
     ]);
     setRetrieval((r ?? []) as LearningRetrieval[]);
     setWeakSpots((w ?? []) as LearningWeakSpot[]);
     setSessions((s ?? []) as typeof sessions);
+    setLastChat(((chat ?? []) as typeof lastChat).reverse());
   }, [topic.id]);
   useEffect(() => { load(); }, [load]);
 
@@ -157,10 +160,27 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
       <h1 className="text-2xl font-bold mt-1">{topic.title}</h1>
       {topic.goal && <p className="text-sm opacity-60 mt-1">🎯 {topic.goal}</p>}
 
-      <button onClick={() => onOpenAdvisor?.("tutor", topic.id)}
-        className="mt-3 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">
-        🎓 Ask the Tutor — 3C session
-      </button>
+      {lastChat.length > 0 ? (
+        <Card tone="neon" className="mt-3">
+          <p className="text-xs uppercase tracking-widest text-[var(--neon)] mb-1.5">
+            🎓 Pick up where you left off · {new Date(lastChat[lastChat.length - 1].created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
+          </p>
+          {lastChat.map((m, i) => (
+            <p key={i} className={`text-xs ${m.role === "user" ? "opacity-60" : "opacity-90"} mb-1 line-clamp-2`}>
+              <b>{m.role === "user" ? "you" : "tutor"}:</b> {m.content}
+            </p>
+          ))}
+          <button onClick={() => onOpenAdvisor?.("tutor", topic.id)}
+            className="mt-2 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">
+            Continue with the Tutor →
+          </button>
+        </Card>
+      ) : (
+        <button onClick={() => onOpenAdvisor?.("tutor", topic.id)}
+          className="mt-3 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">
+          🎓 Ask the Tutor — 3C session
+        </button>
+      )}
 
       <SectionTitle>🌳 The Tree (first principles)</SectionTitle>
       {!editingTree ? (

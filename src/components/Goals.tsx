@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase, todayStr, type Goal } from "@/lib/supabase";
-import { GOAL_DONE_XP } from "@/lib/gamification";
+import { GOAL_DONE_XP, GOAL_STEP_XP } from "@/lib/gamification";
 import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
 import { xpToast } from "@/lib/fx";
@@ -17,6 +17,8 @@ const JUMPS = [
   { id: "achievements", label: "🏆 Achievements" },
   { id: "rewards", label: "🎁 Rewards" },
 ];
+
+type Step = { id: string; goal_id: string; title: string; done: boolean; sort: number };
 
 function daysUntil(due: string | null): number | null {
   if (!due) return null;
@@ -36,13 +38,20 @@ function urgency(g: Goal): { rank: number; badge: string; color: string } {
 export default function Goals({ uid }: { uid: string }) {
   const game = useGame();
   const [goals, setGoals] = useState<Goal[]>([]);
+  const [steps, setSteps] = useState<Step[]>([]);
+  const [open, setOpen] = useState<string | null>(null);
+  const [newStep, setNewStep] = useState("");
   const [title, setTitle] = useState("");
   const [due, setDue] = useState("");
   const [priority, setPriority] = useState(2);
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from("goals").select("*").eq("user_id", uid).eq("status", "active");
-    setGoals((data ?? []) as Goal[]);
+    const [{ data: gs }, { data: st }] = await Promise.all([
+      supabase.from("goals").select("*").eq("user_id", uid).eq("status", "active"),
+      supabase.from("goal_steps").select("id,goal_id,title,done,sort").eq("user_id", uid).order("sort"),
+    ]);
+    setGoals((gs ?? []) as Goal[]);
+    setSteps((st ?? []) as Step[]);
   }, [uid]);
   useEffect(() => { load(); }, [load]);
 
@@ -50,20 +59,58 @@ export default function Goals({ uid }: { uid: string }) {
     if (!title.trim()) return;
     const g = { user_id: uid, title: title.trim(), due: due || null, priority, status: "active" };
     const { data } = await supabase.from("goals").insert(g).select().single();
-    if (data) setGoals((x) => [...x, data as Goal]);
+    if (data) {
+      setGoals((x) => [...x, data as Goal]);
+      setOpen((data as Goal).id); // open the pathway right away — first step is the point
+    }
     setTitle(""); setDue(""); setPriority(2);
   }
+
   async function complete(id: string) {
+    const { error } = await supabase.from("goals").update({ status: "done" }).eq("id", id);
+    if (error) return;
     setGoals((x) => x.filter((g) => g.id !== id));
-    await supabase.from("goals").update({ status: "done" }).eq("id", id);
     // the single biggest per-action reward in the app — make it FELT
     xpToast(GOAL_DONE_XP, "goal crushed");
     burstConfetti("small");
     game.refresh();
   }
+
   async function remove(id: string) {
+    const { error } = await supabase.from("goals").delete().eq("id", id);
+    if (error) return;
     setGoals((x) => x.filter((g) => g.id !== id));
-    await supabase.from("goals").delete().eq("id", id);
+    setSteps((x) => x.filter((s) => s.goal_id !== id));
+  }
+
+  async function addStep(goalId: string) {
+    const t = newStep.trim();
+    if (!t) return;
+    const maxSort = Math.max(0, ...steps.filter((s) => s.goal_id === goalId).map((s) => s.sort));
+    const { data, error } = await supabase.from("goal_steps")
+      .insert({ user_id: uid, goal_id: goalId, title: t, sort: maxSort + 1 })
+      .select("id,goal_id,title,done,sort").single();
+    if (error || !data) return;
+    setSteps((x) => [...x, data as Step]);
+    setNewStep("");
+  }
+
+  async function toggleStep(s: Step) {
+    const next = !s.done;
+    const { error } = await supabase.from("goal_steps").update({ done: next }).eq("id", s.id);
+    if (error) return;
+    setSteps((x) => x.map((st) => (st.id === s.id ? { ...st, done: next } : st)));
+    if (next) {
+      // unique (user_id, day, quest_key) means re-checking the same day won't double-pay
+      const banked = await game.bankQuestXP(`gstep_${s.id}`, GOAL_STEP_XP);
+      if (banked) xpToast(GOAL_STEP_XP, "step done");
+    }
+  }
+
+  async function removeStep(id: string) {
+    const { error } = await supabase.from("goal_steps").delete().eq("id", id);
+    if (error) return;
+    setSteps((x) => x.filter((s) => s.id !== id));
   }
 
   const sorted = [...goals].sort((a, b) => {
@@ -111,14 +158,65 @@ export default function Goals({ uid }: { uid: string }) {
       <div className="space-y-2">
         {sorted.map((g) => {
           const u = urgency(g);
+          const gSteps = steps.filter((s) => s.goal_id === g.id);
+          const doneCount = gSteps.filter((s) => s.done).length;
+          const nextStep = gSteps.find((s) => !s.done);
+          const isOpen = open === g.id;
+          const pct = gSteps.length ? Math.round((doneCount / gSteps.length) * 100) : 0;
           return (
-            <div key={g.id} className="flex items-center gap-3 rounded-xl bg-white/5 border border-white/10 px-4 py-3">
-              <button onClick={() => complete(g.id)} className="w-7 h-7 shrink-0 rounded-full border border-white/30 active:scale-90" />
-              <div className="flex-1">
-                <p className="font-medium">{g.title}</p>
-                <p className={`text-xs ${u.color}`}>{u.badge}{g.priority === 1 ? " · high" : ""}</p>
+            <div key={g.id} className="rounded-xl bg-white/5 border border-white/10 overflow-hidden">
+              <div className="flex items-center gap-3 px-4 py-3">
+                <button onClick={() => complete(g.id)} title="complete goal"
+                  className="w-7 h-7 shrink-0 rounded-full border border-white/30 active:scale-90" />
+                <button className="flex-1 text-left" onClick={() => setOpen(isOpen ? null : g.id)}>
+                  <p className="font-medium">{g.title}</p>
+                  <p className={`text-xs ${u.color}`}>
+                    {u.badge}{g.priority === 1 ? " · high" : ""}
+                    {gSteps.length > 0 && <span className="opacity-70"> · {doneCount}/{gSteps.length} steps</span>}
+                  </p>
+                  {!isOpen && nextStep && (
+                    <p className="text-xs mt-0.5 text-[var(--neon)]">→ next: {nextStep.title}</p>
+                  )}
+                </button>
+                <span className={`text-xs opacity-40 transition-transform ${isOpen ? "rotate-90" : ""}`}>▶</span>
+                <button onClick={() => remove(g.id)} className="opacity-40 active:scale-90">✕</button>
               </div>
-              <button onClick={() => remove(g.id)} className="opacity-40 active:scale-90">✕</button>
+
+              {gSteps.length > 0 && (
+                <div className="h-1 bg-white/5">
+                  <div className="h-full bg-[var(--neon)] transition-all" style={{ width: `${pct}%` }} />
+                </div>
+              )}
+
+              {isOpen && (
+                <div className="px-4 pb-3 pt-2 border-t border-white/5 space-y-1.5">
+                  {gSteps.length === 0 && (
+                    <p className="text-xs opacity-50">Break it down. What&apos;s the first physical action? (+{GOAL_STEP_XP} XP per step)</p>
+                  )}
+                  {gSteps.map((s) => {
+                    const isNext = s.id === nextStep?.id;
+                    return (
+                      <div key={s.id} className={`flex items-center gap-2.5 rounded-lg px-2 py-1.5 ${isNext ? "bg-[var(--neon-dim)]" : ""}`}>
+                        <button onClick={() => toggleStep(s)}
+                          className={`w-5 h-5 shrink-0 rounded-full border flex items-center justify-center text-[10px] active:scale-90 ${s.done ? "bg-[var(--neon)] border-[var(--neon)] text-black" : "border-white/30"}`}>
+                          {s.done ? "✓" : ""}
+                        </button>
+                        <p className={`flex-1 text-sm ${s.done ? "line-through opacity-40" : isNext ? "font-semibold" : ""}`}>
+                          {s.title}{isNext && <span className="text-[var(--neon)] text-xs font-bold"> ← do this</span>}
+                        </p>
+                        <button onClick={() => removeStep(s.id)} className="opacity-30 text-xs active:scale-90">✕</button>
+                      </div>
+                    );
+                  })}
+                  <div className="flex gap-2 pt-1">
+                    <input value={isOpen ? newStep : ""} onChange={(e) => setNewStep(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addStep(g.id)}
+                      placeholder="add a step…"
+                      className="flex-1 rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm outline-none" />
+                    <button onClick={() => addStep(g.id)} className="px-3 rounded-lg bg-white/10 text-sm font-semibold active:scale-95">+</button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}

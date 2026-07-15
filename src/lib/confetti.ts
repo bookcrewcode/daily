@@ -1,7 +1,7 @@
 "use client";
 
 // Tiny dependency-free canvas confetti. One burst ≈ 2s, self-cleaning.
-const COLORS = ["#34d399", "#fbbf24", "#60a5fa", "#f472b6", "#a78bfa", "#edf2ef"];
+const COLORS = ["#a78bfa", "#fbbf24", "#60a5fa", "#f472b6", "#a78bfa", "#edf2ef"];
 
 export function burstConfetti(power: "small" | "big" = "big") {
   if (typeof document === "undefined") return;

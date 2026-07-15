@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, dateStr, type Night as NightT, type ScheduleItem } from "@/lib/supabase";
 import { useVoiceInput } from "@/lib/useVoiceInput";
-import { acquireToken } from "@/lib/gcal";
+import { acquireToken, createAllDayEvent } from "@/lib/gcal";
 import { burstConfetti } from "@/lib/confetti";
 import { SectionTitle, Card } from "./ui";
 import { parseTime, fmtMinutes, resolveBlocks, gcalTemplateUrl, downloadIcs } from "@/lib/calendar";
@@ -32,6 +32,8 @@ export default function Night({ uid }: { uid: string }) {
   const [clientId, setClientId] = useState("");
   const [pushState, setPushState] = useState<"idle" | "pushing" | "done" | "error">("idle");
   const [pushNote, setPushNote] = useState("");
+  const [top3State, setTop3State] = useState<"idle" | "pushing" | "done" | "error">("idle");
+  const [top3Note, setTop3Note] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noteBase = useRef("");
   const voice = useVoiceInput((text) => {
@@ -132,6 +134,40 @@ export default function Night({ uid }: { uid: string }) {
     }
   }
 
+  // Top 3 land as all-day events pinned to the top of tomorrow in Google
+  // Calendar. Same honesty rule as pushAllApi: report exactly what landed.
+  async function pushTop3() {
+    const filled = n.top3.map((t) => t.trim()).filter(Boolean);
+    if (!filled.length || !clientId || top3State === "pushing") return;
+    setTop3State("pushing"); setTop3Note("");
+    try {
+      const t = (await acquireToken(clientId, false)) ?? (await acquireToken(clientId, true));
+      if (!t) { setTop3State("error"); setTop3Note("Google didn't grant access."); return; }
+      let created = 0;
+      for (let i = 0; i < filled.length; i++) {
+        try {
+          await createAllDayEvent(clientId, `★ ${i + 1}. ${filled[i]}`, day);
+          created++;
+        } catch { break; }
+      }
+      if (created === filled.length) {
+        burstConfetti("small");
+        markSynced();
+        setTop3State("done");
+        setTimeout(() => setTop3State("idle"), 4000);
+      } else if (created > 0) {
+        setTop3State("error");
+        setTop3Note(`Only ${created} of ${filled.length} landed — check Google Calendar before retrying, or you'll get duplicates.`);
+      } else {
+        setTop3State("error");
+        setTop3Note("Nothing was pushed — check your connection and try again.");
+      }
+    } catch {
+      setTop3State("error");
+      setTop3Note("Push interrupted — check Google Calendar to see what landed before retrying.");
+    }
+  }
+
   return (
     <div>
       <h1 className="text-2xl font-bold pt-3">🌙 Nightly Planner</h1>
@@ -218,6 +254,15 @@ export default function Night({ uid }: { uid: string }) {
               className="flex-1 bg-transparent outline-none" />
           </div>
         ))}
+        {clientId && n.top3.some((t) => t.trim()) && (
+          <>
+            <button onClick={pushTop3} disabled={top3State === "pushing"}
+              className="w-full rounded-xl border border-[var(--neon)]/40 text-[var(--neon)] font-semibold py-2.5 text-sm active:scale-95 disabled:opacity-50">
+              {top3State === "pushing" ? "Pushing…" : top3State === "done" ? "✓ On your calendar" : top3State === "error" ? "Didn't finish — see note" : "★ Pin Top 3 to Google Calendar (all-day)"}
+            </button>
+            {top3Note && <p className="text-xs text-orange-400">{top3Note}</p>}
+          </>
+        )}
       </div>
 
       <SectionTitle>Brain dump / notes</SectionTitle>

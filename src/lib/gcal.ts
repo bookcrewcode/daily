@@ -119,6 +119,19 @@ export async function createEvent(clientId: string, summary: string, start: Date
   return await r.json();
 }
 
+// all-day event: Google wants {date} (inclusive start, EXCLUSIVE end = day+1)
+export async function createAllDayEvent(clientId: string, summary: string, day: string): Promise<GEvent> {
+  const d = new Date(day + "T00:00:00");
+  d.setDate(d.getDate() + 1);
+  const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const r = await authedFetch(clientId, API, {
+    method: "POST",
+    body: JSON.stringify({ summary, start: { date: day }, end: { date: next } }),
+  });
+  if (!r.ok) throw new Error(`Couldn't create the event (HTTP ${r.status})`);
+  return await r.json();
+}
+
 export async function patchEvent(clientId: string, id: string, patch: { summary?: string; start?: Date; end?: Date }): Promise<GEvent> {
   const body: Record<string, unknown> = {};
   if (patch.summary !== undefined) body.summary = patch.summary;

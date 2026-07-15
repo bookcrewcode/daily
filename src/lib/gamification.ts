@@ -37,6 +37,7 @@ export const HABIT_XP: Record<(typeof WIN_KEYS)[number], number> = {
 export const MEAL_XP = 3;
 export const LIFT_SET_XP = 2;
 export const GOAL_DONE_XP = 50;
+export const GOAL_STEP_XP = 5; // per pathway step — banked via quest_claims (gstep_<id>)
 export const BODYWEIGHT_LOG_XP = 5;
 export const VOCAB_REVIEW_XP = 2; // per quiz answer (derived from vocab.seen)
 export const GIG_XP_PER_DOLLARS = 10; // 1 XP per $10 hustled

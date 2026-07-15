@@ -67,7 +67,7 @@ export default function YearHeatmap() {
                       style={{
                         background: c.future ? "transparent"
                           : c.score == null ? "rgba(255,255,255,0.06)"
-                          : `rgba(52,211,153,${0.15 + pct * 0.85})`,
+                          : `rgba(167,139,250,${0.15 + pct * 0.85})`,
                         outline: pct >= 1 ? "1px solid rgba(251,191,36,0.6)" : undefined,
                       }} />
                   );

@@ -344,7 +344,7 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
         return new Response(JSON.stringify({ error: "Image missing or too large — try again." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
       }
       const sys = `You estimate nutrition from a food photo for a personal tracker. Be practical: assume a normal serving of what's visible. Reply ONLY valid JSON, no fences:
-{"name": "short dish name", "calories": integer (total kcal, best estimate), "protein": integer (grams), "confidence": "high|medium|low", "note": "one short line on what you assumed"}`;
+{"name": "short dish name", "calories": integer (total kcal, best estimate), "protein": integer (grams), "carbs": integer (grams), "fat": integer (grams), "confidence": "high|medium|low", "note": "one short line on what you assumed"}`;
       try {
         const r = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
@@ -364,6 +364,29 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
         return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch {
         return new Response(JSON.stringify({ error: "Couldn't read that photo — try a clearer shot." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+    }
+
+    // ✨ Affirmation draft — grounded in his Engine identities and recent
+    // entries. It lands in the textarea for Ben to edit; saving is his rep.
+    if (advisor === "affirm-gen") {
+      const period = body.period === "night" ? "night" : "morning";
+      const h = { apikey: ANON, Authorization: `Bearer ${token}` };
+      const q = async (p: string) => {
+        try { const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { headers: h }); return r.ok ? await r.json() : []; } catch { return []; }
+      };
+      const [rows, recent] = await Promise.all([
+        q(`engine_rows?archived=eq.false&select=emoji,name,identity`),
+        q(`affirmations?select=text&order=created_at.desc&limit=8`),
+      ]);
+      const ids = (rows as { identity: string }[]).map((r) => r.identity).filter(Boolean).join("; ");
+      const past = (recent as { text: string }[]).map((r) => r.text).join(" | ");
+      const sys = `Write ONE first-person ${period} affirmation for Ben (he has ADHD; identity-based habits are his engine). ${period === "morning" ? "Morning: set the frame for the day — present tense, active, specific." : "Night: lock in pride from today — reflective, warm, earned."} 1-3 sentences, under 40 words, no quotes, no markdown — his own voice, not a motivational poster. Ground it in his declared identities${ids ? `: ${ids}` : ""}. Do not repeat these recent ones: ${past || "none yet"}. Reply with ONLY the affirmation text.`;
+      try {
+        const text = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: `Write the ${period} affirmation.` }], 150, ANTHROPIC_API_KEY);
+        return new Response(JSON.stringify({ text: text.trim() }), { headers: { ...cors, "Content-Type": "application/json" } });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Couldn't write one — try again." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
       }
     }
 

@@ -71,7 +71,7 @@ export default function NorthStar({ uid: _uid }: { uid: string }) {
           <ProgressBar pct={netPct} />
           {nwValues.length >= 2 && (
             <div className="mt-3">
-              <Sparkline series={[{ values: nwValues, color: "#34d399" }]} height={48} />
+              <Sparkline series={[{ values: nwValues, color: "#a78bfa" }]} height={48} />
               <p className="text-[10px] opacity-40 mt-1">net worth over time · daily snapshots</p>
             </div>
           )}
@@ -95,7 +95,7 @@ export default function NorthStar({ uid: _uid }: { uid: string }) {
                 <Sparkline
                   series={[
                     { values: weights, color: "rgba(255,255,255,0.35)", width: 1, opacity: 0.7 },
-                    { values: avg, color: "#34d399", width: 2 },
+                    { values: avg, color: "#a78bfa", width: 2 },
                   ]}
                   goal={NORTH_STAR.leanWeightTarget}
                   height={56}

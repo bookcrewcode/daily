@@ -115,7 +115,7 @@ export default function NowScreen({ task, starter, minutes = 25, onClose }: {
           {/* shrinking bar — time made physical */}
           <div className="w-full max-w-xs h-3 rounded-full bg-white/10 overflow-hidden mb-3">
             <div className="h-full rounded-full transition-[width] duration-500"
-              style={{ width: `${pct * 100}%`, background: "linear-gradient(90deg,#34d399,#2dd4bf)" }} />
+              style={{ width: `${pct * 100}%`, background: "linear-gradient(90deg,#a78bfa,#818cf8)" }} />
           </div>
           <p className="text-6xl font-extrabold tabular-nums tracking-tight mb-10">{mm}:{ss}</p>
 
