@@ -23,6 +23,7 @@ export type EngineRow = { id: string; emoji: string; name: string; rep: string; 
 type RepDay = { row_id: string; day: string };
 
 const SUGGESTED: Omit<EngineRow, "id" | "archived" | "sort">[] = [
+  { emoji: "🧬", name: "Brain manual", rep: "One tutor session (or 15 min) on My Brain: The Operating Manual", identity: "I understand the machine I run on" },
   { emoji: "📦", name: "BookCrew", rep: "Ship one concrete thing — a section, a fix, one outreach", identity: "I'm a founder who ships, not just plans" },
   { emoji: "📚", name: "School", rep: "One 45-min focused block (use the Tools timer)", identity: "I do the work even when it's boring" },
   { emoji: "🏋️", name: "Body", rep: "Session done — the engine that already runs", identity: "I'm someone who trains" },
