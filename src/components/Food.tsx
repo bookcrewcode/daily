@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { supabase, todayStr, dateStr, type Meal } from "@/lib/supabase";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { supabase, todayStr, dateStr, ADVISOR_FN, SUPABASE_ANON, type Meal } from "@/lib/supabase";
 import { MEAL_XP } from "@/lib/gamification";
 import { useGame } from "@/lib/useGameData";
 import { xpToast } from "@/lib/fx";
@@ -10,6 +10,20 @@ import FoodSearch from "./FoodSearch";
 
 type CalorieSettings = { calorie_goal: number; protein_goal: number };
 const DEFAULT_SETTINGS: CalorieSettings = { calorie_goal: 2200, protein_goal: 160 };
+
+type Snap = { name: string; calories: number; protein: number; confidence: string; note?: string };
+
+// downscale to ~900px JPEG so the upload stays small and vision stays cheap
+async function fileToB64(file: File): Promise<{ b64: string; mediaType: string }> {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 900 / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bmp.width * scale);
+  canvas.height = Math.round(bmp.height * scale);
+  canvas.getContext("2d")!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.8);
+  return { b64: dataUrl.split(",")[1], mediaType: "image/jpeg" };
+}
 
 export default function Food({ uid }: { uid: string }) {
   const game = useGame();
@@ -22,6 +36,32 @@ export default function Food({ uid }: { uid: string }) {
   const [pro, setPro] = useState("");
   const [week, setWeek] = useState<{ day: string; cal: number }[]>([]);
   const [manualOpen, setManualOpen] = useState(false);
+  const [snap, setSnap] = useState<Snap | null>(null);
+  const [snapBusy, setSnapBusy] = useState(false);
+  const [snapError, setSnapError] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // 📸 Snap-a-meal — photo → Claude vision → editable estimate → log
+  async function snapMeal(file: File) {
+    setSnapBusy(true); setSnapError(""); setSnap(null);
+    try {
+      const { b64, mediaType } = await fileToB64(file);
+      const { data: session } = await supabase.auth.getSession();
+      const res = await fetch(ADVISOR_FN, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${session.session?.access_token}` },
+        body: JSON.stringify({ advisor: "food-vision", image: b64, mediaType }),
+      });
+      const json = await res.json();
+      if (json.error) setSnapError(json.error);
+      else setSnap({ name: json.name ?? "Meal", calories: Number(json.calories) || 0, protein: Number(json.protein) || 0, confidence: json.confidence ?? "medium", note: json.note });
+    } catch {
+      setSnapError("Couldn't analyze the photo — check your connection.");
+    } finally {
+      setSnapBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
 
   const load = useCallback(async () => {
     const day = todayStr();
@@ -137,6 +177,42 @@ export default function Food({ uid }: { uid: string }) {
             ))}
           </div>
         </>
+      )}
+
+      <SectionTitle>📸 Snap it</SectionTitle>
+      <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) snapMeal(f); }} />
+      {!snap && (
+        <button onClick={() => fileRef.current?.click()} disabled={snapBusy}
+          className="w-full rounded-xl border border-dashed border-[var(--neon)]/40 bg-[var(--neon)]/5 py-3.5 font-semibold text-[var(--neon)] active:scale-95 disabled:opacity-50">
+          {snapBusy ? "🔎 Reading your plate…" : "📸 Photo of your food → instant macros"}
+        </button>
+      )}
+      {snapError && <p className="text-xs text-orange-400 mt-2">{snapError}</p>}
+      {snap && (
+        <Card tone="neon" className="mt-2">
+          <p className="text-sm font-bold">{snap.name} <span className="text-[10px] font-normal opacity-50">· {snap.confidence} confidence</span></p>
+          {snap.note && <p className="text-[10px] opacity-50 mt-0.5">{snap.note}</p>}
+          <div className="flex items-center gap-2 mt-2">
+            <label className="flex-1 flex items-center gap-1 rounded-lg bg-black/30 px-3 py-2">
+              <input type="number" inputMode="numeric" value={snap.calories || ""}
+                onChange={(e) => setSnap({ ...snap, calories: Number(e.target.value) || 0 })}
+                className="w-full bg-transparent outline-none text-center font-bold" />
+              <span className="text-xs opacity-40">kcal</span>
+            </label>
+            <label className="flex-1 flex items-center gap-1 rounded-lg bg-black/30 px-3 py-2">
+              <input type="number" inputMode="numeric" value={snap.protein || ""}
+                onChange={(e) => setSnap({ ...snap, protein: Number(e.target.value) || 0 })}
+                className="w-full bg-transparent outline-none text-center font-bold" />
+              <span className="text-xs opacity-40">g</span>
+            </label>
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button onClick={() => setSnap(null)} className="flex-1 rounded-xl bg-white/10 py-2.5 active:scale-95">Discard</button>
+            <button onClick={() => { addMeal({ name: snap.name, calories: snap.calories, protein: snap.protein }); setSnap(null); }}
+              className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95">Add to log</button>
+          </div>
+        </Card>
       )}
 
       <SectionTitle>Search a food</SectionTitle>

@@ -11,6 +11,7 @@ import { supabase, todayStr, dateStr, WIN_KEYS, type DayRow, type Goal } from "@
 import { useGame } from "@/lib/useGameData";
 import { sfx, buzz } from "@/lib/fx";
 import { Card } from "./ui";
+import NowScreen from "./NowScreen";
 
 const HABIT_LABEL: Record<string, string> = {
   ws_meds: "💊 meds", ws_water: "💧 water", ws_eat: "🍽️ eat clean", ws_lift: "🏋️ lift",
@@ -33,6 +34,7 @@ export default function UrgencyCard({ todayRow, onGoTab }: { todayRow: DayRow; o
   const [goals, setGoals] = useState<Goal[]>([]);
   const [tomorrowPlanned, setTomorrowPlanned] = useState(true);
   const [picked, setPicked] = useState<Item | null>(null);
+  const [lockedIn, setLockedIn] = useState<Item | null>(null);
 
   // re-pull goals/plan when the app resurfaces — a PWA left open overnight
   // must not warn about the wrong "tomorrow"
@@ -128,10 +130,11 @@ export default function UrgencyCard({ todayRow, onGoTab }: { todayRow: DayRow; o
           <p className="font-bold">{picked.icon} {picked.text}</p>
           <p className="text-sm text-[var(--neon)] mt-1.5">▶ {picked.starter}</p>
           <div className="flex gap-2 mt-3">
+            <button onClick={() => setLockedIn(picked)} className="flex-1 rounded-xl bg-[var(--neon)] text-black text-sm font-bold py-2.5 active:scale-95">🔒 Lock in — 25 min</button>
             {picked.tab && (
-              <button onClick={() => onGoTab?.(picked.tab!)} className="flex-1 rounded-xl bg-[var(--neon)] text-black text-sm font-bold py-2.5 active:scale-95">Take me there</button>
+              <button onClick={() => onGoTab?.(picked.tab!)} className="px-3 rounded-xl bg-white/10 text-sm py-2.5 active:scale-95">open tab</button>
             )}
-            <button onClick={() => setPicked(null)} className="px-4 rounded-xl bg-white/10 text-sm py-2.5 active:scale-95">back</button>
+            <button onClick={() => setPicked(null)} className="px-3 rounded-xl bg-white/10 text-sm py-2.5 active:scale-95">back</button>
           </div>
         </div>
       ) : (
@@ -146,6 +149,9 @@ export default function UrgencyCard({ todayRow, onGoTab }: { todayRow: DayRow; o
             </button>
           ))}
         </div>
+      )}
+      {lockedIn && (
+        <NowScreen task={lockedIn.text} starter={lockedIn.starter} onClose={() => { setLockedIn(null); setPicked(null); load(); }} />
       )}
     </Card>
   );

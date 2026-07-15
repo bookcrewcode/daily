@@ -15,6 +15,8 @@ import Quests from "./Quests";
 import WeatherStrip from "./WeatherStrip";
 import UrgencyCard from "./UrgencyCard";
 import Scoreboard from "./Scoreboard";
+import BriefingCard from "./BriefingCard";
+import BossCard from "./BossCard";
 
 type WinKey = (typeof WIN_KEYS)[number];
 
@@ -165,6 +167,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       </div>
 
       <GameBar />
+      <BriefingCard uid={uid} />
       <Overseer uid={uid} onOpenChat={onOpenAdvisor} />
       <UrgencyCard todayRow={row} onGoTab={onGoTab} />
       <Scoreboard uid={uid} />
@@ -205,6 +208,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       )}
 
       <Quests refreshKey={row} />
+      <BossCard />
 
       <div className="mt-3">
         <CalendarCard uid={uid} day={new Date()} title="Today · Google Calendar" />

@@ -317,6 +317,56 @@ Reply with ONLY valid JSON, no markdown fences, no other text: {"word": "...", "
       }
     }
 
+    // ☀️ Morning briefing — one short generated brief per day, cached client-side.
+    if (advisor === "briefing") {
+      const ctx = await context(token);
+      const sys = `You are The Overseer writing Ben's MORNING BRIEFING inside his life app. Ben has ADHD — the briefing's job is to collapse the fog into ONE clear picture in under 15 seconds of reading.
+Write 4-6 SHORT lines, no headers, no preamble, no markdown syntax except emoji:
+1. One-line greeting with the streak/shield state (never shame).
+2. THE ONE THING today — pick it decisively from his week priorities, urgent goals, or an unvoted Engine row. Name its 2-minute starter.
+3. One line on today's quests or an Engine row worth hitting early.
+4. Optional: one relevant callback from what you remember about him.
+5. Close with one line of fire — belief, not pressure.
+Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ctx}`;
+      try {
+        const text = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write today's briefing." }], 400, ANTHROPIC_API_KEY);
+        return new Response(JSON.stringify({ text }), { headers: { ...cors, "Content-Type": "application/json" } });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Couldn't write the briefing." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+    }
+
+    // 📸 Snap-a-meal — vision estimate of calories/protein from a photo.
+    if (advisor === "food-vision") {
+      const image = String(body.image ?? "");        // base64, no data: prefix
+      const mediaType = String(body.mediaType ?? "image/jpeg");
+      if (!image || image.length > 1_800_000) {
+        return new Response(JSON.stringify({ error: "Image missing or too large — try again." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+      const sys = `You estimate nutrition from a food photo for a personal tracker. Be practical: assume a normal serving of what's visible. Reply ONLY valid JSON, no fences:
+{"name": "short dish name", "calories": integer (total kcal, best estimate), "protein": integer (grams), "confidence": "high|medium|low", "note": "one short line on what you assumed"}`;
+      try {
+        const r = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+          body: JSON.stringify({
+            model: "claude-haiku-4-5-20251001", max_tokens: 250, system: sys,
+            messages: [{ role: "user", content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data: image } },
+              { type: "text", text: "Estimate this meal." },
+            ] }],
+          }),
+        });
+        const data = await r.json();
+        if (!r.ok) return new Response(JSON.stringify({ error: data?.error?.message ?? "Vision error" }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+        const raw = (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
+        const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
+        return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
+      } catch {
+        return new Response(JSON.stringify({ error: "Couldn't read that photo — try a clearer shot." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+    }
+
     // Learning ↔ Tutor pairing: turn a tutoring conversation into structured
     // review data (chunks / weak spots / retrieval log). Client shows a
     // review-then-save preview — AI output never auto-enters the system.

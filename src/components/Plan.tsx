@@ -14,6 +14,7 @@ import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
 import { xpToast, sfx, buzz } from "@/lib/fx";
 import { SectionTitle, Card } from "./ui";
+import NowScreen from "./NowScreen";
 
 type Capture = { id: string; text: string; done: boolean; created_at: string };
 type WeekPlan = { id?: string; week_start: string; priorities: string[]; notes: string; reviewed_at: string | null };
@@ -74,6 +75,7 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
   const [review, setReview] = useState<{ win: string; drag: string } | null>(null);
   const [saved, setSaved] = useState(false);
   const [captureError, setCaptureError] = useState(false);
+  const [lockTask, setLockTask] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const triaging = useRef(false);
   const captureVoice = useVoiceInput((text) => setCaptureText(text));
@@ -277,7 +279,11 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
               <span className="text-[var(--neon)] font-bold">{i + 1}</span>
               <input value={p} onChange={(e) => persistWeek({ ...week, priorities: week.priorities.map((x, idx) => idx === i ? e.target.value : x) })}
                 placeholder={i === 0 ? "if only ONE thing happens this week…" : "…"}
-                className="flex-1 bg-transparent outline-none" />
+                className="flex-1 min-w-0 bg-transparent outline-none" />
+              {p.trim() && (
+                <button onClick={() => setLockTask(p.trim())} title="Lock in — 25 min on this, nothing else"
+                  className="shrink-0 text-xs font-bold px-2 py-1 rounded-lg bg-[var(--neon)]/15 text-[var(--neon)] active:scale-90">▶</button>
+              )}
             </div>
           ))}
         </div>
@@ -349,6 +355,10 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
           </div>
         ))}
       </div>
+
+      {lockTask && (
+        <NowScreen task={lockTask} starter="Just the first 2 minutes. Starting is the whole battle." onClose={() => setLockTask(null)} />
+      )}
     </div>
   );
 }
