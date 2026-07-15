@@ -84,7 +84,12 @@ async function authedFetch(clientId: string, url: string, init?: RequestInit): P
     ...init,
     headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${t}`, "Content-Type": "application/json" },
   });
-  if (r.status === 401 || r.status === 403) { token = null; throw new NeedsAuth(); }
+  if (r.status === 401) { token = null; throw new NeedsAuth(); }
+  if (r.status === 403) {
+    // 403 is usually quota/rate-limit, not bad credentials — reconnecting
+    // wouldn't help and would loop. Keep the token, surface a real message.
+    throw new Error("Google said no (403) — likely rate-limited. Wait a minute and try again.");
+  }
   return r;
 }
 

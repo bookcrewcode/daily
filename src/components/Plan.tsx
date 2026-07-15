@@ -37,8 +37,18 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
   const [somedayText, setSomedayText] = useState("");
   const [review, setReview] = useState<{ win: string; drag: string } | null>(null);
   const [saved, setSaved] = useState(false);
+  const [captureError, setCaptureError] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const triaging = useRef(false);
   const captureVoice = useVoiceInput((text) => setCaptureText(text));
+  // week key rolls over correctly in a PWA left open across Sunday midnight
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const onVisible = () => setTick((t) => t + 1);
+    document.addEventListener("visibilitychange", onVisible);
+    const id = setInterval(onVisible, 60000);
+    return () => { document.removeEventListener("visibilitychange", onVisible); clearInterval(id); };
+  }, []);
 
   const ws = mondayOf();
 
@@ -48,7 +58,7 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
       supabase.from("captures").select("*").eq("user_id", uid).eq("done", false).order("created_at", { ascending: false }).limit(50),
       supabase.from("weekly_plans").select("*").eq("user_id", uid).eq("week_start", ws).maybeSingle(),
       supabase.from("goals").select("*").eq("user_id", uid).eq("status", "active").gte("due", todayStr()).lte("due", dateStr(weekEnd)).order("due"),
-      supabase.from("goals").select("*").eq("user_id", uid).eq("status", "someday").order("created_at" as never, { ascending: false }),
+      supabase.from("goals").select("*").eq("user_id", uid).eq("status", "someday").order("created_at", { ascending: false }),
     ]);
     setCaptures((caps ?? []) as Capture[]);
     if (wp) {
@@ -65,35 +75,47 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
   }, [uid, ws]);
   useEffect(() => { load(); }, [load]);
 
-  // ── capture: one box, zero decisions ────────────────────────────────
+  // ── capture: one box, zero decisions — but "captured" must mean SAVED ──
   async function capture() {
     const text = captureText.trim();
     if (!text) return;
+    setCaptureError(false);
+    const { data, error } = await supabase.from("captures").insert({ user_id: uid, text }).select().single();
+    if (error || !data) {
+      setCaptureError(true); // text stays put — nothing lost
+      return;
+    }
     setCaptureText("");
     sfx.pop(); buzz(10);
-    const { data } = await supabase.from("captures").insert({ user_id: uid, text }).select().single();
-    if (data) setCaptures((c) => [data as Capture, ...c]);
+    setCaptures((c) => [data as Capture, ...c]);
   }
 
-  // every inbox item leaves with a NEXT STEP attached
-  async function toGoal(c: Capture) {
-    await supabase.from("goals").insert({ user_id: uid, title: c.text, priority: 2, status: "active" });
-    await dismiss(c, "🎯 now a goal");
+  // every inbox item leaves with a NEXT STEP attached. Serialized — the
+  // tomorrow-plan path is a read-modify-write on nights.items, and two
+  // concurrent triages would drop one item.
+  async function triage(fn: () => Promise<void>) {
+    if (triaging.current) return;
+    triaging.current = true;
+    try { await fn(); } finally { triaging.current = false; }
   }
-  async function toTomorrow(c: Capture) {
+  const toGoal = (c: Capture) => triage(async () => {
+    const { error } = await supabase.from("goals").insert({ user_id: uid, title: c.text, priority: 2, status: "active" });
+    if (!error) await dismiss(c, "🎯 now a goal");
+  });
+  const toTomorrow = (c: Capture) => triage(async () => {
     const day = tomorrowStr();
     const { data } = await supabase.from("nights").select("items,top3,notes").eq("user_id", uid).eq("day", day).maybeSingle();
     const items = [...(((data?.items as { time: string; what: string }[]) ?? [])), { time: "", what: c.text }];
-    await supabase.from("nights").upsert(
+    const { error } = await supabase.from("nights").upsert(
       { user_id: uid, day, items, top3: (data?.top3 as string[]) ?? ["", "", ""], notes: data?.notes ?? "" },
       { onConflict: "user_id,day" },
     );
-    await dismiss(c, "🌙 on tomorrow's plan");
-  }
-  async function toSomeday(c: Capture) {
-    await supabase.from("goals").insert({ user_id: uid, title: c.text, priority: 3, status: "someday" });
-    await dismiss(c, "🌠 parked in someday");
-  }
+    if (!error) await dismiss(c, "🌙 on tomorrow's plan");
+  });
+  const toSomeday = (c: Capture) => triage(async () => {
+    const { error } = await supabase.from("goals").insert({ user_id: uid, title: c.text, priority: 3, status: "someday" });
+    if (!error) await dismiss(c, "🌠 parked in someday");
+  });
   async function dismiss(c: Capture, note?: string) {
     setCaptures((x) => x.filter((y) => y.id !== c.id));
     await supabase.from("captures").update({ done: true }).eq("id", c.id);
@@ -140,8 +162,15 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
     const stamp = new Date().toISOString();
     const noteAdd = `— Review ${todayStr()} —\nWin: ${review.win || "(none written)"}\nDragged: ${review.drag || "(none written)"}`;
     const next = { ...week, notes: week.notes ? `${week.notes}\n\n${noteAdd}` : noteAdd, reviewed_at: stamp };
+    // write the review DIRECTLY — a debounce timer dies if the PWA is
+    // backgrounded right after the tap, and review answers must not be lost
+    setWeek(next);
+    const { error } = await supabase.from("weekly_plans").upsert(
+      { user_id: uid, week_start: ws, priorities: next.priorities, notes: next.notes, reviewed_at: stamp },
+      { onConflict: "user_id,week_start" },
+    );
+    if (error) return; // keep the review form open — answers not lost
     setReview(null);
-    persistWeek(next);
     await game.bankQuestXP("weekly_review", 40);
     burstConfetti("small");
     sfx.fanfare();
@@ -173,6 +202,7 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
           )}
           <button onClick={capture} className="px-4 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95">＋</button>
         </div>
+        {captureError && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t save — your text is still here. Try again.</p>}
         <p className="text-[10px] opacity-40 mt-2">Captured = off your mind. Sort it below whenever — each item leaves with a next step.</p>
       </Card>
 

@@ -53,8 +53,12 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
   const [recap, setRecap] = useState<Recap | null>(null);
   const [recapBusy, setRecapBusy] = useState(false);
   const [recapDrop, setRecapDrop] = useState<Set<string>>(new Set());
+  const [error, setError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const voice = useVoiceInput((text) => setInput(text));
+  // guards against a reply landing after the user switched advisor tabs
+  const advisorRef = useRef(advisor);
+  advisorRef.current = advisor;
 
   // tutor threads are per learning topic; everything else is per advisor
   const threadTopic = advisor === "tutor" ? (topicId ?? null) : null;
@@ -80,6 +84,7 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
+    const forAdvisor = advisor;
     setInput(""); setBusy(true);
     const next = [...msgs, { role: "user" as const, content: text }];
     setMsgs(next);
@@ -87,12 +92,13 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
     setTimeout(() => scrollRef.current?.scrollTo(0, 1e9), 50);
 
     try {
-      const json = await callAdvisor({ advisor, message: text, history: msgs.slice(-14), topicId });
+      const json = await callAdvisor({ advisor: forAdvisor, message: text, history: msgs.slice(-14), topicId });
       const reply = json.text || json.error || "No response.";
-      setMsgs([...next, { role: "assistant", content: reply }]);
       if (json.text) persistMsg("assistant", json.text);
+      // if Ben switched tabs mid-flight, don't paint this thread over the new one
+      if (advisorRef.current === forAdvisor) setMsgs([...next, { role: "assistant", content: reply }]);
     } catch {
-      setMsgs([...next, { role: "assistant", content: "Couldn't reach the Board. Check your connection." }]);
+      if (advisorRef.current === forAdvisor) setMsgs([...next, { role: "assistant", content: "Couldn't reach the Board. Check your connection." }]);
     } finally {
       setBusy(false);
       setTimeout(() => scrollRef.current?.scrollTo(0, 1e9), 50);
@@ -134,28 +140,41 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
   }
 
   async function saveRecap() {
-    if (!recap || !topicId) return;
-    const keep = <T,>(items: T[], prefix: string) => items.filter((_, i) => !recapDrop.has(`${prefix}${i}`));
-    const chunks = keep(recap.chunks, "c");
-    const weakSpots = keep(recap.weak_spots, "w");
-    const retrieval = keep(recap.retrieval, "r");
-    const writes: PromiseLike<unknown>[] = [];
-    if (chunks.length) {
-      writes.push(supabase.from("learning_sessions").insert({
-        user_id: game.uid, topic_id: topicId, day: todayStr(),
-        chunks: chunks.map((c) => ({ note: c })), brain_dump: "",
-      }));
+    if (!recap || !topicId || recapBusy) return;
+    setRecapBusy(true);
+    try {
+      const keep = <T,>(items: T[], prefix: string) => items.filter((_, i) => !recapDrop.has(`${prefix}${i}`));
+      const chunks = keep(recap.chunks, "c");
+      const weakSpots = keep(recap.weak_spots, "w");
+      const retrieval = keep(recap.retrieval, "r");
+      const writes: PromiseLike<{ error: unknown }>[] = [];
+      if (chunks.length) {
+        writes.push(supabase.from("learning_sessions").insert({
+          user_id: game.uid, topic_id: topicId, day: todayStr(),
+          chunks: chunks.map((c) => ({ note: c })), brain_dump: "",
+        }));
+      }
+      for (const w of weakSpots) writes.push(supabase.from("learning_weak_spots").insert({ user_id: game.uid, topic_id: topicId, text: w }));
+      for (const r of retrieval) writes.push(supabase.from("learning_retrieval").insert({ user_id: game.uid, topic_id: topicId, question: r.question, got_it: !!r.got_it }));
+      // supabase-js resolves errors instead of throwing — celebrating a failed
+      // save would be the exact trust-breaker this preview flow exists to avoid
+      const results = await Promise.all(writes);
+      const failed = results.filter((x) => x?.error).length;
+      if (failed > 0) {
+        setError(`${failed} of ${results.length} saves failed — nothing was dismissed. Check your connection and tap Save again.`);
+        return;
+      }
+      setRecap(null);
+      setError("");
+      burstConfetti("small");
+      sfx.fanfare();
+      xpToast(30, "session banked");
+      game.refresh();
+      setMsgs((m) => [...m, { role: "assistant", content: "📝 Session saved into your Learning hub — chunks, weak spots, and retrieval log. Sleep locks it in. 😴" }]);
+      setTimeout(() => scrollRef.current?.scrollTo(0, 1e9), 50);
+    } finally {
+      setRecapBusy(false);
     }
-    for (const w of weakSpots) writes.push(supabase.from("learning_weak_spots").insert({ user_id: game.uid, topic_id: topicId, text: w }));
-    for (const r of retrieval) writes.push(supabase.from("learning_retrieval").insert({ user_id: game.uid, topic_id: topicId, question: r.question, got_it: r.got_it }));
-    await Promise.all(writes);
-    setRecap(null);
-    burstConfetti("small");
-    sfx.fanfare();
-    xpToast(30, "session banked");
-    game.refresh();
-    setMsgs((m) => [...m, { role: "assistant", content: "📝 Session saved into your Learning hub — chunks, weak spots, and retrieval log. Sleep locks it in. 😴" }]);
-    setTimeout(() => scrollRef.current?.scrollTo(0, 1e9), 50);
   }
 
   const active = ADVISORS.find((a) => a.key === advisor)!;
@@ -266,9 +285,12 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
                 </div>
               </div>
             ))}
+            {error && <p className="text-xs text-orange-400 mt-2">{error}</p>}
             <div className="flex gap-2 mt-4">
-              <button onClick={() => setRecap(null)} className="flex-1 rounded-xl bg-white/10 py-3 active:scale-95">Cancel</button>
-              <button onClick={saveRecap} className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">Save to Learning</button>
+              <button onClick={() => { setRecap(null); setError(""); }} className="flex-1 rounded-xl bg-white/10 py-3 active:scale-95">Cancel</button>
+              <button onClick={saveRecap} disabled={recapBusy} className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95 disabled:opacity-50">
+                {recapBusy ? "Saving…" : "Save to Learning"}
+              </button>
             </div>
           </div>
         </div>

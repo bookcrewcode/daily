@@ -34,6 +34,15 @@ export default function UrgencyCard({ todayRow, onGoTab }: { todayRow: DayRow; o
   const [tomorrowPlanned, setTomorrowPlanned] = useState(true);
   const [picked, setPicked] = useState<Item | null>(null);
 
+  // re-pull goals/plan when the app resurfaces — a PWA left open overnight
+  // must not warn about the wrong "tomorrow"
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const load = useCallback(async () => {
     const horizon = new Date(); horizon.setDate(horizon.getDate() + 2);
     const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);

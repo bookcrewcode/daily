@@ -31,6 +31,7 @@ export default function Night({ uid }: { uid: string }) {
   const [saved, setSaved] = useState(false);
   const [clientId, setClientId] = useState("");
   const [pushState, setPushState] = useState<"idle" | "pushing" | "done" | "error">("idle");
+  const [pushNote, setPushNote] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noteBase = useRef("");
   const voice = useVoiceInput((text) => {
@@ -104,23 +105,30 @@ export default function Night({ uid }: { uid: string }) {
   }
 
   // Direct API push — one tap, events land in Google Calendar instantly.
+  // Honesty rule: only claim success when EVERY block landed; a partial push
+  // says exactly what happened (blind retries would duplicate events).
   async function pushAllApi() {
     if (!blocks.length || !clientId || pushState === "pushing") return;
-    setPushState("pushing");
+    setPushState("pushing"); setPushNote("");
     try {
       const t = (await acquireToken(clientId, false)) ?? (await acquireToken(clientId, true));
-      if (!t) { setPushState("error"); return; }
+      if (!t) { setPushState("error"); setPushNote("Google didn't grant access."); return; }
       const created = await pushBlocks(clientId, blocks);
-      if (created > 0) {
+      if (created === blocks.length) {
         burstConfetti("small");
         markSynced();
         setPushState("done");
         setTimeout(() => setPushState("idle"), 4000);
+      } else if (created > 0) {
+        setPushState("error");
+        setPushNote(`Only ${created} of ${blocks.length} made it — check Google Calendar before retrying, or you'll get duplicates.`);
       } else {
         setPushState("error");
+        setPushNote("Nothing was pushed — check your connection and try again.");
       }
     } catch {
       setPushState("error");
+      setPushNote("Push interrupted — check Google Calendar to see what landed before retrying.");
     }
   }
 
@@ -182,7 +190,7 @@ export default function Night({ uid }: { uid: string }) {
             {clientId ? (
               <button onClick={pushAllApi} disabled={pushState === "pushing"}
                 className="mt-3 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95 disabled:opacity-50">
-                {pushState === "pushing" ? "Pushing…" : pushState === "done" ? "✓ On your calendar" : pushState === "error" ? "Failed — tap to retry" : `⚡ Push all ${blocks.length} to Google Calendar`}
+                {pushState === "pushing" ? "Pushing…" : pushState === "done" ? "✓ All on your calendar" : pushState === "error" ? "Didn't finish — see note" : `⚡ Push all ${blocks.length} to Google Calendar`}
               </button>
             ) : (
               <button onClick={pushAllIcs}
@@ -190,6 +198,7 @@ export default function Night({ uid }: { uid: string }) {
                 📅 Add all {blocks.length} to calendar (.ics)
               </button>
             )}
+            {pushNote && <p className="text-xs text-orange-400 mt-2">{pushNote}</p>}
             <p className="text-[10px] opacity-40 mt-2">
               {clientId
                 ? "Writes each block straight into Google Calendar. Edit or move them afterwards with ✏️ Edit on the calendar card."

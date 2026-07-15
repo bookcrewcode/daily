@@ -53,8 +53,9 @@ export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?
         setMsg({ head: "👁️ Overseer", body: "Zero taps yet today — that's not failure, that's a blocked start. Break the seal with the easiest toggle on this screen. One tap. Momentum follows action, not the other way around.", tone: "warn" });
         return;
       }
-      // strong day — bank the identity, not just the points
-      if (todayScore >= Math.ceil(WIN_KEYS.length * 0.7)) {
+      // strong day — bank the identity, not just the points. After 7pm the
+      // UrgencyCard owns the "streak on the line" story; don't contradict it.
+      if (todayScore >= Math.ceil(WIN_KEYS.length * 0.7) && (hour < 19 || todayScore === WIN_KEYS.length)) {
         setMsg({ head: "👁️ Overseer", body: `${todayScore}/${WIN_KEYS.length} today. This is what consistent looks like — remember this feeling tomorrow morning.`, tone: "good" });
         return;
       }
@@ -65,7 +66,9 @@ export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?
       }
       setMsg(null);
     })();
-  }, [uid, game.streak.streak]);
+    // todayXP moves with every habit tap, so the message re-evaluates as the
+    // day changes — a "zero taps yet" nudge must not outlive its truth
+  }, [uid, game.streak.streak, game.todayXP]);
 
   if (!msg) return null;
   const warn = msg.tone === "warn";

@@ -52,8 +52,10 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
           setMode("api");
           return;
         } catch (e) {
-          if (!(e instanceof NeedsAuth)) throw e;
-          setNeedsConnect(true); // fall through to ICS if available
+          // ANY api failure falls through to the ICS fallback when configured —
+          // that's the whole point of keeping the secret address around
+          if (e instanceof NeedsAuth) setNeedsConnect(true);
+          else if (!settings.ics) throw e;
         }
       } else if (settings.clientId) {
         setNeedsConnect(true);

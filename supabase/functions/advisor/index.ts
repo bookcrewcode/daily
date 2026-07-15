@@ -225,13 +225,13 @@ async function callClaude(model: string, system: string, messages: unknown[], ma
 async function extractMemories(token: string, userMsg: string, reply: string, apiKey: string) {
   try {
     const h = { apikey: ANON, Authorization: `Bearer ${token}` };
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/ai_memories?select=content&order=created_at.desc&limit=15`, { headers: h });
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/ai_memories?select=content&order=created_at.desc&limit=40`, { headers: h });
     const known: string[] = r.ok ? ((await r.json()) as { content: string }[]).map((m) => m.content) : [];
     const sys = `You maintain the long-term memory of a personal coaching app for Ben. From the exchange, extract 0-2 DURABLE facts worth remembering in future conversations — life context, commitments he made, goals, struggles, people, preferences. Only things that still matter in a week+. Nothing session-specific, nothing already known.
 Already known (do NOT repeat): ${known.join(" | ") || "nothing yet"}
 Reply ONLY valid JSON, no fences: {"memories": [{"content": "short fact in third person about Ben", "category": "identity|goal|commitment|struggle|relationship|preference|general"}]}`;
     const raw = await callClaude("claude-haiku-4-5-20251001", sys, [{ role: "user", content: `Ben: ${userMsg.slice(0, 1500)}\n\nCoach: ${reply.slice(0, 1500)}` }], 300, apiKey);
-    const parsed = JSON.parse(raw.trim());
+    const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
     const mems = (Array.isArray(parsed?.memories) ? parsed.memories : []).slice(0, 2);
     for (const m of mems) {
       if (!m?.content) continue;
@@ -310,15 +310,22 @@ Reply with ONLY valid JSON, no markdown fences, no other text: {"word": "...", "
     if (advisor === "session-recap") {
       if (!topicId) return new Response(JSON.stringify({ error: "No topic given." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
       const h = { apikey: ANON, Authorization: `Bearer ${token}` };
-      const r = await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?advisor=eq.tutor&topic_id=eq.${topicId}&select=role,content&order=created_at.desc&limit=40`, { headers: h });
-      const rows = r.ok ? ((await r.json()) as { role: string; content: string }[]) : [];
-      const transcript = rows.reverse().map((m) => `${m.role === "user" ? "BEN" : "TUTOR"}: ${m.content}`).join("\n\n").slice(0, 24000);
+      // "session" = the last 12 hours of tutoring; falls back to the last 40
+      // messages if today was quiet. Keep the NEWEST content when truncating.
+      const sessionStart = new Date(Date.now() - 12 * 3600_000).toISOString();
+      let r = await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?advisor=eq.tutor&topic_id=eq.${topicId}&created_at=gte.${sessionStart}&select=role,content&order=created_at.desc&limit=40`, { headers: h });
+      let rows = r.ok ? ((await r.json()) as { role: string; content: string }[]) : [];
+      if (rows.length === 0) {
+        r = await fetch(`${SUPABASE_URL}/rest/v1/chat_messages?advisor=eq.tutor&topic_id=eq.${topicId}&select=role,content&order=created_at.desc&limit=40`, { headers: h });
+        rows = r.ok ? ((await r.json()) as { role: string; content: string }[]) : [];
+      }
+      const transcript = rows.reverse().map((m) => `${m.role === "user" ? "BEN" : "TUTOR"}: ${m.content}`).join("\n\n").slice(-24000);
       if (!transcript) return new Response(JSON.stringify({ error: "No tutor conversation for this topic yet — talk to the Tutor first." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
       const sys = `Extract a structured recap of this tutoring session between Ben and his AI tutor. Be faithful to what actually happened — no inventing. Reply ONLY valid JSON, no fences:
 {"chunks": ["core idea in plain words", ...max 4], "weak_spots": ["specific thing Ben struggled with", ...max 3, empty if none], "retrieval": [{"question": "a retrieval question the tutor asked", "got_it": true|false}, ...max 8, empty if none]}`;
       try {
         const raw = await callClaude("claude-haiku-4-5-20251001", sys, [{ role: "user", content: transcript }], 700, ANTHROPIC_API_KEY);
-        const parsed = JSON.parse(raw.trim().replace(/^```json?\s*|\s*```$/g, ""));
+        const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
         return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch {
         return new Response(JSON.stringify({ error: "Couldn't build a recap from that session — try again." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
@@ -331,6 +338,10 @@ Reply with ONLY valid JSON, no markdown fences, no other text: {"word": "...", "
     const system = `${persona}\n\nBen has ADHD; keep it short, scannable, ADHD-friendly, execution over explanation. Use his live data below when relevant.\n\n${ctx}${learnCtx}`;
 
     const msgs = [...(Array.isArray(history) ? history : []), { role: "user", content: message }];
+    // history sanitation: a failed past exchange can leave an orphaned user row,
+    // which after windowing makes history START with an assistant turn — the
+    // Anthropic API 400s on that, bricking the thread. Trim to first user turn.
+    while (msgs.length && (msgs[0] as { role: string }).role !== "user") msgs.shift();
 
     const ai = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",

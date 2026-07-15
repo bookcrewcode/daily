@@ -35,8 +35,16 @@ const fromHHMM = (v: string): number | null => {
   const m = v.match(/^(\d{2}):(\d{2})$/);
   return m ? Number(m[1]) * 60 + Number(m[2]) : null;
 };
-const dayMidnight = (day: Date) => { const d = new Date(day); d.setHours(0, 0, 0, 0); return d.getTime(); };
-const relMins = (iso: string, day: Date) => Math.round((new Date(iso).getTime() - dayMidnight(day)) / 60000);
+// wall-clock day-relative minutes (NOT elapsed ms — that shifts an hour on
+// DST days): calendar-day offset × 1440 + local time of day
+const relMins = (iso: string, day: Date) => {
+  const d = new Date(iso);
+  const dayDiff = Math.round(
+    (new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() -
+     new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime()) / 86400000,
+  );
+  return dayDiff * 1440 + d.getHours() * 60 + d.getMinutes();
+};
 const atMins = (day: Date, mins: number) => { const d = new Date(day); d.setHours(0, mins, 0, 0); return d; };
 const spansDays = (ev: GEvent, day: Date) =>
   relMins(ev.start.dateTime!, day) < 0 || relMins(ev.end.dateTime!, day) > 24 * 60;
@@ -209,9 +217,16 @@ export default function CalendarEditor({ clientId, initialDay, onClose, onChange
                 // ever re-anchoring the underlying instants
                 const sRel = relMins(ev.start.dateTime!, day);
                 const enRel = relMins(ev.end.dateTime!, day);
-                const s = Math.max(sRel, START_H * 60);
-                const en = Math.min(enRel, END_H * 60);
-                if (en <= s) return null; // entirely outside the visible window
+                if (enRel <= 0 || sRel >= 24 * 60) return null; // other days entirely
+                let s = Math.max(sRel, START_H * 60);
+                let en = Math.min(enRel, END_H * 60);
+                if (en <= s) {
+                  // real event outside the 6am–11pm window (early flight, late
+                  // night) — pin a visible sliver instead of silently hiding it,
+                  // or a just-created 11pm event would "vanish" and invite dupes
+                  if (sRel >= END_H * 60) { s = END_H * 60 - 26 / (HOUR_PX / 60); en = END_H * 60; }
+                  else { s = START_H * 60; en = START_H * 60 + 26 / (HOUR_PX / 60); }
+                }
                 const cross = spansDays(ev, day);
                 const top = ((s - START_H * 60) / 60) * HOUR_PX;
                 const height = Math.max(((en - s) / 60) * HOUR_PX, 26);

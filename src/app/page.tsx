@@ -200,16 +200,25 @@ function QuickCapture({ uid }: { uid: string }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [flash, setFlash] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [saving, setSaving] = useState(false);
   const voice = useVoiceInput((t) => setText(t));
 
   async function save() {
     const t = text.trim();
-    if (!t) return;
+    if (!t || saving) return;
+    setSaving(true); setFailed(false);
+    // "captured = safe" has to be TRUE — only celebrate once the write landed
+    const { error } = await supabase.from("captures").insert({ user_id: uid, text: t });
+    setSaving(false);
+    if (error) {
+      setFailed(true); // text stays in the box — nothing lost
+      return;
+    }
     setText("");
     sfx.pop(); buzz(15);
     setFlash(true);
     setTimeout(() => { setFlash(false); setOpen(false); }, 900);
-    await supabase.from("captures").insert({ user_id: uid, text: t });
   }
 
   return (
@@ -234,9 +243,10 @@ function QuickCapture({ uid }: { uid: string }) {
                   <button onClick={voice.toggle}
                     className={`w-12 rounded-xl font-bold active:scale-95 ${voice.listening ? "bg-red-500 text-white animate-pulse" : "bg-white/10"}`}>🎤</button>
                 )}
-                <button onClick={save} className="px-4 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95">＋</button>
+                <button onClick={save} disabled={saving} className="px-4 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95 disabled:opacity-50">{saving ? "…" : "＋"}</button>
               </div>
             )}
+            {failed && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t save — your text is still here. Check connection and tap ＋ again.</p>}
             <p className="text-[10px] opacity-40 mt-2">Lands in 🧭 Plan → Inbox. Sort it later — or never. Captured beats organized.</p>
           </div>
         </div>
