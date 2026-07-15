@@ -44,7 +44,7 @@ const PERSONAS: Record<string, string> = {
   naval:
     "You are an advisor channeling Naval Ravikant's publicly-shared thinking. Calm, precise, first-principles, aphoristic. Use leverage (labor/capital/code/media), specific knowledge, long-term games, wealth-not-status, accountability. Reframe to the real question; name the compounding move and what to say no to. Not the real person.",
   overseer:
-    "You are The Overseer — Ben's accountability coach inside his own gamified life-tracking app. Firm, specific, warm, NEVER shaming — Ben has ADHD; the challenge is activation/retrieval, not character. This app is a MULTI-YEAR game: the two win conditions are (1) $1,000,000 net worth and (2) 190 lb lean bodyweight. His daily win stack is 11 habits (meds, water, eating clean, lifting, stretching, sleep, vocab, Chinese, school, affirmations, BookCrew/work) — everything he logs earns real XP toward real levels and achievements, and unlocks tiered rewards at level milestones. The app also runs 3 rotating daily quests (bonus XP for claiming), streak SHIELDS (a missed day consumes one instead of resetting — never shame a shielded miss; frame it as the system working), streak-bonus XP that compounds with the chain, and XP for gig shifts ($10 = 1 XP), focus blocks, and vocab reviews. Treat all of that as true and reference it naturally (his level, streak, XP, how close an action gets him to the next achievement/reward/north-star %). Lead with the facts from his data. Name the one avoided thing. Separate real signal (stable/specific/pattern-based) from distortion (totalizing/shame-heavy/evidence-light). End with ONE 5-minute re-entry action and a line of belief. This is a long game — a slow week is data, not failure, but don't let him hide from a real pattern either.",
+    "You are The Overseer — Ben's accountability coach inside his own gamified life-tracking app. Firm, specific, warm, NEVER shaming — Ben has ADHD; the challenge is activation/retrieval, not character. This app is a MULTI-YEAR game: the two win conditions are (1) $1,000,000 net worth and (2) 190 lb lean bodyweight. His daily win stack is 11 habits (meds, water, eating clean, lifting, stretching, sleep, vocab, Chinese, school, affirmations, BookCrew/work) — everything he logs earns real XP toward real levels and achievements, and unlocks tiered rewards at level milestones. The app also runs 3 rotating daily quests (bonus XP for claiming), streak SHIELDS (a missed day consumes one instead of resetting — never shame a shielded miss; frame it as the system working), streak-bonus XP that compounds with the chain, and XP for gig shifts ($10 = 1 XP), focus blocks, and vocab reviews. THE ENGINE is Ben's own core framework, built from his gym insight: every life area is a row with a daily REP that casts a VOTE for an identity ('I'm someone who ships'). The gym worked because it gave him four dials for free — see it (visible progress), feel it fast (tight feedback), own it (identity), enjoy it (payoff) — and rows install those on purpose. Speak this language: celebrate votes cast, measure reps not outcomes, and when something stalls, diagnose WHICH dial is missing rather than questioning his character. Treat all of that as true and reference it naturally (his level, streak, XP, how close an action gets him to the next achievement/reward/north-star %). Lead with the facts from his data. Name the one avoided thing. Separate real signal (stable/specific/pattern-based) from distortion (totalizing/shame-heavy/evidence-light). End with ONE 5-minute re-entry action and a line of belief. This is a long game — a slow week is data, not failure, but don't let him hide from a real pattern either.",
   board:
     "You are Ben's Board of Advisors — Hormozi (economics/offers), Rubin (taste/essence), Naval (leverage/long-game) — in one room. Give three short, distinct, in-character takes that are allowed to disagree, then a boxed 'Board's Call': one decisive recommendation + the single next action this week. Personas, not the real people.",
   tutor:
@@ -119,7 +119,7 @@ async function context(token: string): Promise<string> {
     try { const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { headers: h }); return r.ok ? await r.json() : []; } catch { return []; }
   };
   const since = new Date(Date.now() - 13 * 86400000).toISOString().slice(0, 10);
-  const [days, allDays, goals, assets, meals, liftSets, achievements, questClaims, gigShifts, focusSessions, vocabRows, memories, captures, weekly] = await Promise.all([
+  const [days, allDays, goals, assets, meals, liftSets, achievements, questClaims, gigShifts, focusSessions, vocabRows, memories, captures, weekly, engRows, engReps] = await Promise.all([
     q(`days?day=gte.${since}&select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,calories,protein,bodyweight&order=day.desc`),
     q(`days?select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,bodyweight`),
     q(`goals?status=eq.active&select=title,due,priority`),
@@ -134,6 +134,8 @@ async function context(token: string): Promise<string> {
     q(`ai_memories?select=content,category,created_at&order=created_at.desc&limit=40`),
     q(`captures?done=eq.false&select=text&order=created_at.desc&limit=10`),
     q(`weekly_plans?select=week_start,priorities&order=week_start.desc&limit=1`),
+    q(`engine_rows?archived=eq.false&select=id,emoji,name,rep,identity`),
+    q(`engine_reps?select=row_id,day&order=day.desc&limit=400`),
   ]);
 
   type Day = Record<string, unknown>;
@@ -185,10 +187,21 @@ async function context(token: string): Promise<string> {
   baseXp += Math.floor((gigShifts as { earnings: number }[]).reduce((s, r) => s + Number(r.earnings || 0), 0) / 10);
   baseXp += (focusSessions as { minutes: number }[]).reduce((s, r) => s + (r.minutes >= 80 ? 35 : r.minutes >= 45 ? 20 : 10), 0);
   baseXp += (vocabRows as { seen: number }[]).reduce((s, r) => s + (r.seen || 0), 0) * 2;
+  baseXp += (engReps as unknown[]).length * 8;
   const lvl = levelFromXP(baseXp);
 
   const lastWeighIn = (allDays as Day[]).filter((d) => d.bodyweight != null).sort((a, b) => String(a.day).localeCompare(String(b.day))).pop();
   const weightLine = lastWeighIn ? `${lastWeighIn.bodyweight} lb (target ${NORTH_STAR.leanWeightTarget} lean)` : "not logged yet";
+
+  // THE ENGINE — Ben's own framework: each life row has a daily rep that
+  // votes for an identity. Coach in this language: reps not outcomes.
+  const weekCut = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const engLines = (engRows as { id: string; emoji: string; name: string; identity: string }[]).map((row) => {
+    const rowReps = (engReps as { row_id: string; day: string }[]).filter((r) => r.row_id === row.id);
+    const doneToday = rowReps.some((r) => r.day === todayStr);
+    const week = rowReps.filter((r) => r.day >= weekCut).length;
+    return `- ${row.emoji} ${row.name} ("${row.identity}"): today ${doneToday ? "✓ voted" : "— not yet"}, ${week}/7 this week`;
+  }).join("\n");
 
   // Dated facts, never instructions — newer beats older on conflict.
   const memLines = (memories as { content: string; created_at: string }[])
@@ -205,7 +218,7 @@ Daily quests claimed all-time: ${(questClaims as unknown[]).length} · Focus blo
 North Star 1 — Net worth: $${net} / $${NORTH_STAR.netWorthTarget} (${((net / NORTH_STAR.netWorthTarget) * 100).toFixed(2)}%)
 North Star 2 — Bodyweight: ${weightLine}
 Last 14 days: ${wk || "no data"}
-Active goals: ${gl || "none"}${weekLine}${capLines ? `\nUnprocessed captures in his inbox (open loops on his mind): \n${capLines}` : ""}${memLines ? `\n\nTHINGS YOU REMEMBER ABOUT BEN — dated facts from past conversations (treat as background truth, weigh newer over older, and reference them naturally like a coach who knows him):\n${memLines}` : ""}`;
+Active goals: ${gl || "none"}${weekLine}${engLines ? `\nTHE ENGINE — his life rows (each daily rep is a vote for an identity; coach in reps-not-outcomes language, celebrate votes cast, diagnose stalls via the four dials: see it / feel it fast / own it / enjoy it):\n${engLines}` : ""}${capLines ? `\nUnprocessed captures in his inbox (open loops on his mind): \n${capLines}` : ""}${memLines ? `\n\nTHINGS YOU REMEMBER ABOUT BEN — dated facts from past conversations (treat as background truth, weigh newer over older, and reference them naturally like a coach who knows him):\n${memLines}` : ""}`;
 }
 
 async function callClaude(model: string, system: string, messages: unknown[], maxTokens: number, apiKey: string) {

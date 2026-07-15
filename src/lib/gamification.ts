@@ -40,6 +40,7 @@ export const GOAL_DONE_XP = 50;
 export const BODYWEIGHT_LOG_XP = 5;
 export const VOCAB_REVIEW_XP = 2; // per quiz answer (derived from vocab.seen)
 export const GIG_XP_PER_DOLLARS = 10; // 1 XP per $10 hustled
+export const REP_XP = 8; // per Engine rep — a checked box is a cast vote
 
 export function focusXP(minutes: number): number {
   if (minutes >= 80) return 35;
@@ -61,6 +62,8 @@ export type GameData = {
   vocabWordCount: number;
   learningSessionsCount: number;
   prCount: number;        // lift personal records, derived from lift_sets history
+  engineRepsCount: number;   // total Engine reps (votes cast)
+  maxRowRepCount: number;    // deepest groove — most reps on a single row
 };
 
 export function scoreOf(d: Record<string, unknown>): number {
@@ -152,6 +155,7 @@ export function baseXP(g: GameData): number {
   xp += Math.floor(g.gigEarnings / GIG_XP_PER_DOLLARS);
   xp += g.focusMinutesList.reduce((s, m) => s + focusXP(m), 0);
   xp += g.vocabReviews * VOCAB_REVIEW_XP;
+  xp += g.engineRepsCount * REP_XP;
   return xp;
 }
 
@@ -270,6 +274,14 @@ export const ACHIEVEMENTS: Achievement[] = [
     check: (g) => g.gigEarnings >= 5000 },
 
   // ── Learning ──
+  // ── The Engine (reps = votes for who you're becoming) ──
+  { key: "votes_100", emoji: "🗳️", name: "100 Votes Cast", desc: "100 Engine reps — identity is built from votes", xp: 150,
+    check: (g) => g.engineRepsCount >= 100 },
+  { key: "votes_500", emoji: "🗳️", name: "500 Votes Cast", desc: "500 Engine reps", xp: 400,
+    check: (g) => g.engineRepsCount >= 500 },
+  { key: "deep_groove", emoji: "⚙️", name: "Deep Groove", desc: "30 reps on a single row — that's a habit now", xp: 200,
+    check: (g) => g.maxRowRepCount >= 30 },
+
   { key: "sessions_20", emoji: "🌳", name: "Twenty Sessions", desc: "Save 20 learning sessions", xp: 150,
     check: (g) => g.learningSessionsCount >= 20 },
 
@@ -309,6 +321,7 @@ export const CATEGORIES: Category[] = [
   { key: "quests", label: "Daily Quests", emoji: "🗡️", keys: ["quests_10", "quests_50", "quests_200"] },
   { key: "volume", label: "Volume & Mastery", emoji: "💪", keys: ["days_50", "days_100", "lift_30", "chinese_30", "vocab_50", "words_100", "meals_100", "sets_500", "goals_10", "hydro_7"] },
   { key: "strength", label: "Strength & Focus", emoji: "🏆", keys: ["pr_10", "pr_50", "focus_10", "focus_100", "gig_1k", "gig_5k", "sessions_20"] },
+  { key: "engine", label: "The Engine", emoji: "⚙️", keys: ["votes_100", "votes_500", "deep_groove"] },
   { key: "body", label: "190 Lean", emoji: "🏆", keys: ["lean_190"] },
   { key: "money", label: "Millionaire", emoji: "👑", keys: ["net_1k", "net_10k", "net_25k", "net_50k", "net_100k", "net_250k", "net_500k", "net_750k", "millionaire"] },
 ];

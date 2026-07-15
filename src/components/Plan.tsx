@@ -18,6 +18,42 @@ import { SectionTitle, Card } from "./ui";
 type Capture = { id: string; text: string; done: boolean; created_at: string };
 type WeekPlan = { id?: string; week_start: string; priorities: string[]; notes: string; reviewed_at: string | null };
 
+// The Mirror's stack: this week's Engine reps vs last week's, per row —
+// the "watch your body change" moment for goals without a literal mirror.
+function MirrorStack({ uid }: { uid: string }) {
+  const [stack, setStack] = useState<{ emoji: string; name: string; now: number; prev: number }[] | null>(null);
+  useEffect(() => {
+    (async () => {
+      const since = new Date(); since.setDate(since.getDate() - 14);
+      const [{ data: rows }, { data: reps }] = await Promise.all([
+        supabase.from("engine_rows").select("id,emoji,name").eq("user_id", uid).eq("archived", false),
+        supabase.from("engine_reps").select("row_id,day").eq("user_id", uid).gte("day", dateStr(since)),
+      ]);
+      if (!rows?.length) { setStack([]); return; }
+      const weekAgo = new Date(); weekAgo.setDate(weekAgo.getDate() - 7);
+      const cut = dateStr(weekAgo);
+      setStack(rows.map((r) => ({
+        emoji: r.emoji, name: r.name,
+        now: (reps ?? []).filter((x) => x.row_id === r.id && x.day >= cut).length,
+        prev: (reps ?? []).filter((x) => x.row_id === r.id && x.day < cut).length,
+      })));
+    })();
+  }, [uid]);
+  if (!stack || stack.length === 0) return null;
+  return (
+    <div className="rounded-xl bg-black/30 p-2.5 mb-1">
+      <p className="text-[10px] uppercase tracking-widest opacity-50 mb-1.5">🪞 the stack — reps this week (vs last)</p>
+      {stack.map((s) => (
+        <div key={s.name} className="flex items-center gap-2 text-sm py-0.5">
+          <span className="flex-1 min-w-0 truncate">{s.emoji} {s.name}</span>
+          <span className="flex gap-[2px]">{Array.from({ length: Math.min(s.now, 7) }, (_, i) => <span key={i} className="w-[6px] h-[14px] rounded-sm bg-[var(--neon)]/80" />)}</span>
+          <span className={`text-xs font-bold tabular-nums shrink-0 ${s.now >= s.prev ? "text-[var(--neon)]" : "text-orange-300"}`}>{s.now} <span className="opacity-50 font-normal">({s.prev})</span></span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function mondayOf(d = new Date()): string {
   const c = new Date(d);
   c.setDate(c.getDate() - ((c.getDay() + 6) % 7));
@@ -275,10 +311,11 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
             </div>
           ) : (
             <div className="space-y-2">
+              <MirrorStack uid={uid} />
               <p className="text-xs font-bold">1 · What's one win from this week?</p>
               <input value={review.win} onChange={(e) => setReview({ ...review, win: e.target.value })}
                 className="w-full rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" placeholder="anything counts" />
-              <p className="text-xs font-bold">2 · What dragged you down?</p>
+              <p className="text-xs font-bold">2 · What stalled — and which dial was missing? <span className="font-normal opacity-50">(see it · feel it fast · own it · enjoy it)</span></p>
               <input value={review.drag} onChange={(e) => setReview({ ...review, drag: e.target.value })}
                 className="w-full rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" placeholder="name it, don't judge it" />
               <p className="text-xs font-bold">3 · Set next week&apos;s 3 priorities above ☝️ then —</p>

@@ -9,7 +9,7 @@ import { supabase, todayStr, WIN_KEYS, type DayRow } from "./supabase";
 import {
   ACHIEVEMENTS, HABIT_XP, MEAL_XP, LIFT_SET_XP, NORTH_STAR, VOCAB_REVIEW_XP,
   achievementBonusXP, baseXP, computeStreak, computeUnlocked, countPRs, focusXP,
-  levelFromXP, scoreOf, WIN_TOTAL, GIG_XP_PER_DOLLARS,
+  levelFromXP, scoreOf, WIN_TOTAL, GIG_XP_PER_DOLLARS, REP_XP,
   type Achievement, type GameData, type StreakData,
 } from "./gamification";
 
@@ -46,6 +46,7 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
     days: [], mealsCount: 0, liftSetsDoneCount: 0, goalsDoneCount: 0, netWorth: 0,
     questXP: 0, questClaimCount: 0, gigEarnings: 0, focusMinutesList: [],
     vocabReviews: 0, vocabWordCount: 0, learningSessionsCount: 0, prCount: 0,
+    engineRepsCount: 0, maxRowRepCount: 0,
   });
   const [days, setDays] = useState<GameDayRow[]>([]);
   const [unlockedKeys, setUnlockedKeys] = useState<Set<string>>(new Set());
@@ -53,7 +54,7 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
   const [levelUp, setLevelUp] = useState<{ level: number; title: string } | null>(null);
   const [lastSeenLevel, setLastSeenLevel] = useState<number | null>(null);
   const [netWorthHistory, setNetWorthHistory] = useState<{ day: string; value: number }[]>([]);
-  const [todayExtras, setTodayExtras] = useState({ meals: 0, sets: 0, questXP: 0, gig: 0, focusXP: 0 });
+  const [todayExtras, setTodayExtras] = useState({ meals: 0, sets: 0, questXP: 0, gig: 0, focusXP: 0, reps: 0 });
   const [todaysQuestClaims, setTodaysQuestClaims] = useState<Set<string>>(new Set());
 
   const load = useCallback(async () => {
@@ -64,7 +65,7 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
       { count: goalsDoneCount }, { data: assets }, { data: existing },
       { data: questRows }, { data: gigRows }, { data: focusRows },
       { data: vocabRows }, { count: learningSessionsCount },
-      { data: settingsRow }, { data: nwHistory },
+      { data: settingsRow }, { data: nwHistory }, { data: engineReps },
     ] = await Promise.all([
       supabase.from("days").select(DAY_COLS).eq("user_id", uid),
       supabase.from("meals").select("id", { count: "exact", head: true }).eq("user_id", uid),
@@ -82,6 +83,7 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
       supabase.from("learning_sessions").select("id", { count: "exact", head: true }).eq("user_id", uid),
       supabase.from("user_settings").select("last_seen_level").eq("user_id", uid).maybeSingle(),
       supabase.from("net_worth_snapshots").select("day,value").eq("user_id", uid).order("day"),
+      supabase.from("engine_reps").select("row_id,day").eq("user_id", uid),
     ]);
 
     const netWorth = (assets ?? []).reduce((s, a) => s + (a.kind === "asset" ? Number(a.value) : -Number(a.value)), 0);
@@ -106,6 +108,13 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
       vocabWordCount: (vocabRows ?? []).length,
       learningSessionsCount: learningSessionsCount ?? 0,
       prCount: countPRs((liftHistory ?? []).map((r) => ({ ...r, weight: r.weight == null ? null : Number(r.weight), done: true }))),
+      engineRepsCount: (engineReps ?? []).length,
+      maxRowRepCount: Math.max(0, ...Object.values(
+        (engineReps ?? []).reduce<Record<string, number>>((acc, r) => {
+          acc[r.row_id] = (acc[r.row_id] ?? 0) + 1;
+          return acc;
+        }, {}),
+      )),
     };
     setGame(g);
     setDays(rows);
@@ -117,6 +126,7 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
       questXP: (questRows ?? []).filter((q) => q.day === today).reduce((s, q) => s + q.xp, 0),
       gig: (gigRows ?? []).filter((r) => r.day === today).reduce((s, r) => s + Number(r.earnings), 0),
       focusXP: (focusRows ?? []).filter((r) => r.day === today).reduce((s, r) => s + focusXP(r.minutes), 0),
+      reps: (engineReps ?? []).filter((r) => r.day === today).length,
     });
     setTodaysQuestClaims(new Set((questRows ?? []).filter((q) => q.day === today).map((q) => q.quest_key as string)));
 
@@ -201,7 +211,7 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
     todayXP += (todayRow.vocab_reviews ?? 0) * VOCAB_REVIEW_XP;
   }
   todayXP += todayExtras.meals * MEAL_XP + todayExtras.sets * LIFT_SET_XP + todayExtras.questXP
-    + Math.floor(todayExtras.gig / GIG_XP_PER_DOLLARS) + todayExtras.focusXP;
+    + Math.floor(todayExtras.gig / GIG_XP_PER_DOLLARS) + todayExtras.focusXP + todayExtras.reps * REP_XP;
 
   const value: GameState = {
     loading,

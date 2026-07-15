@@ -14,6 +14,7 @@ import CalendarCard from "./CalendarCard";
 import Quests from "./Quests";
 import WeatherStrip from "./WeatherStrip";
 import UrgencyCard from "./UrgencyCard";
+import Scoreboard from "./Scoreboard";
 
 type WinKey = (typeof WIN_KEYS)[number];
 
@@ -166,6 +167,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       <GameBar />
       <Overseer uid={uid} onOpenChat={onOpenAdvisor} />
       <UrgencyCard todayRow={row} onGoTab={onGoTab} />
+      <Scoreboard uid={uid} />
 
       {plan && (
         <Card tone="neon" className="mt-3">
