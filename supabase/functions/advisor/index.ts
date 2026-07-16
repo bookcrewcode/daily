@@ -174,6 +174,25 @@ async function context(token: string, clientDay?: string): Promise<string> {
   ]);
   const daysUnavailable = failed.has("days");
 
+  // Income + constraint — the Hormozi layer: the coach must see the lead measures
+  // on the $1M (this week's revenue activities) and the week's binding constraint.
+  const mondayISO = (() => { const d = new Date(anchor); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); })();
+  const [incomeWeek, constraintRow] = await Promise.all([
+    q(`income_activities?day=gte.${mondayISO}&select=kind,qty,value`),
+    q(`weekly_constraints?week_start=eq.${mondayISO}&select=area,bottleneck,metric,target,baseline`),
+  ]);
+  const incRows = incomeWeek as { kind: string; qty: number; value: number }[];
+  const incCount = (k: string) => incRows.filter((r) => r.kind === k).reduce((s, r) => s + (r.qty || 0), 0);
+  const weekRevenue = incRows.filter((r) => r.kind === "close").reduce((s, r) => s + Number(r.value || 0), 0);
+  const moneyRepToday = (questClaims as { quest_key: string; day: string }[]).some((r) => r.quest_key === "moneyrep" && r.day === today);
+  const incomeLine = incRows.length || weekRevenue
+    ? `\nINCOME ENGINE (this week's lead measures on the $1M — outreach ${incCount("outreach")}, replies ${incCount("reply")}, demos ${incCount("demo")}, proposals ${incCount("proposal")}, closes ${incCount("close")}, affiliates ${incCount("affiliate")}; $${weekRevenue} booked; money rep today: ${moneyRepToday ? "✓ done" : "— not yet"}). Coach the LEADING activities, not just the balance — income is the lever on the $1M.`
+    : "\nINCOME ENGINE: no revenue activities logged this week yet — the $1M line only moves when he sells. Nudge ONE revenue action.";
+  const con = (constraintRow as { area: string; bottleneck: string; metric: string; target: number; baseline: number }[])[0];
+  const constraintLine = con && con.bottleneck
+    ? `\nTHIS WEEK'S ONE THING (his declared binding constraint — everything else is maintenance; hold him to it): [${con.area}] ${con.bottleneck}${con.metric ? ` · move "${con.metric}" ${con.baseline} → ${con.target}` : ""}.`
+    : "\nTHIS WEEK'S ONE THING: not set yet — if a clear bottleneck exists in his data, name it and tell him to commit to one.";
+
   type Day = Record<string, unknown>;
   const winKeys = ["ws_meds", "ws_eat", "ws_lift", "ws_stretch", "ws_vocab", "ws_chinese", "ws_work", "ws_water", "ws_sleep", "ws_school", "ws_affirmations"];
   const habitXp: Record<string, number> = { ws_lift: 20, ws_chinese: 10, ws_work: 10, ws_eat: 10, ws_sleep: 10, ws_school: 10, ws_meds: 5, ws_stretch: 5, ws_vocab: 5, ws_water: 5, ws_affirmations: 5 };
@@ -258,7 +277,7 @@ async function context(token: string, clientDay?: string): Promise<string> {
   // live in quest_claims (mirrors useGameData's questClaimCount filter).
   const questClaimCount = (questClaims as { quest_key: string }[]).filter((r) => {
     const k = String(r.quest_key);
-    return k !== "sweep" && k !== "weekly_review" &&
+    return k !== "sweep" && k !== "weekly_review" && k !== "moneyrep" &&
       !k.startsWith("chest_") && !k.startsWith("boss_") && !k.startsWith("gstep_") && !k.startsWith("month_");
   }).length;
 
@@ -276,7 +295,7 @@ Daily quests claimed all-time: ${questClaimCount} · Focus blocks done: ${(focus
 North Star 1 — Net worth: $${net} / $${NORTH_STAR.netWorthTarget} (${((net / NORTH_STAR.netWorthTarget) * 100).toFixed(2)}%)
 North Star 2 — Bodyweight: ${weightLine}
 Last 14 days: ${wk || "no data"}
-Active goals: ${gl || "none"}${weekLine}${engLines ? `\nTHE ENGINE — his life rows (each daily rep is a vote for an identity; coach in reps-not-outcomes language, celebrate votes cast, diagnose stalls via the four dials: see it / feel it fast / own it / enjoy it):\n${engLines}` : ""}${capLines ? `\nUnprocessed captures in his inbox (open loops on his mind): \n${capLines}` : ""}${memLines ? `\n\nTHINGS YOU REMEMBER ABOUT BEN — dated facts from past conversations (treat as background truth, weigh newer over older, and reference them naturally like a coach who knows him):\n${memLines}` : ""}`;
+Active goals: ${gl || "none"}${weekLine}${constraintLine}${incomeLine}${engLines ? `\nTHE ENGINE — his life rows (each daily rep is a vote for an identity; coach in reps-not-outcomes language, celebrate votes cast, diagnose stalls via the four dials: see it / feel it fast / own it / enjoy it):\n${engLines}` : ""}${capLines ? `\nUnprocessed captures in his inbox (open loops on his mind): \n${capLines}` : ""}${memLines ? `\n\nTHINGS YOU REMEMBER ABOUT BEN — dated facts from past conversations (treat as background truth, weigh newer over older, and reference them naturally like a coach who knows him):\n${memLines}` : ""}`;
 }
 
 async function callClaude(model: string, system: string, messages: unknown[], maxTokens: number, apiKey: string) {
@@ -445,6 +464,22 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
         return new Response(JSON.stringify({ text: text.trim() }), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch (e) {
         return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Couldn't write one — try again." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+    }
+
+    // 🎯 Constraint diagnosis — the Overseer names the week's binding constraint
+    // from live data. Returns structured JSON the client drops into the editor
+    // for Ben to edit and commit; never an auto-write.
+    if (advisor === "constraint") {
+      const ctx = await context(token, clientDay || undefined);
+      const sys = `You are The Overseer applying Theory of Constraints to Ben's week. From his live data below, identify the SINGLE binding constraint — the one bottleneck that, if moved, most advances his $1M net worth or 190 lb goals. Everything else is maintenance. Prefer income when net worth is flat and revenue activity is low (you can't cut your way to $1M). Reply ONLY valid JSON, no fences:
+{"area": "income|body|mind|system", "bottleneck": "the one bottleneck in plain words, <12 words", "metric": "the ONE number to move", "baseline": integer (where it is now, best estimate or 0), "target": integer (a realistic 1-week target), "why": "one short sentence on why this is the constraint"}\n\n${ctx}`;
+      try {
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Name this week's constraint." }], 300, ANTHROPIC_API_KEY);
+        const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
+        return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
+      } catch {
+        return new Response(JSON.stringify({ error: "Couldn't diagnose it — set it yourself." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
       }
     }
 

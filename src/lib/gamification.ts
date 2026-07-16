@@ -42,6 +42,7 @@ export const BODYWEIGHT_LOG_XP = 5;
 export const VOCAB_REVIEW_XP = 2; // per quiz answer (derived from vocab.seen)
 export const GIG_XP_PER_DOLLARS = 10; // 1 XP per $10 hustled
 export const REP_XP = 8; // per Engine rep — a checked box is a cast vote
+export const MONEY_REP_XP = 15; // once/day, banked via quest_claims key "moneyrep" — a revenue action taken
 
 export function focusXP(minutes: number): number {
   if (minutes >= 80) return 35;

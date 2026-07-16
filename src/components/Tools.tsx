@@ -220,7 +220,7 @@ const EXPORT_TABLES = [
   "learning_sessions", "learning_retrieval", "learning_weak_spots",
   "claimed_rewards", "user_settings", "captures", "weekly_plans", "ai_memories", "chat_messages",
   "engine_rows", "engine_reps", "goal_steps", "meal_favorites", "workout_templates", "countdowns",
-  "monthly_reviews",
+  "monthly_reviews", "income_activities", "weekly_constraints",
 ];
 
 // ── 1-rep max — Epley estimate + working percentages ──

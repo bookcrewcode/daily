@@ -16,6 +16,7 @@ import { xpToast, sfx, buzz } from "@/lib/fx";
 import { SectionTitle, Card } from "./ui";
 import NowScreen from "./NowScreen";
 import MonthlyReview from "./MonthlyReview";
+import ConstraintCard from "./ConstraintCard";
 
 type Capture = { id: string; text: string; done: boolean; created_at: string };
 type WeekPlan = { id?: string; week_start: string; priorities: string[]; notes: string; reviewed_at: string | null };
@@ -308,6 +309,10 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
           </div>
         </>
       )}
+
+      {/* the ONE thing — the week's binding constraint, above the 3 priorities */}
+      <SectionTitle>🎯 The ONE thing this week</SectionTitle>
+      <ConstraintCard uid={uid} />
 
       {/* this week */}
       <SectionTitle>🗓️ This week · {weekLabel}</SectionTitle>

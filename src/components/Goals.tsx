@@ -9,6 +9,7 @@ import { xpToast } from "@/lib/fx";
 import { SectionTitle, Pill } from "./ui";
 import NorthStar from "./NorthStar";
 import WeeklyRecap from "./WeeklyRecap";
+import IsItWorking from "./IsItWorking";
 
 const JUMPS = [
   { id: "top", label: "🎯 Goals" },
@@ -259,6 +260,8 @@ export default function Goals({ uid }: { uid: string }) {
       </div>
 
       <WeeklyRecap />
+
+      <IsItWorking uid={uid} />
 
       <NorthStar uid={uid} />
     </div>

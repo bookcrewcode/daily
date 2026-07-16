@@ -16,6 +16,7 @@ import WeatherStrip from "./WeatherStrip";
 import UrgencyCard from "./UrgencyCard";
 import Scoreboard from "./Scoreboard";
 import BriefingCard from "./BriefingCard";
+import ConstraintCard from "./ConstraintCard";
 import BossCard from "./BossCard";
 
 type WinKey = (typeof WIN_KEYS)[number];
@@ -230,6 +231,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
 
       <GameBar />
       <BriefingCard uid={uid} />
+      <ConstraintCard uid={uid} compact />
       <Overseer uid={uid} onOpenChat={onOpenAdvisor} />
       <UrgencyCard todayRow={row} onGoTab={onGoTab} />
       <Scoreboard uid={uid} />

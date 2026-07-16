@@ -11,6 +11,7 @@ import Lifts from "@/components/Lifts";
 import Night from "@/components/Night";
 import Goals from "@/components/Goals";
 import Money from "@/components/Money";
+import IncomeEngine from "@/components/IncomeEngine";
 import Vocab from "@/components/Vocab";
 import Tools from "@/components/Tools";
 import Learning from "@/components/Learning";
@@ -20,7 +21,7 @@ import Plan from "@/components/Plan";
 import { useVoiceInput } from "@/lib/useVoiceInput";
 import { sfx, buzz } from "@/lib/fx";
 
-type Tab = "today" | "plan" | "goals" | "food" | "lifts" | "vocab" | "money" | "night" | "tools" | "learning" | "affirmations";
+type Tab = "today" | "plan" | "goals" | "food" | "lifts" | "vocab" | "money" | "hustle" | "night" | "tools" | "learning" | "affirmations";
 const PRIMARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "today", emoji: "✅", label: "Today" },
   { key: "plan", emoji: "🧭", label: "Plan" },
@@ -32,6 +33,7 @@ const SECONDARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "vocab", emoji: "✍️", label: "Vocab" },
   { key: "learning", emoji: "🌳", label: "Learning" },
   { key: "affirmations", emoji: "💫", label: "Affirm" },
+  { key: "hustle", emoji: "💸", label: "Hustle" },
   { key: "money", emoji: "💰", label: "Money" },
   { key: "night", emoji: "🌙", label: "Night" },
   { key: "tools", emoji: "🛠️", label: "Tools" },
@@ -134,6 +136,7 @@ function Shell({ uid }: { uid: string }) {
           {tab === "lifts" && <Lifts uid={uid} />}
           {tab === "vocab" && <Vocab uid={uid} />}
           {tab === "money" && <Money uid={uid} />}
+          {tab === "hustle" && <IncomeEngine />}
           {tab === "night" && <Night uid={uid} />}
           {tab === "tools" && <Tools />}
           {tab === "learning" && <Learning uid={uid} onOpenAdvisor={openAdvisor} />}

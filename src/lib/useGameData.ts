@@ -134,7 +134,7 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
       questXP,
       // chest/sweep/weekly-review bonus rows bank XP but aren't daily quests —
       // don't let them inflate the quests_10/50/200 achievement counters
-      questClaimCount: (questRows ?? []).filter((q) => q.quest_key !== "sweep" && q.quest_key !== "weekly_review" && !String(q.quest_key).startsWith("chest_") && !String(q.quest_key).startsWith("boss_") && !String(q.quest_key).startsWith("gstep_") && !String(q.quest_key).startsWith("month_")).length,
+      questClaimCount: (questRows ?? []).filter((q) => q.quest_key !== "sweep" && q.quest_key !== "weekly_review" && q.quest_key !== "moneyrep" && !String(q.quest_key).startsWith("chest_") && !String(q.quest_key).startsWith("boss_") && !String(q.quest_key).startsWith("gstep_") && !String(q.quest_key).startsWith("month_")).length,
       gigEarnings,
       focusMinutesList,
       vocabReviews: (vocabRows ?? []).reduce((s, v) => s + (v.seen ?? 0), 0),
