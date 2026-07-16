@@ -53,10 +53,13 @@ export default function Scoreboard({ uid }: { uid: string }) {
 
   const load = useCallback(async () => {
     const since = new Date(); since.setDate(since.getDate() - 120);
-    const [{ data: r }, { data: rp }] = await Promise.all([
+    const [{ data: r, error: rErr }, { data: rp }] = await Promise.all([
       supabase.from("engine_rows").select("*").eq("user_id", uid).eq("archived", false).order("sort").order("created_at"),
       supabase.from("engine_reps").select("row_id,day").eq("user_id", uid).gte("day", dateStr(since)),
     ]);
+    // READ-ERROR GUARD: a transient failure must not blank real Engine rows into
+    // the onboarding empty state. Keep prior rows/reps and bail.
+    if (rErr) return;
     setRows((r ?? []) as EngineRow[]);
     setReps((rp ?? []) as RepDay[]);
   }, [uid]);

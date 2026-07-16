@@ -69,11 +69,16 @@ export default function MonthlyReview({ uid }: { uid: string }) {
   async function submit() {
     if (!month || !stats) return;
     setNote("");
-    // Bank the XP FIRST. load() hides this card permanently once a
-    // monthly_reviews row exists, so that row must be written LAST — if it went
-    // in first and the bank then failed, the +60 could never be re-earned.
-    const banked = await game.bankQuestXP(`month_${month}`, MONTH_REVIEW_XP);
-    if (!banked) {
+    // Bank the XP FIRST, with a STABLE day (the month's 1st) rather than
+    // bankQuestXP's todayStr(). The (user_id, day, quest_key) UNIQUE then makes
+    // re-earning impossible even across a cross-day retry: a duplicate (23505)
+    // means it's already banked, so we proceed rather than double-paying +60.
+    // load() hides this card once a monthly_reviews row exists, so that row is
+    // written LAST — if it went first and the bank then failed, the +60 could
+    // never be re-earned.
+    const { error: bankErr } = await supabase.from("quest_claims")
+      .insert({ user_id: uid, day: `${month}-01`, quest_key: `month_${month}`, xp: MONTH_REVIEW_XP });
+    if (bankErr && bankErr.code !== "23505") {
       setNote("Couldn't bank the XP — your answers are still here. Try again.");
       return;
     }

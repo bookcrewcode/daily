@@ -84,7 +84,6 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
 
   const load = useCallback(async () => {
     const day = todayStr();
-    dayRef.current = day;
     setDoneTop3(loadTop3Done(day)); // day-scoped, from localStorage — naturally resets on rollover
     const [{ data, error }, { data: nightRow }] = await Promise.all([
       supabase.from("days").select("*").eq("user_id", uid).eq("day", day).maybeSingle(),
@@ -94,9 +93,12 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       // READ-ERROR GUARD: a transient read failure must NOT be read as "empty
       // day". Keep whatever row we already have — otherwise a later tap upserts
       // blanks (e.g. water_cups: 0) straight over real DB data. Flag and bail.
+      // dayRef is NOT advanced here, so a failed rollover read is retried by the
+      // next tick instead of stranding today on yesterday's row.
       setOffline(true);
       return;
     }
+    dayRef.current = day; // only after a clean read — see guard above
     setOffline(false);
     setRow(data ? { ...EMPTY, ...data, day } : { ...EMPTY, day });
     if (nightRow) {
@@ -143,10 +145,22 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   // failure the optimistic row is rolled back and a small note is shown, so
   // callers must not play sfx / float XP / fire confetti unless this returns true.
   async function save(patch: Partial<DayRow>): Promise<boolean> {
+    // MIDNIGHT GUARD: compute the day at call time. If the calendar rolled over
+    // while the app was open (before the 30s tick reloaded), refresh to the new
+    // day's row and bail — never bank a win onto yesterday's row.
+    const day = todayStr();
+    if (day !== dayRef.current) {
+      load(); game.refresh();
+      setSaveErr(true);
+      setTimeout(() => setSaveErr(false), 3000);
+      return false;
+    }
     const prev = row;
-    const next = { ...row, ...patch };
+    const next = { ...row, ...patch, day };
     setRow(next);
-    const { error } = await supabase.from("days").upsert({ user_id: uid, day: next.day, ...patch }, { onConflict: "user_id,day" });
+    // Only the patched columns are written (not the whole row), so this can't
+    // copy stale values onto the row — it targets the live day explicitly.
+    const { error } = await supabase.from("days").upsert({ user_id: uid, day, ...patch }, { onConflict: "user_id,day" });
     if (error) {
       setRow(prev); // revert — the win/water tap didn't persist
       setSaveErr(true);
@@ -154,7 +168,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       return false;
     }
     setSaveErr(false);
-    setHistory((h) => h.map((d) => d.day === next.day
+    setHistory((h) => h.map((d) => d.day === day
       ? { ...d, score: WIN_KEYS.reduce((s, k) => s + (next[k] ? 1 : 0), 0) } : d));
     game.refresh();
     return true;
