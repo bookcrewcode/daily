@@ -9,7 +9,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, dateStr, ADVISOR_FN, SUPABASE_ANON, todayStr } from "@/lib/supabase";
-import { useGame } from "@/lib/useGameData";
 import { Card } from "./ui";
 
 type Constraint = {
@@ -31,8 +30,8 @@ function mondayOf(d = new Date()): string {
 }
 
 // `compact` = the read-only banner shown on Today; full editor otherwise (Plan).
-export default function ConstraintCard({ uid, compact = false }: { uid: string; compact?: boolean }) {
-  const game = useGame();
+// On Today, the empty-state routes to Plan (the canonical editor) via onGoTab.
+export default function ConstraintCard({ uid, compact = false, onGoTab }: { uid: string; compact?: boolean; onGoTab?: (tab: string) => void }) {
   const [ws, setWs] = useState(mondayOf());
   const [c, setC] = useState<Constraint | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -128,11 +127,12 @@ export default function ConstraintCard({ uid, compact = false }: { uid: string; 
   // ── compact banner (Today) ──
   if (compact) {
     if (!c) {
+      // compact mode has no editor of its own — route to Plan's full editor
       return (
-        <button onClick={startEdit} className="w-full text-left mt-3">
+        <button onClick={() => onGoTab?.("plan")} className="w-full text-left mt-3">
           <Card tone="warn">
             <p className="text-sm font-bold">🎯 Name this week&apos;s ONE thing</p>
-            <p className="text-xs opacity-60 mt-0.5">One constraint. Everything else is maintenance. Tap to set it →</p>
+            <p className="text-xs opacity-60 mt-0.5">One constraint. Everything else is maintenance. Set it in 🧭 Plan →</p>
           </Card>
         </button>
       );

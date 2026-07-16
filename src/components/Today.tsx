@@ -231,7 +231,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
 
       <GameBar />
       <BriefingCard uid={uid} />
-      <ConstraintCard uid={uid} compact />
+      <ConstraintCard uid={uid} compact onGoTab={onGoTab} />
       <Overseer uid={uid} onOpenChat={onOpenAdvisor} />
       <UrgencyCard todayRow={row} onGoTab={onGoTab} />
       <Scoreboard uid={uid} />
