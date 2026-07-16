@@ -4,7 +4,7 @@
 // achievements toast on ANY tab (they used to be swallowed outside Today),
 // level-ups get a real moment, and data isn't double-fetched by parallel hooks.
 
-import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { supabase, todayStr, WIN_KEYS, type DayRow } from "./supabase";
 import {
   ACHIEVEMENTS, HABIT_XP, MEAL_XP, LIFT_SET_XP, NORTH_STAR, VOCAB_REVIEW_XP,
@@ -17,6 +17,7 @@ export type GameDayRow = GameData["days"][number] & { calories: number; protein:
 
 export type GameState = {
   loading: boolean;
+  refreshError: boolean; // last load() couldn't reach the DB — state is stale, not empty
   uid: string;
   level: { level: number; title: string; into: number; span: number; pct: number; totalXP: number };
   streak: StreakData;
@@ -40,6 +41,25 @@ const GameContext = createContext<GameState | null>(null);
 
 const DAY_COLS = "day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,bodyweight,water_cups,calories,protein,vocab_reviews";
 
+// Supabase caps a single response at 1000 rows. For row-returning selects whose
+// FULL history drives XP/streak/PRs (multi-year app), page through .range()
+// until a short page arrives — otherwise derived XP silently stops at row 1000.
+async function fetchAll<T>(
+  makeQuery: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
+): Promise<{ data: T[]; error: unknown }> {
+  const all: T[] = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await makeQuery(from, from + 999);
+    if (error) return { data: all, error };
+    const page = data ?? [];
+    all.push(...page);
+    if (page.length < 1000) break;
+    from += 1000;
+  }
+  return { data: all, error: null };
+}
+
 export function GameProvider({ uid, children }: { uid: string; children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [game, setGame] = useState<GameData>({
@@ -56,35 +76,48 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
   const [netWorthHistory, setNetWorthHistory] = useState<{ day: string; value: number }[]>([]);
   const [todayExtras, setTodayExtras] = useState({ meals: 0, sets: 0, questXP: 0, gig: 0, focusXP: 0, reps: 0 });
   const [todaysQuestClaims, setTodaysQuestClaims] = useState<Set<string>>(new Set());
+  const [refreshError, setRefreshError] = useState(false);
 
   const load = useCallback(async () => {
     const today = todayStr();
     const [
-      { data: dayRows }, { count: mealsCount }, { count: mealsToday },
+      { data: dayRows, error: daysErr }, { count: mealsCount }, { count: mealsToday },
       { count: liftSetsDoneCount }, { data: liftHistory }, { count: setsToday },
-      { count: goalsDoneCount }, { data: assets }, { data: existing },
+      { count: goalsDoneCount }, { data: assets }, { data: existing, error: achErr },
       { data: questRows }, { data: gigRows }, { data: focusRows },
       { data: vocabRows }, { count: learningSessionsCount },
-      { data: settingsRow }, { data: nwHistory }, { data: engineReps },
+      { data: settingsRow, error: settingsErr }, { data: nwHistory }, { data: engineReps },
     ] = await Promise.all([
-      supabase.from("days").select(DAY_COLS).eq("user_id", uid),
+      fetchAll((from, to) => supabase.from("days").select(DAY_COLS).eq("user_id", uid).range(from, to)),
       supabase.from("meals").select("id", { count: "exact", head: true }).eq("user_id", uid),
       supabase.from("meals").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("day", today),
       supabase.from("lift_sets").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("done", true),
-      supabase.from("lift_sets").select("exercise,weight,day,done").eq("user_id", uid).eq("done", true),
+      fetchAll((from, to) => supabase.from("lift_sets").select("exercise,weight,day,done").eq("user_id", uid).eq("done", true).range(from, to)),
       supabase.from("lift_sets").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("done", true).eq("day", today),
       supabase.from("goals").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("status", "done"),
       supabase.from("assets").select("kind,value").eq("user_id", uid),
       supabase.from("user_achievements").select("key").eq("user_id", uid),
-      supabase.from("quest_claims").select("day,quest_key,xp").eq("user_id", uid),
-      supabase.from("gig_shifts").select("day,earnings").eq("user_id", uid),
-      supabase.from("focus_sessions").select("day,minutes").eq("user_id", uid),
-      supabase.from("vocab").select("seen").eq("user_id", uid),
+      fetchAll((from, to) => supabase.from("quest_claims").select("day,quest_key,xp").eq("user_id", uid).range(from, to)),
+      fetchAll((from, to) => supabase.from("gig_shifts").select("day,earnings").eq("user_id", uid).range(from, to)),
+      fetchAll((from, to) => supabase.from("focus_sessions").select("day,minutes").eq("user_id", uid).range(from, to)),
+      fetchAll((from, to) => supabase.from("vocab").select("seen").eq("user_id", uid).range(from, to)),
       supabase.from("learning_sessions").select("id", { count: "exact", head: true }).eq("user_id", uid),
       supabase.from("user_settings").select("last_seen_level").eq("user_id", uid).maybeSingle(),
-      supabase.from("net_worth_snapshots").select("day,value").eq("user_id", uid).order("day"),
-      supabase.from("engine_reps").select("row_id,day").eq("user_id", uid),
+      fetchAll((from, to) => supabase.from("net_worth_snapshots").select("day,value").eq("user_id", uid).order("day").range(from, to)),
+      fetchAll((from, to) => supabase.from("engine_reps").select("row_id,day").eq("user_id", uid).range(from, to)),
     ]);
+
+    // READ-ERROR GUARD: 'days' and 'user_achievements' are load-bearing. A failed
+    // read yields an empty array that is a NETWORK BLIP, not "no data" — writing it
+    // to state would flash streak 0 / a collapsed level and re-toast months-old
+    // achievements (and let last_seen_level be reset as if first-run). Keep the
+    // prior good state, flag it, and bail so the next interval/refresh recovers.
+    if (daysErr || achErr) {
+      setRefreshError(true);
+      setLoading(false);
+      return;
+    }
+    setRefreshError(false);
 
     const netWorth = (assets ?? []).reduce((s, a) => s + (a.kind === "asset" ? Number(a.value) : -Number(a.value)), 0);
     const questXP = (questRows ?? []).reduce((s, q) => s + q.xp, 0);
@@ -135,25 +168,33 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
     const nowUnlocked = computeUnlocked(g);
     const fresh = nowUnlocked.filter((a) => !already.has(a.key));
     if (fresh.length) {
-      await supabase.from("user_achievements").upsert(
+      const { error: bankErr } = await supabase.from("user_achievements").upsert(
         fresh.map((a) => ({ user_id: uid, key: a.key })),
         { onConflict: "user_id,key", ignoreDuplicates: true },
       );
-      setNewlyUnlocked(fresh);
+      // WRITE-THEN-CELEBRATE: only fire the unlock toast once the bank landed —
+      // otherwise a later shield-burn can re-lock a volatile achievement whose
+      // row never saved, and we'd have celebrated "+XP" that isn't banked.
+      if (!bankErr) setNewlyUnlocked(fresh);
     }
     const allKeys = new Set([...already, ...nowUnlocked.map((a) => a.key)]);
     setUnlockedKeys(allKeys);
 
-    // level-up detection against the last level the user has SEEN celebrated
+    // level-up detection against the last level the user has SEEN celebrated.
+    // Only trust last_seen_level when its read actually succeeded — a failed
+    // settings read reads as seen=0, which would wrongly re-baseline (stomping
+    // the real value) or fire a phantom level-up. Skip the block on error.
     const totalXP = baseXP(g) + achievementBonusXP(allKeys);
     const lvl = levelFromXP(totalXP);
-    const seen = settingsRow?.last_seen_level ?? 0;
-    setLastSeenLevel(seen);
-    if (seen === 0) {
-      await supabase.from("user_settings").upsert({ user_id: uid, last_seen_level: lvl.level }, { onConflict: "user_id" });
-      setLastSeenLevel(lvl.level);
-    } else if (lvl.level > seen) {
-      setLevelUp({ level: lvl.level, title: lvl.title });
+    if (!settingsErr) {
+      const seen = settingsRow?.last_seen_level ?? 0;
+      setLastSeenLevel(seen);
+      if (seen === 0) {
+        const { error: baselineErr } = await supabase.from("user_settings").upsert({ user_id: uid, last_seen_level: lvl.level }, { onConflict: "user_id" });
+        if (!baselineErr) setLastSeenLevel(lvl.level);
+      } else if (lvl.level > seen) {
+        setLevelUp({ level: lvl.level, title: lvl.title });
+      }
     }
 
     // daily net-worth snapshot (idempotent — one row per day, updated in place)
@@ -168,6 +209,21 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
   }, [uid]);
 
   useEffect(() => { load(); }, [load]);
+
+  // midnight rollover: the app left open on a non-Today tab must not keep
+  // yesterday's todaysQuestClaims / today-scoped XP once the calendar day flips.
+  // Re-run load() (which recomputes all day-scoped state) when todayStr() changes.
+  const loadedDay = useRef(todayStr());
+  useEffect(() => {
+    const check = () => {
+      const now = todayStr();
+      if (now !== loadedDay.current) { loadedDay.current = now; load(); }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    const id = setInterval(check, 30000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, [load]);
 
   const dismissLevelUp = useCallback(async () => {
     if (!levelUp) return;
@@ -215,6 +271,7 @@ export function GameProvider({ uid, children }: { uid: string; children: React.R
 
   const value: GameState = {
     loading,
+    refreshError,
     uid,
     level,
     streak,

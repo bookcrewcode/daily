@@ -19,13 +19,15 @@ async function searchFoods(query: string): Promise<Result[]> {
   }).filter((r: Result) => r.kcal100 > 0);
 }
 
-export default function FoodSearch({ onAdd }: { onAdd: (name: string, calories: number, protein: number, carbs: number, fat: number) => void }) {
+export default function FoodSearch({ onAdd }: { onAdd: (name: string, calories: number, protein: number, carbs: number, fat: number) => Promise<boolean> }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Result[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<Result | null>(null);
   const [grams, setGrams] = useState("100");
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState(false);
 
   async function search() {
     if (!query.trim() || busy) return;
@@ -47,9 +49,14 @@ export default function FoodSearch({ onAdd }: { onAdd: (name: string, calories: 
   const previewCarb = selected ? Math.round((selected.carb100 / 100) * g) : 0;
   const previewFat = selected ? Math.round((selected.fat100 / 100) * g) : 0;
 
-  function add() {
-    if (!selected) return;
-    onAdd(`${selected.description} (${g}g)`, previewCal, previewPro, previewCarb, previewFat);
+  async function add() {
+    if (!selected || adding) return;
+    setAdding(true); setAddError(false);
+    // await the insert result: only clear the form on a real success, otherwise the
+    // user's selection would be silently discarded as if it had been logged
+    const ok = await onAdd(`${selected.description} (${g}g)`, previewCal, previewPro, previewCarb, previewFat);
+    setAdding(false);
+    if (!ok) { setAddError(true); return; } // keep query/results/selected/grams in place
     setQuery(""); setResults([]); setSelected(null); setGrams("100");
   }
 
@@ -90,8 +97,9 @@ export default function FoodSearch({ onAdd }: { onAdd: (name: string, calories: 
           </div>
           <div className="flex gap-2 mt-3">
             <button onClick={() => setSelected(null)} className="flex-1 rounded-xl bg-white/10 py-2.5 active:scale-95">Back</button>
-            <button onClick={add} className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95">Add to log</button>
+            <button onClick={add} disabled={adding} className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95 disabled:opacity-50">{adding ? "Adding…" : "Add to log"}</button>
           </div>
+          {addError && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t add that — your selection is still here. Try again.</p>}
         </Card>
       )}
     </div>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr, ADVISOR_FN, SUPABASE_ANON, type Affirmation, type UserSettings } from "@/lib/supabase";
+import { useGame } from "@/lib/useGameData";
 import { SectionTitle, Card } from "./ui";
 
 function youtubeEmbedId(url: string): string | null {
@@ -27,30 +28,63 @@ export default function Affirmations({ uid }: { uid: string }) {
   const [rows, setRows] = useState<EngineRow[]>([]);
   const [genFor, setGenFor] = useState<"" | "morning" | "night">("");
   const genning = useRef(false);
+  const game = useGame();
+  const [videoErr, setVideoErr] = useState(false);
+  // per-period save feedback: "error" = insert failed (text kept), "partial" =
+  // affirmation saved but the +5 XP day-flag write failed
+  const [saveState, setSaveState] = useState<{ period: "morning" | "night"; kind: "error" | "partial" } | null>(null);
 
   const load = useCallback(async () => {
-    const [{ data: settings }, { data: entries }, { data: engine }] = await Promise.all([
+    const [{ data: settings, error: e1 }, { data: entries, error: e2 }, { data: engine, error: e3 }] = await Promise.all([
       supabase.from("user_settings").select("affirmation_video_url").eq("user_id", uid).maybeSingle(),
       supabase.from("affirmations").select("*").eq("user_id", uid).order("created_at", { ascending: false }).limit(60),
       supabase.from("engine_rows").select("id,emoji,name,identity").eq("user_id", uid).eq("archived", false).order("sort"),
     ]);
+    // read-error guard: never let a transient failure wipe good state to empty —
+    // a later write would then overwrite the real DB rows with a blank screen
+    if (e1 || e2 || e3) return;
     setVideoUrl((settings as UserSettings | null)?.affirmation_video_url ?? "");
     setLog((entries ?? []) as Affirmation[]);
     setRows(((engine ?? []) as EngineRow[]).filter((r) => r.identity?.trim()));
   }, [uid]);
   useEffect(() => { load(); }, [load]);
 
+  // midnight rollover: a PWA left open overnight must not keep showing
+  // yesterday's ✓ entries as "done today" — reload and clear day-scoped drafts
+  // when the local day flips. Same guard the other date-keyed cards carry.
+  const dayRef = useRef(todayStr());
+  useEffect(() => {
+    const check = () => {
+      if (todayStr() !== dayRef.current) {
+        dayRef.current = todayStr();
+        setMorning(""); setNight(""); setSaveState(null);
+        load();
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    const id = setInterval(check, 30000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, [load]);
+
   async function saveVideo() {
-    await supabase.from("user_settings").upsert({ user_id: uid, affirmation_video_url: videoUrl.trim() }, { onConflict: "user_id" });
+    const { error } = await supabase.from("user_settings").upsert({ user_id: uid, affirmation_video_url: videoUrl.trim() }, { onConflict: "user_id" });
+    if (error) { setVideoErr(true); return; } // keep the editor open + the URL in place
+    setVideoErr(false);
     setEditingVideo(false);
   }
 
   async function save(period: "morning" | "night", text: string) {
     if (!text.trim()) return;
+    setSaveState(null);
     const { error } = await supabase.from("affirmations").insert({ user_id: uid, day: todayStr(), period, text: text.trim() });
-    if (error) return;
-    await supabase.from("days").upsert({ user_id: uid, day: todayStr(), ws_affirmations: true }, { onConflict: "user_id,day" });
+    if (error) { setSaveState({ period, kind: "error" }); return; } // keep the typed text — nothing lost
+    // the +5 XP lands via the day's ws_affirmations flag — if THIS write fails
+    // the affirmation is still saved, so report a partial success, not a clean one
+    const { error: dayErr } = await supabase.from("days").upsert({ user_id: uid, day: todayStr(), ws_affirmations: true }, { onConflict: "user_id,day" });
     if (period === "morning") setMorning(""); else setNight("");
+    if (dayErr) setSaveState({ period, kind: "partial" });
+    else game.refresh();
     load();
   }
 
@@ -133,30 +167,47 @@ export default function Affirmations({ uid }: { uid: string }) {
               className="flex-1 rounded-xl bg-black/30 px-3 py-2.5 outline-none" />
             <button onClick={saveVideo} className="px-4 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95">Save</button>
           </div>
+          {videoErr && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t save — your link is still here. Try again.</p>}
         </Card>
       )}
 
       <SectionTitle>☀️ This morning</SectionTitle>
       {todayEntries.some((a) => a.period === "morning") ? (
-        <Card tone="neon"><p className="text-sm">✓ {todayEntries.find((a) => a.period === "morning")?.text}</p></Card>
+        <>
+          <Card tone="neon"><p className="text-sm">✓ {todayEntries.find((a) => a.period === "morning")?.text}</p></Card>
+          {saveState?.period === "morning" && saveState.kind === "partial" && (
+            <p className="text-xs text-orange-400 mt-2">Saved — but the +5 XP didn&apos;t bank this time.</p>
+          )}
+        </>
       ) : (
         <div className="space-y-2">
           {chips("morning")}
           <textarea value={morning} onChange={(e) => setMorning(e.target.value)} rows={3} placeholder="I am..."
             className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none resize-none" />
           <button onClick={() => save("morning", morning)} className="w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">Save morning affirmation</button>
+          {saveState?.period === "morning" && saveState.kind === "error" && (
+            <p className="text-xs text-orange-400">Couldn&apos;t save — your text is still here. Try again.</p>
+          )}
         </div>
       )}
 
       <SectionTitle>🌙 Tonight</SectionTitle>
       {todayEntries.some((a) => a.period === "night") ? (
-        <Card tone="neon"><p className="text-sm">✓ {todayEntries.find((a) => a.period === "night")?.text}</p></Card>
+        <>
+          <Card tone="neon"><p className="text-sm">✓ {todayEntries.find((a) => a.period === "night")?.text}</p></Card>
+          {saveState?.period === "night" && saveState.kind === "partial" && (
+            <p className="text-xs text-orange-400 mt-2">Saved — but the +5 XP didn&apos;t bank this time.</p>
+          )}
+        </>
       ) : (
         <div className="space-y-2">
           {chips("night")}
           <textarea value={night} onChange={(e) => setNight(e.target.value)} rows={3} placeholder="Tonight I'm proud that..."
             className="w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none resize-none" />
           <button onClick={() => save("night", night)} className="w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">Save night affirmation</button>
+          {saveState?.period === "night" && saveState.kind === "error" && (
+            <p className="text-xs text-orange-400">Couldn&apos;t save — your text is still here. Try again.</p>
+          )}
         </div>
       )}
 

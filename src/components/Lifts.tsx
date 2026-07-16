@@ -34,26 +34,48 @@ export default function Lifts({ uid }: { uid: string }) {
   const [newDay, setNewDay] = useState("");
   const [newEx, setNewEx] = useState<Record<string, string>>({});
   const prFired = useRef<Set<string>>(new Set());
+  const [err, setErr] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
+  const dayRef = useRef(todayStr());
+  // debounce the per-keystroke weight/reps writes so typing "225" writes once
+  // (not "2","22","225" with no delivery-order guarantee) — keyed by set+field
+  const writeTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const load = useCallback(async () => {
     const today = todayStr();
-    const [{ data: tpl }, { data: todaySets }, { data: history }] = await Promise.all([
+    const [{ data: tpl, error: tplErr }, { data: todaySets, error: setsErr }, { data: history, error: histErr }] = await Promise.all([
       supabase.from("workout_templates").select("*").eq("user_id", uid).order("sort").order("created_at"),
       supabase.from("lift_sets").select("*").eq("user_id", uid).eq("day", today).order("slot"),
       supabase.from("lift_sets").select("exercise,weight,reps,day,done").eq("user_id", uid).lt("day", today).order("day", { ascending: false }).limit(2000),
     ]);
-    // first run: seed the editable split from the hardcoded one
-    if ((tpl ?? []).length === 0) {
+    // READ-ERROR GUARD: v2 never throws, so a failed templates read returns
+    // data:null — which is NOT "no split". Never treat it as first-run (that
+    // would re-insert all 5 default days, no unique constraint stops it) nor
+    // wipe existing templates. Keep prior state and bail.
+    if (tplErr) { setStale(true); return; }
+
+    // first run: seed the editable split from the hardcoded one — but ONLY the
+    // genuine first time. A "split_seeded" flag stops a user who deleted every
+    // day from having the defaults resurrected on the next load.
+    const seededKey = `daily.lift.split_seeded.${uid}`;
+    if ((tpl ?? []).length === 0 && !localStorage.getItem(seededKey)) {
       const seeded = SPLIT.map((w, i) => ({ user_id: uid, name: w.name, exercises: w.exercises, sort: i }));
-      const { data: ins } = await supabase.from("workout_templates").insert(seeded).select();
+      const { data: ins, error: insErr } = await supabase.from("workout_templates").insert(seeded).select();
+      if (insErr) { setStale(true); return; }
+      localStorage.setItem(seededKey, "1");
       setTemplates(((ins ?? []) as Template[]).map((t) => ({ ...t, exercises: (t.exercises as unknown as string[]) ?? [] })));
     } else {
+      if ((tpl ?? []).length > 0) localStorage.setItem(seededKey, "1");
       setTemplates((tpl ?? []).map((t) => ({ ...t, exercises: (t.exercises as string[]) ?? [] })) as Template[]);
     }
-    const rows = (todaySets ?? []) as LiftSet[];
-    setSets(rows);
-    if (rows.length) setActive((a) => a ?? rows[0].workout);
-    setHist((history ?? []) as Hist[]);
+    // never overwrite good today/history state with [] on a transient read fail
+    if (!setsErr) {
+      const rows = (todaySets ?? []) as LiftSet[];
+      setSets(rows);
+      if (rows.length) setActive((a) => a ?? rows[0].workout);
+    }
+    if (!histErr) setHist((history ?? []) as Hist[]);
+    setStale(!!(setsErr || histErr));
   }, [uid]);
   useEffect(() => { load(); }, [load]);
 
@@ -70,6 +92,35 @@ export default function Lifts({ uid }: { uid: string }) {
     }, 250);
     return () => clearInterval(id);
   }, [restUntil]);
+
+  // midnight rollover: a PWA left open overnight must not keep yesterday's
+  // session live (it would block a new workout and could bank ws_lift on the
+  // wrong day). On day change, reset day-scoped state and reload — same guard
+  // the other date-keyed cards carry.
+  useEffect(() => {
+    const check = () => {
+      const now = todayStr();
+      if (now !== dayRef.current) {
+        dayRef.current = now;
+        setSets([]);
+        setActive(null);
+        setRestUntil(null);
+        setRestLeft(0);
+        prFired.current = new Set();
+        load();
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    const id = setInterval(check, 30000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, [load]);
+
+  // flush any pending debounced writes on unmount so a typed value isn't lost
+  useEffect(() => {
+    const timers = writeTimers.current;
+    return () => { timers.forEach((t) => clearTimeout(t)); };
+  }, []);
 
   // per-exercise: last session (coach) + all-time best (PR line)
   const prevOf = (ex: string) => hist.find((h) => h.exercise === ex && h.weight != null);
@@ -91,23 +142,30 @@ export default function Lifts({ uid }: { uid: string }) {
       user_id: uid, day: todayStr(), workout: name, exercise: ex, slot: i * 100,
       weight: null as number | null, reps: null as number | null, done: false,
     }));
-    const { data } = await supabase.from("lift_sets").insert(rows).select();
+    setErr(null);
+    const { data, error } = await supabase.from("lift_sets").insert(rows).select();
+    if (error) { setErr("Couldn't start that workout — try again."); return; }
     if (data) setSets((s) => [...s, ...(data as LiftSet[])]);
   }
 
   async function addSet(workout: string, exercise: string) {
     const maxSlot = Math.max(0, ...sets.filter((s) => s.workout === workout && s.exercise === exercise).map((s) => s.slot));
     const last = [...sets].filter((s) => s.workout === workout && s.exercise === exercise).pop();
-    const { data } = await supabase.from("lift_sets").insert({
+    setErr(null);
+    const { data, error } = await supabase.from("lift_sets").insert({
       user_id: uid, day: todayStr(), workout, exercise, slot: maxSlot + 1,
       weight: last?.weight ?? null, reps: null, done: false,
     }).select().single();
-    if (data) { setSets((s) => [...s, data as LiftSet]); sfx.pop(); }
+    if (error || !data) { setErr("Couldn't add a set — try again."); return; }
+    setSets((s) => [...s, data as LiftSet]); sfx.pop();
   }
 
   async function removeSet(id: string) {
+    setErr(null);
+    const removed = sets.find((x) => x.id === id);
     setSets((s) => s.filter((x) => x.id !== id));
-    await supabase.from("lift_sets").delete().eq("id", id);
+    const { error } = await supabase.from("lift_sets").delete().eq("id", id);
+    if (error && removed) { setSets((s) => [...s, removed]); setErr("Couldn't remove that set — try again."); }
   }
 
   function maybePR(row: LiftSet, weight: number | null) {
@@ -122,36 +180,79 @@ export default function Lifts({ uid }: { uid: string }) {
     }
   }
 
+  // done toggle — write-then-celebrate. Both the set update AND the day flag
+  // must land before any XP/sound/timer/PR fires; on failure revert the check.
   async function update(id: string, patch: Partial<LiftSet>) {
-    const row = sets.find((x) => x.id === id);
+    const prev = sets.find((x) => x.id === id);
+    setErr(null);
     setSets((s) => s.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-    await supabase.from("lift_sets").update(patch).eq("id", id);
+    const { error } = await supabase.from("lift_sets").update(patch).eq("id", id);
+    if (error) {
+      if (prev) setSets((s) => s.map((x) => (x.id === id ? prev : x)));
+      setErr("Couldn't save that set — try again.");
+      return;
+    }
     if (patch.done === true) {
-      await supabase.from("days").upsert({ user_id: uid, day: todayStr(), ws_lift: true }, { onConflict: "user_id,day" });
+      const { error: dErr } = await supabase.from("days").upsert({ user_id: uid, day: todayStr(), ws_lift: true }, { onConflict: "user_id,day" });
+      if (dErr) {
+        if (prev) setSets((s) => s.map((x) => (x.id === id ? prev : x)));
+        setErr("Couldn't log that set — try again.");
+        return;
+      }
       xpToast(LIFT_SET_XP, "set");
       setRestUntil(Date.now() + REST_SECONDS * 1000);
       setRestLeft(REST_SECONDS);
-      if (row) maybePR(row, patch.weight !== undefined ? patch.weight : row.weight);
+      if (prev) maybePR(prev, patch.weight !== undefined ? patch.weight : prev.weight);
       game.refresh();
     }
   }
 
+  // weight/reps edits: reflect the keystroke immediately but debounce the DB
+  // write (per set+field) so a fast "225" writes ONCE with the final value —
+  // never a stale prefix like 22 that would poison volume/PR/coach targets.
+  function updateField(id: string, patch: Partial<LiftSet>) {
+    setErr(null);
+    setSets((s) => s.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+    const key = `${id}:${Object.keys(patch).join(",")}`;
+    const existing = writeTimers.current.get(key);
+    if (existing) clearTimeout(existing);
+    const t = setTimeout(async () => {
+      writeTimers.current.delete(key);
+      const { error } = await supabase.from("lift_sets").update(patch).eq("id", id);
+      if (error) setErr("Couldn't save that number — try again.");
+    }, 500);
+    writeTimers.current.set(key, t);
+  }
+
   // ── split editing ──────────────────────────────────────────────────
   async function saveExercises(t: Template, exercises: string[]) {
+    setErr(null);
+    const prevExercises = t.exercises;
     setTemplates((ts) => (ts ?? []).map((x) => (x.id === t.id ? { ...x, exercises } : x)));
-    await supabase.from("workout_templates").update({ exercises }).eq("id", t.id);
+    const { error } = await supabase.from("workout_templates").update({ exercises }).eq("id", t.id);
+    if (error) {
+      setTemplates((ts) => (ts ?? []).map((x) => (x.id === t.id ? { ...x, exercises: prevExercises } : x)));
+      setErr("Couldn't save that change — try again.");
+    }
   }
   async function addTemplate() {
     const name = newDay.trim();
     if (!name) return;
+    setErr(null);
+    // keep the typed name until the insert actually resolves — clearing it
+    // first loses the user's text on any write failure
+    const { data, error } = await supabase.from("workout_templates").insert({ user_id: uid, name, exercises: [], sort: (templates?.length ?? 0) }).select().single();
+    if (error || !data) { setErr("Couldn't add that day — your text is still here."); return; }
     setNewDay("");
-    const { data } = await supabase.from("workout_templates").insert({ user_id: uid, name, exercises: [], sort: (templates?.length ?? 0) }).select().single();
-    if (data) setTemplates((ts) => [...(ts ?? []), { ...data, exercises: [] } as Template]);
+    setTemplates((ts) => [...(ts ?? []), { ...data, exercises: [] } as Template]);
   }
   async function dropTemplate(id: string) {
     if (!confirm("Remove this workout day from your split? (Past logs stay.)")) return;
+    setErr(null);
+    const prevTemplates = templates;
     setTemplates((ts) => (ts ?? []).filter((x) => x.id !== id));
-    await supabase.from("workout_templates").delete().eq("id", id);
+    const { error } = await supabase.from("workout_templates").delete().eq("id", id);
+    if (error) { setTemplates(prevTemplates); setErr("Couldn't remove that day — try again."); }
   }
 
   if (templates === null) return <div className="pt-3"><div className="skeleton h-24 mt-4" /></div>;
@@ -161,7 +262,11 @@ export default function Lifts({ uid }: { uid: string }) {
   const sessionOnly = activeSets.map((s) => s.exercise)
     .filter((e, i, a) => a.indexOf(e) === i)
     .filter((e) => !templateExercises.includes(e));
-  const exercisesInSession = activeSets.length ? [...templateExercises.filter((e) => activeSets.some((s) => s.exercise === e)), ...sessionOnly] : [];
+  // once a session is live, show ALL current template exercises — including any
+  // added to the split mid-workout (they have no rows yet) — so an improvised
+  // lift can be logged the same day via its "＋ set" button. Plus session-only
+  // exercises (e.g. one whose template entry was removed after logging).
+  const exercisesInSession = activeSets.length ? [...templateExercises, ...sessionOnly] : [];
   const volume = activeSets.filter((s) => s.done && s.weight && s.reps).reduce((v, s) => v + Number(s.weight) * Number(s.reps), 0);
   const doneCount = activeSets.filter((s) => s.done).length;
 
@@ -188,6 +293,10 @@ export default function Lifts({ uid }: { uid: string }) {
         <div className="mt-3 rounded-2xl border border-[#ffd54a]/50 bg-[#ffd54a]/10 px-4 py-3" style={{ animation: "fadeSlide 0.25s ease" }}>
           <p className="text-sm font-bold text-[#ffd54a]">{prFlash}</p>
         </div>
+      )}
+
+      {(err || stale) && (
+        <p className="text-xs text-orange-400 mt-2">{err ?? "Couldn't refresh — showing your last saved data."}</p>
       )}
 
       <SectionTitle>Your split</SectionTitle>
@@ -258,14 +367,14 @@ export default function Lifts({ uid }: { uid: string }) {
                         </button>
                         <label className="flex-1 flex items-center gap-1 rounded-lg bg-black/30 px-2.5 py-1.5">
                           <input type="number" inputMode="decimal" value={r.weight ?? ""} placeholder="lb"
-                            onChange={(e) => update(r.id, { weight: e.target.value === "" ? null : Number(e.target.value) })}
+                            onChange={(e) => updateField(r.id, { weight: e.target.value === "" ? null : Number(e.target.value) })}
                             className="w-full bg-transparent outline-none text-center font-bold text-sm" />
                           <span className="text-[10px] opacity-40">lb</span>
                         </label>
                         <span className="opacity-30 text-xs">×</span>
                         <label className="flex-1 flex items-center gap-1 rounded-lg bg-black/30 px-2.5 py-1.5">
                           <input type="number" inputMode="numeric" value={r.reps ?? ""} placeholder="reps"
-                            onChange={(e) => update(r.id, { reps: e.target.value === "" ? null : Number(e.target.value) })}
+                            onChange={(e) => updateField(r.id, { reps: e.target.value === "" ? null : Number(e.target.value) })}
                             className="w-full bg-transparent outline-none text-center font-bold text-sm" />
                           <span className="text-[10px] opacity-40">r</span>
                         </label>

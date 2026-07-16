@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr, type Goal } from "@/lib/supabase";
 import { GOAL_DONE_XP, GOAL_STEP_XP } from "@/lib/gamification";
 import { useGame } from "@/lib/useGameData";
@@ -44,25 +44,50 @@ export default function Goals({ uid }: { uid: string }) {
   const [title, setTitle] = useState("");
   const [due, setDue] = useState("");
   const [priority, setPriority] = useState(2);
+  const [addError, setAddError] = useState(false);
 
   const load = useCallback(async () => {
-    const [{ data: gs }, { data: st }] = await Promise.all([
+    const [{ data: gs, error: gErr }, { data: st, error: sErr }] = await Promise.all([
       supabase.from("goals").select("*").eq("user_id", uid).eq("status", "active"),
       supabase.from("goal_steps").select("id,goal_id,title,done,sort").eq("user_id", uid).order("sort"),
     ]);
+    // A transient read failure must NOT wipe good state to the true-empty
+    // "No goals yet" copy — that hides the Urgent section and invites
+    // duplicate re-adds. Keep whatever we last had and try again later.
+    if (gErr || sErr) return;
     setGoals((gs ?? []) as Goal[]);
     setSteps((st ?? []) as Step[]);
   }, [uid]);
   useEffect(() => { load(); }, [load]);
 
+  // midnight rollover: a PWA left open overnight must recompute urgency/overdue
+  // badges + the Urgent section for the new day — same guard the other
+  // date-keyed cards carry (BriefingCard, Night).
+  const loadedDay = useRef(todayStr());
+  useEffect(() => {
+    const check = () => {
+      if (todayStr() !== loadedDay.current) {
+        loadedDay.current = todayStr();
+        load();
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    const id = setInterval(check, 30000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, [load]);
+
   async function add() {
     if (!title.trim()) return;
+    setAddError(false);
     const g = { user_id: uid, title: title.trim(), due: due || null, priority, status: "active" };
-    const { data } = await supabase.from("goals").insert(g).select().single();
-    if (data) {
-      setGoals((x) => [...x, data as Goal]);
-      setOpen((data as Goal).id); // open the pathway right away — first step is the point
+    const { data, error } = await supabase.from("goals").insert(g).select().single();
+    if (error || !data) {
+      setAddError(true); // keep title/due/priority in place — nothing typed is lost
+      return;
     }
+    setGoals((x) => [...x, data as Goal]);
+    setOpen((data as Goal).id); // open the pathway right away — first step is the point
     setTitle(""); setDue(""); setPriority(2);
   }
 
@@ -77,6 +102,9 @@ export default function Goals({ uid }: { uid: string }) {
   }
 
   async function remove(id: string) {
+    // one-tap permanent delete of a goal + all its steps — confirm first
+    const target = goals.find((x) => x.id === id);
+    if (!confirm(`Delete "${target?.title ?? "this goal"}" and all its steps? This can't be undone.`)) return;
     const { error } = await supabase.from("goals").delete().eq("id", id);
     if (error) return;
     setGoals((x) => x.filter((g) => g.id !== id));
@@ -101,9 +129,16 @@ export default function Goals({ uid }: { uid: string }) {
     if (error) return;
     setSteps((x) => x.map((st) => (st.id === s.id ? { ...st, done: next } : st)));
     if (next) {
-      // unique (user_id, day, quest_key) means re-checking the same day won't double-pay
-      const banked = await game.bankQuestXP(`gstep_${s.id}`, GOAL_STEP_XP);
-      if (banked) xpToast(GOAL_STEP_XP, "step done");
+      // Fixed-day sentinel: the unique (user_id, day, quest_key) key lets
+      // gstep_<id> be claimed AT MOST once ever. Banking with day=todayStr()
+      // let re-checking the same step on a LATER day slip past the key and
+      // double-pay GOAL_STEP_XP. (Un-checking still leaves the XP; fine.)
+      const { error: bankErr } = await supabase.from("quest_claims")
+        .insert({ user_id: uid, day: "2000-01-01", quest_key: `gstep_${s.id}`, xp: GOAL_STEP_XP });
+      if (!bankErr) {
+        xpToast(GOAL_STEP_XP, "step done");
+        game.refresh();
+      }
     }
   }
 
@@ -151,6 +186,7 @@ export default function Goals({ uid }: { uid: string }) {
           </select>
           <button onClick={add} className="px-5 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95">Add</button>
         </div>
+        {addError && <p className="text-xs text-orange-400">Couldn&apos;t save — your goal is still here. Try again.</p>}
       </div>
 
       <SectionTitle>Active — most urgent first</SectionTitle>

@@ -25,6 +25,8 @@ export default function NowScreen({ task, starter, minutes = 25, onClose }: {
   const [running, setRunning] = useState(true);
   const [done, setDone] = useState(false);
   const [bankError, setBankError] = useState(false);
+  const [tooShort, setTooShort] = useState(false);
+  const [workWinError, setWorkWinError] = useState(false);
   const [saving, setSaving] = useState(false);
   const endAt = useRef(Date.now() + minutes * 60 * 1000);
   // honest minutes: only time spent RUNNING counts — pauses and a phone
@@ -56,20 +58,32 @@ export default function NowScreen({ task, starter, minutes = 25, onClose }: {
 
   async function finish() {
     if (banked.current || saving) return;
-    setSaving(true);
     const runningNow = running;
+    // fold the current running segment into activeMs, then mark a fresh segment
+    // start so a resume-after-error / resume-after-too-short can't double-count
     if (runningNow) activeMs.current += Date.now() - lastResume.current;
+    lastResume.current = Date.now();
     setRunning(false);
-    // capped at the timer's length: a session abandoned with the phone locked
-    // banks at most what the timer was set to, never hours of wall clock
-    const workedMin = Math.min(Math.max(5, Math.round(activeMs.current / 60000)), Math.ceil(total / 60));
+
+    // require GENUINE elapsed focus. A "start → Done" loop under ~1 min must not
+    // bank a session — otherwise it farms XP and inflates focus_10 / focus_100.
+    if (activeMs.current < 60000) {
+      setTooShort(true);
+      setRunning(runningNow); // let them keep going if they were mid-session
+      return;
+    }
+    setTooShort(false);
+    setSaving(true);
+    // honest minutes: real running time, no artificial floor, still capped at
+    // the timer's length so a phone locked in a drawer can't bank hours
+    const workedMin = Math.min(Math.max(1, Math.round(activeMs.current / 60000)), Math.ceil(total / 60));
 
     // write FIRST, celebrate second — "Banked." must be literally true
     const { error } = await supabase.from("focus_sessions").insert({ user_id: game.uid, day: todayStr(), minutes: workedMin });
     setSaving(false);
     if (error) {
       setBankError(true);
-      if (runningNow) lastResume.current = Date.now(); // keep the clock honest for retry
+      lastResume.current = Date.now(); // keep the clock honest for retry
       setRunning(runningNow);
       return;
     }
@@ -81,7 +95,10 @@ export default function NowScreen({ task, starter, minutes = 25, onClose }: {
     buzz([30, 40, 60]);
     xpToast(focusXP(workedMin), `${workedMin} min locked in`);
     if (workedMin >= 50) {
-      await supabase.from("days").upsert({ user_id: game.uid, day: todayStr(), ws_work: true }, { onConflict: "user_id,day" });
+      // the 💼 work win is part of the reward — a silent failure here would show
+      // a clean success that didn't fully land, so check it and flag a partial
+      const { error: workErr } = await supabase.from("days").upsert({ user_id: game.uid, day: todayStr(), ws_work: true }, { onConflict: "user_id,day" });
+      if (workErr) setWorkWinError(true);
     }
     game.refresh();
   }
@@ -124,6 +141,7 @@ export default function NowScreen({ task, starter, minutes = 25, onClose }: {
               {saving ? "Banking…" : "✓ Done — bank it"}
             </button>
             {bankError && <p className="text-xs text-orange-400">Couldn&apos;t save the session — nothing lost. Check connection and tap again.</p>}
+            {tooShort && <p className="text-xs text-orange-400">Too short to bank — give it at least a minute of real focus.</p>}
             <div className="flex gap-2">
               {running ? (
                 <button onClick={pause} className="flex-1 rounded-xl bg-white/10 py-3 font-semibold active:scale-95">Pause</button>
@@ -139,7 +157,8 @@ export default function NowScreen({ task, starter, minutes = 25, onClose }: {
         <div style={{ animation: "levelPop 0.5s ease" }}>
           <p className="text-6xl mb-4">🔓</p>
           <h1 className="text-2xl font-black mb-2">Locked in. Banked.</h1>
-          <p className="text-sm opacity-60 mb-8">That&apos;s a vote for someone who executes.</p>
+          <p className={`text-sm opacity-60 ${workWinError ? "mb-2" : "mb-8"}`}>That&apos;s a vote for someone who executes.</p>
+          {workWinError && <p className="text-xs text-orange-400 mb-8">Session banked, but the 💼 work win didn&apos;t save — retry it from Now.</p>}
           <button onClick={onClose} className="px-8 py-3 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95">Back to the day</button>
         </div>
       )}

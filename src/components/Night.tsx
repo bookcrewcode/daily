@@ -29,6 +29,7 @@ export default function Night({ uid }: { uid: string }) {
   const pretty = tomorrow().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
   const [n, setN] = useState<NightT>({ day, items: [], top3: ["", "", ""], notes: "", calendar_synced_at: null });
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState(false);
   const [clientId, setClientId] = useState("");
   const [pushState, setPushState] = useState<"idle" | "pushing" | "done" | "error">("idle");
   const [pushNote, setPushNote] = useState("");
@@ -45,7 +46,11 @@ export default function Night({ uid }: { uid: string }) {
   const persistRef = useRef((next: NightT) => { void next; });
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from("nights").select("*").eq("user_id", uid).eq("day", day).maybeSingle();
+    const { data, error } = await supabase.from("nights").select("*").eq("user_id", uid).eq("day", day).maybeSingle();
+    // Read failed (transient/offline): keep whatever's already on screen. Never
+    // treat "read failed" as "no plan exists" — resetting to empty here would
+    // let the next keystroke's persist() upsert the empty plan over the real row.
+    if (error) return;
     if (data) {
       setN({
         day,
@@ -63,7 +68,18 @@ export default function Night({ uid }: { uid: string }) {
   }, [uid, day]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  useEffect(() => () => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      // A type-then-switch-tabs burst leaves a pending debounced write. Flush
+      // the latest plan (via the ref, not a stale closure) so it isn't dropped.
+      const cur = nRef.current;
+      void supabase.from("nights").upsert(
+        { user_id: uid, day, items: cur.items, top3: cur.top3, notes: cur.notes },
+        { onConflict: "user_id,day" }
+      );
+    }
+  }, [uid, day]);
   useEffect(() => {
     supabase.from("user_settings").select("gcal_client_id").eq("user_id", uid).maybeSingle()
       .then(({ data }) => setClientId(data?.gcal_client_id ?? ""));
@@ -74,10 +90,15 @@ export default function Night({ uid }: { uid: string }) {
     setN(next);
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
-      await supabase.from("nights").upsert(
+      const { error } = await supabase.from("nights").upsert(
         { user_id: uid, day, items: next.items, top3: next.top3, notes: next.notes },
         { onConflict: "user_id,day" }
       );
+      // supabase-js resolves {error} instead of throwing: only claim "saved ✓"
+      // on a real success. On failure the typed plan stays on screen (it's in
+      // `n`), and a small inline note appears instead of a false confirmation.
+      if (error) { setSaveError(true); return; }
+      setSaveError(false);
       setSaved(true); setTimeout(() => setSaved(false), 1200);
     }, 600);
   }
@@ -94,10 +115,16 @@ export default function Night({ uid }: { uid: string }) {
   async function markSynced() {
     const at = new Date().toISOString();
     setN((x) => ({ ...x, calendar_synced_at: at }));
-    await supabase.from("nights").upsert(
-      { user_id: uid, day, items: n.items, top3: n.top3, notes: n.notes, calendar_synced_at: at },
+    // A push takes multiple seconds; the user may have edited items/top3/notes
+    // meanwhile. Read the FRESHEST plan from the ref (not this render's stale
+    // closure) so recording the sync time can't clobber those edits, and check
+    // {error} — supabase-js resolves it rather than throwing.
+    const cur = nRef.current;
+    const { error } = await supabase.from("nights").upsert(
+      { user_id: uid, day, items: cur.items, top3: cur.top3, notes: cur.notes, calendar_synced_at: at },
       { onConflict: "user_id,day" }
     );
+    if (error) return; // events already landed on the calendar; only the timestamp failed to persist
   }
 
   function pushAllIcs() {
@@ -174,6 +201,7 @@ export default function Night({ uid }: { uid: string }) {
       <p className="opacity-50 text-sm mt-1">
         Plan tomorrow — {pretty}. <span className={`text-[var(--neon)] transition-opacity ${saved ? "opacity-100" : "opacity-0"}`}>saved ✓</span>
       </p>
+      {saveError && <p className="text-xs text-orange-400 mt-1">Couldn&apos;t save — your plan stays on screen; keep editing to retry.</p>}
       <p className="mt-0.5"><WeatherStrip dayOffset={1} /></p>
 
       <SectionTitle>Already on the calendar</SectionTitle>

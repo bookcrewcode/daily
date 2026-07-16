@@ -12,13 +12,18 @@ export default function HistoryCalendar({ uid }: { uid: string }) {
   const [cursor, setCursor] = useState(() => { const d = new Date(); d.setDate(1); return d; });
   const [rows, setRows] = useState<Map<string, Row>>(new Map());
   const [selected, setSelected] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false); // last read failed — showing prior data
 
   const monthStart = useMemo(() => new Date(cursor.getFullYear(), cursor.getMonth(), 1), [cursor]);
   const monthEnd = useMemo(() => new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0), [cursor]);
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from("days").select("*").eq("user_id", uid)
+    const { data, error } = await supabase.from("days").select("*").eq("user_id", uid)
       .gte("day", dateStr(monthStart)).lte("day", dateStr(monthEnd));
+    // READ-ERROR GUARD: a transient read must not blank the calendar into a
+    // fabricated "no history" — keep whatever we already have and flag it.
+    if (error) { setOffline(true); return; }
+    setOffline(false);
     setRows(new Map((data ?? []).map((r) => [r.day as string, r as Row])));
   }, [uid, monthStart, monthEnd]);
   useEffect(() => { load(); }, [load]);
@@ -60,6 +65,7 @@ export default function HistoryCalendar({ uid }: { uid: string }) {
           );
         })}
       </div>
+      {offline && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t refresh history — showing your last saved data.</p>}
 
       {sel && (
         <Card className="mt-3">

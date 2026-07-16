@@ -12,7 +12,7 @@
 //   enjoy it → votes stack visibly; the weekly Mirror shows the pile
 // One rule, his words: measure REPS, not outcomes.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr, dateStr } from "@/lib/supabase";
 import { REP_XP } from "@/lib/gamification";
 import { useGame } from "@/lib/useGameData";
@@ -62,6 +62,18 @@ export default function Scoreboard({ uid }: { uid: string }) {
   }, [uid]);
   useEffect(() => { load(); }, [load]);
 
+  // MIDNIGHT ROLLOVER GUARD: a tab left open past midnight keeps rendering with
+  // yesterday's `today`, so reps banked yesterday still read as "done today" and
+  // a tap would delete/write onto the wrong day. Re-run load() on rollover.
+  const dayRef = useRef(todayStr());
+  useEffect(() => {
+    const check = () => { if (todayStr() !== dayRef.current) { dayRef.current = todayStr(); load(); } };
+    const id = setInterval(check, 30000);
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, [load]);
+
   const today = todayStr();
   const byRow = new Map<string, Set<string>>();
   for (const r of reps) {
@@ -70,18 +82,26 @@ export default function Scoreboard({ uid }: { uid: string }) {
   }
 
   async function toggleRep(row: EngineRow) {
+    // compute the day at CALL time — a tab open past midnight must bank/undo on
+    // the real current day, never the stale day captured at the last render
+    const day = todayStr();
     const days = byRow.get(row.id) ?? new Set<string>();
-    if (days.has(today)) {
+    if (days.has(day)) {
       // undo — honest scoreboards allow corrections
-      setReps((x) => x.filter((r) => !(r.row_id === row.id && r.day === today)));
-      await supabase.from("engine_reps").delete().eq("user_id", uid).eq("row_id", row.id).eq("day", today);
+      setReps((x) => x.filter((r) => !(r.row_id === row.id && r.day === day)));
+      const { error } = await supabase.from("engine_reps").delete().eq("user_id", uid).eq("row_id", row.id).eq("day", day);
+      if (error) {
+        // delete didn't land — roll the rep back so the checkbox matches banked XP
+        setReps((x) => [...x, { row_id: row.id, day }]);
+        return;
+      }
       game.refresh();
       return;
     }
-    setReps((x) => [...x, { row_id: row.id, day: today }]);
-    const { error } = await supabase.from("engine_reps").insert({ user_id: uid, row_id: row.id, day: today });
+    setReps((x) => [...x, { row_id: row.id, day }]);
+    const { error } = await supabase.from("engine_reps").insert({ user_id: uid, row_id: row.id, day });
     if (error) {
-      setReps((x) => x.filter((r) => !(r.row_id === row.id && r.day === today)));
+      setReps((x) => x.filter((r) => !(r.row_id === row.id && r.day === day)));
       return;
     }
     sfx.pop(); buzz(15);

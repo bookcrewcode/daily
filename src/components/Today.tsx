@@ -41,6 +41,20 @@ const EMPTY: DayRow = {
   calories: 0, protein: 0, bodyweight: null, vocab_count: 0, water_cups: 0, vocab_reviews: 0,
 };
 
+// The Top-3 plan's done-state is per-day and must survive tab switches AND reset
+// at midnight — persist it in localStorage keyed by the day rather than in
+// ephemeral useState (which was lost on every re-mount and never rolled over).
+const top3Key = (day: string) => `daily.top3done.${day}`;
+function loadTop3Done(day: string): Set<number> {
+  if (typeof localStorage === "undefined") return new Set();
+  try { const raw = localStorage.getItem(top3Key(day)); return new Set(raw ? (JSON.parse(raw) as number[]) : []); }
+  catch { return new Set(); }
+}
+function saveTop3Done(day: string, s: Set<number>) {
+  if (typeof localStorage === "undefined") return;
+  try { localStorage.setItem(top3Key(day), JSON.stringify([...s])); } catch { /* private mode / quota — non-fatal */ }
+}
+
 function greeting(): string {
   const h = new Date().getHours();
   if (h < 5) return "Late night, Ben 🌌";
@@ -64,15 +78,26 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   const [plan, setPlan] = useState<Plan>(null);
   const [floats, setFloats] = useState<Record<string, number>>({});
   const [doneTop3, setDoneTop3] = useState<Set<number>>(new Set());
+  const [offline, setOffline] = useState(false); // last refresh failed — showing prior data
+  const [saveErr, setSaveErr] = useState(false);  // last write didn't land
   const dayRef = useRef(todayStr());
 
   const load = useCallback(async () => {
     const day = todayStr();
     dayRef.current = day;
-    const [{ data }, { data: nightRow }] = await Promise.all([
+    setDoneTop3(loadTop3Done(day)); // day-scoped, from localStorage — naturally resets on rollover
+    const [{ data, error }, { data: nightRow }] = await Promise.all([
       supabase.from("days").select("*").eq("user_id", uid).eq("day", day).maybeSingle(),
       supabase.from("nights").select("top3,items").eq("user_id", uid).eq("day", day).maybeSingle(),
     ]);
+    if (error) {
+      // READ-ERROR GUARD: a transient read failure must NOT be read as "empty
+      // day". Keep whatever row we already have — otherwise a later tap upserts
+      // blanks (e.g. water_cups: 0) straight over real DB data. Flag and bail.
+      setOffline(true);
+      return;
+    }
+    setOffline(false);
     setRow(data ? { ...EMPTY, ...data, day } : { ...EMPTY, day });
     if (nightRow) {
       const top3 = ((nightRow.top3 as string[]) ?? []).filter((t) => t.trim());
@@ -114,13 +139,25 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
 
-  async function save(patch: Partial<DayRow>) {
+  // WRITE-THEN-CELEBRATE: returns true only if the upsert actually landed. On
+  // failure the optimistic row is rolled back and a small note is shown, so
+  // callers must not play sfx / float XP / fire confetti unless this returns true.
+  async function save(patch: Partial<DayRow>): Promise<boolean> {
+    const prev = row;
     const next = { ...row, ...patch };
     setRow(next);
-    await supabase.from("days").upsert({ user_id: uid, day: next.day, ...patch }, { onConflict: "user_id,day" });
+    const { error } = await supabase.from("days").upsert({ user_id: uid, day: next.day, ...patch }, { onConflict: "user_id,day" });
+    if (error) {
+      setRow(prev); // revert — the win/water tap didn't persist
+      setSaveErr(true);
+      setTimeout(() => setSaveErr(false), 3000);
+      return false;
+    }
+    setSaveErr(false);
     setHistory((h) => h.map((d) => d.day === next.day
       ? { ...d, score: WIN_KEYS.reduce((s, k) => s + (next[k] ? 1 : 0), 0) } : d));
     game.refresh();
+    return true;
   }
 
   function fireFloat(key: string) {
@@ -128,8 +165,18 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
     setTimeout(() => setFloats((f) => { const { [key]: _drop, ...rest } = f; return rest; }), 950);
   }
 
-  function toggleWin(key: WinKey, on: boolean) {
-    save({ [key]: !on } as Partial<DayRow>);
+  function toggleTop3(i: number) {
+    setDoneTop3((s) => {
+      const n = new Set(s);
+      if (n.has(i)) n.delete(i); else n.add(i);
+      saveTop3Done(dayRef.current, n); // persist per-day so it survives tab switches / re-mounts
+      return n;
+    });
+  }
+
+  async function toggleWin(key: WinKey, on: boolean) {
+    const ok = await save({ [key]: !on } as Partial<DayRow>);
+    if (!ok) return; // write failed — row already reverted + note shown; nothing to celebrate
     if (!on) {
       sfx.pop();
       buzz(15);
@@ -142,18 +189,18 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   async function setWater(cups: number) {
     const clamped = Math.max(0, Math.min(cups, 12));
     const hitGoal = clamped >= WATER_GOAL && !row.ws_water;
-    if (cups > row.water_cups) { sfx.pop(); buzz(10); }
     const patch: Partial<DayRow> = { water_cups: clamped };
+    if (hitGoal) patch.ws_water = true;
+    // dropping back under 8 un-banks the win — same as unchecking any habit
+    else if (clamped < WATER_GOAL && row.ws_water) patch.ws_water = false;
+    const ok = await save(patch);
+    if (!ok) return; // write failed — row reverted + note shown; no sfx / float / confetti
+    if (cups > row.water_cups) { sfx.pop(); buzz(10); }
     if (hitGoal) {
-      patch.ws_water = true;
       fireFloat("ws_water");
       const willBe = WIN_KEYS.reduce((s, k) => s + ((k === "ws_water" ? true : row[k]) ? 1 : 0), 0);
       if (willBe === WIN_KEYS.length) setTimeout(() => { burstConfetti("big"); sfx.fanfare(); }, 150);
-    } else if (clamped < WATER_GOAL && row.ws_water) {
-      // dropping back under 8 un-banks the win — same as unchecking any habit
-      patch.ws_water = false;
     }
-    await save(patch);
   }
 
   const score = WIN_KEYS.reduce((s, k) => s + (row[k] ? 1 : 0), 0);
@@ -164,6 +211,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
         <p className="text-xs uppercase tracking-widest text-[var(--neon)]/70">{now}</p>
         <h1 className="text-2xl font-bold mt-1">{greeting()}</h1>
         <WeatherStrip dayOffset={0} />
+        {offline && <p className="text-xs text-orange-400 mt-1">Couldn&apos;t refresh — showing your last saved data.</p>}
       </div>
 
       <GameBar />
@@ -180,7 +228,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
               {plan.top3.map((t, i) => {
                 const done = doneTop3.has(i);
                 return (
-                  <button key={i} onClick={() => setDoneTop3((s) => { const n = new Set(s); if (done) n.delete(i); else n.add(i); return n; })}
+                  <button key={i} onClick={() => toggleTop3(i)}
                     className="flex items-center gap-2.5 w-full text-left">
                     <span className={`w-5 h-5 shrink-0 rounded-full grid place-items-center text-[10px] font-bold ${done ? "bg-[var(--neon)] text-black pop-check" : "border border-[var(--neon)]/50 text-[var(--neon)]"}`}>
                       {done ? "✓" : i + 1}
@@ -221,6 +269,8 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
           <p className="text-sm opacity-60">{score === WIN_KEYS.length ? "Day won. 🔥" : "Tap to bank a win."}</p>
         </div>
       </div>
+
+      {saveErr && <p className="text-xs text-orange-400 mb-2">Couldn&apos;t save — try again.</p>}
 
       {/* Water — a counter, not a checkbox. 8 cups banks the win. */}
       <Card padded={false} tone={row.ws_water ? "neon" : "default"} className="p-3 relative mb-2">

@@ -15,12 +15,21 @@ export default function Money({ uid }: { uid: string }) {
   const [aName, setAName] = useState(""); const [aVal, setAVal] = useState(""); const [aKind, setAKind] = useState<"asset" | "liability">("asset");
   const [sName, setSName] = useState(""); const [sCost, setSCost] = useState(""); const [sCycle, setSCycle] = useState<"monthly" | "yearly">("monthly");
   const [editing, setEditing] = useState<{ id: string; value: string } | null>(null);
+  const [offline, setOffline] = useState(false);          // last read failed — showing prior data
+  const [assetNote, setAssetNote] = useState<string | null>(null);
+  const [subNote, setSubNote] = useState<string | null>(null);
+  const [editError, setEditError] = useState(false);
 
   const load = useCallback(async () => {
-    const [{ data: a }, { data: s }] = await Promise.all([
+    const [{ data: a, error: aErr }, { data: s, error: sErr }] = await Promise.all([
       supabase.from("assets").select("*").eq("user_id", uid),
       supabase.from("subscriptions").select("*").eq("user_id", uid).eq("active", true),
     ]);
+    // READ-ERROR GUARD: a transient read must never overwrite good state with an
+    // empty list — that would render a fabricated "Net worth $0" and let a later
+    // write clobber real DB rows. Keep what we have and flag it.
+    if (aErr || sErr) { setOffline(true); return; }
+    setOffline(false);
     setAssets((a ?? []) as Asset[]);
     setSubs((s ?? []) as Subscription[]);
   }, [uid]);
@@ -29,22 +38,37 @@ export default function Money({ uid }: { uid: string }) {
   async function addAsset() {
     if (!aName.trim()) return;
     const row = { user_id: uid, name: aName.trim(), value: Number(aVal) || 0, kind: aKind };
-    const { data } = await supabase.from("assets").insert(row).select().single();
-    if (data) setAssets((x) => [...x, data as Asset]);
+    const { data, error } = await supabase.from("assets").insert(row).select().single();
+    if (error || !data) { setAssetNote("Couldn't save — your entry is still here. Try again."); return; }
+    setAssetNote(null);
+    setAssets((x) => [...x, data as Asset]);
     setAName(""); setAVal("");
     game.refresh();
   }
   async function delAsset(id: string) {
+    const prev = assets;
     setAssets((x) => x.filter((a) => a.id !== id));
-    await supabase.from("assets").delete().eq("id", id);
+    const { error } = await supabase.from("assets").delete().eq("id", id);
+    if (error) { setAssets(prev); setAssetNote("Couldn't remove — try again."); return; }
+    setAssetNote(null);
     game.refresh();
   }
   // tap-to-edit — updating a balance shouldn't mean delete + re-add
   async function saveEdit() {
     if (!editing) return;
+    const id = editing.id;
     const value = Number(editing.value) || 0;
-    setAssets((x) => x.map((a) => (a.id === editing.id ? { ...a, value } : a)));
-    await supabase.from("assets").update({ value }).eq("id", editing.id);
+    const prevValue = assets.find((a) => a.id === id)?.value ?? value;
+    setAssets((x) => x.map((a) => (a.id === id ? { ...a, value } : a)));
+    const { error } = await supabase.from("assets").update({ value }).eq("id", id);
+    if (error) {
+      // roll the optimistic value back so Money + the Today scoreboard stay in sync;
+      // keep the editor open with the user's typed value so they can retry.
+      setAssets((x) => x.map((a) => (a.id === id ? { ...a, value: prevValue } : a)));
+      setEditError(true);
+      return;
+    }
+    setEditError(false);
     setEditing(null);
     game.refresh();
   }
@@ -52,11 +76,19 @@ export default function Money({ uid }: { uid: string }) {
   async function addSub() {
     if (!sName.trim()) return;
     const row = { user_id: uid, name: sName.trim(), cost: Number(sCost) || 0, cycle: sCycle, active: true };
-    const { data } = await supabase.from("subscriptions").insert(row).select().single();
-    if (data) setSubs((x) => [...x, data as Subscription]);
+    const { data, error } = await supabase.from("subscriptions").insert(row).select().single();
+    if (error || !data) { setSubNote("Couldn't save — your entry is still here. Try again."); return; }
+    setSubNote(null);
+    setSubs((x) => [...x, data as Subscription]);
     setSName(""); setSCost("");
   }
-  async function delSub(id: string) { setSubs((x) => x.filter((s) => s.id !== id)); await supabase.from("subscriptions").delete().eq("id", id); }
+  async function delSub(id: string) {
+    const prev = subs;
+    setSubs((x) => x.filter((s) => s.id !== id));
+    const { error } = await supabase.from("subscriptions").delete().eq("id", id);
+    if (error) { setSubs(prev); setSubNote("Couldn't remove — try again."); return; }
+    setSubNote(null);
+  }
 
   const netWorth = assets.reduce((s, a) => s + (a.kind === "asset" ? a.value : -a.value), 0);
   const monthlyBurn = subs.reduce((s, x) => s + (x.cycle === "yearly" ? x.cost / 12 : x.cost), 0);
@@ -68,6 +100,7 @@ export default function Money({ uid }: { uid: string }) {
       <div className="mt-4 rounded-2xl bg-[var(--neon)]/10 border border-[var(--neon)]/40 p-5">
         <p className="text-xs uppercase tracking-widest opacity-60">Net worth</p>
         <p className="text-4xl font-extrabold mt-1">{fmt(netWorth)}</p>
+        {offline && <p className="text-xs text-orange-400 mt-1">Couldn&apos;t refresh — showing your last saved data.</p>}
       </div>
 
       <GigWork uid={uid} />
@@ -84,6 +117,7 @@ export default function Money({ uid }: { uid: string }) {
         </select>
         <button onClick={addAsset} className="px-4 rounded-xl bg-white/10 font-bold active:scale-95">Add</button>
       </div>
+      {assetNote && <p className="text-xs text-orange-400 mb-2">{assetNote}</p>}
       <div className="space-y-2">
         {assets.map((a) => (
           <div key={a.id} className="flex items-center gap-3 rounded-xl bg-white/5 border border-white/10 px-4 py-2.5">
@@ -105,6 +139,7 @@ export default function Money({ uid }: { uid: string }) {
           </div>
         ))}
       </div>
+      {editError && <p className="text-xs text-orange-400 mt-1">Couldn&apos;t update — your value is still here. Try again.</p>}
 
       <SectionTitle>Subscriptions · {fmt(monthlyBurn)}/mo</SectionTitle>
       <div className="flex gap-2 mb-2">
@@ -118,6 +153,7 @@ export default function Money({ uid }: { uid: string }) {
         </select>
         <button onClick={addSub} className="px-4 rounded-xl bg-white/10 font-bold active:scale-95">Add</button>
       </div>
+      {subNote && <p className="text-xs text-orange-400 mb-2">{subNote}</p>}
       <div className="space-y-2">
         {subs.map((s) => (
           <div key={s.id} className="flex items-center gap-3 rounded-xl bg-white/5 border border-white/10 px-4 py-2.5">

@@ -48,10 +48,15 @@ export default function UrgencyCard({ todayRow, onGoTab }: { todayRow: DayRow; o
   const load = useCallback(async () => {
     const horizon = new Date(); horizon.setDate(horizon.getDate() + 2);
     const tmrw = new Date(); tmrw.setDate(tmrw.getDate() + 1);
-    const [{ data: g }, { data: n }] = await Promise.all([
+    const [{ data: g, error: gErr }, { data: n, error: nErr }] = await Promise.all([
       supabase.from("goals").select("*").eq("user_id", game.uid).eq("status", "active").not("due", "is", null).lte("due", dateStr(horizon)).order("due").limit(4),
       supabase.from("nights").select("top3,items").eq("user_id", game.uid).eq("day", dateStr(tmrw)).maybeSingle(),
     ]);
+    // read-error guard: the visibilitychange reload can fire while offline — a
+    // transient failure must not wipe goals to [] or flip tomorrowPlanned false
+    // and fabricate a "tomorrow has no plan" warning over real DB data. Keep
+    // prior state and bail; a genuine first mount keeps its safe defaults.
+    if (gErr || nErr) return;
     setGoals((g ?? []) as Goal[]);
     const top3 = ((n?.top3 as string[]) ?? []).filter((t) => t?.trim());
     const items = ((n?.items as { what: string }[]) ?? []).filter((i) => i.what?.trim());

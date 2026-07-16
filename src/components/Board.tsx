@@ -15,7 +15,7 @@ import { supabase, ADVISOR_FN, SUPABASE_ANON, todayStr } from "@/lib/supabase";
 import { useVoiceInput } from "@/lib/useVoiceInput";
 import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
-import { xpToast, sfx } from "@/lib/fx";
+import { sfx } from "@/lib/fx";
 
 type Msg = { role: "user" | "assistant"; content: string };
 type Recap = { chunks: string[]; weak_spots: string[]; retrieval: { question: string; got_it: boolean }[] };
@@ -36,7 +36,9 @@ async function callAdvisor(body: Record<string, unknown>) {
   const res = await fetch(ADVISOR_FN, {
     method: "POST",
     headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
+    // clientDay lets the edge fn resolve "today" in Ben's local time, and is
+    // injected here so every advisor call carries it — no caller can forget it
+    body: JSON.stringify({ clientDay: todayStr(), ...body }),
   });
   return await res.json();
 }
@@ -54,6 +56,8 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
   const [recapBusy, setRecapBusy] = useState(false);
   const [recapDrop, setRecapDrop] = useState<Set<string>>(new Set());
   const [error, setError] = useState("");
+  const [sendErr, setSendErr] = useState(false);
+  const [memErr, setMemErr] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const voice = useVoiceInput((text) => setInput(text));
   // guards against a reply landing after the user switched advisor tabs
@@ -64,11 +68,18 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
   const threadTopic = advisor === "tutor" ? (topicId ?? null) : null;
 
   const loadThread = useCallback(async () => {
+    const forAdvisor = advisor;
     setLoadingThread(true);
     let q = supabase.from("chat_messages").select("role,content").eq("user_id", game.uid).eq("advisor", advisor)
       .order("created_at", { ascending: false }).limit(40);
     q = threadTopic ? q.eq("topic_id", threadTopic) : q.is("topic_id", null);
-    const { data } = await q;
+    const { data, error: readErr } = await q;
+    // a fetch that resolves after Ben switched advisor tabs must NOT paint its
+    // history under the new tab (and get shipped as that advisor's context)
+    if (advisorRef.current !== forAdvisor) return;
+    // a transient read failure isn't "no messages" — keep whatever's on screen
+    // rather than blanking a real thread that a later send would then overwrite
+    if (readErr) { setLoadingThread(false); return; }
     setMsgs(((data ?? []) as Msg[]).reverse());
     setLoadingThread(false);
     setTimeout(() => scrollRef.current?.scrollTo(0, 1e9), 60);
@@ -76,25 +87,40 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
 
   useEffect(() => { loadThread(); }, [loadThread]);
 
-  function persistMsg(role: "user" | "assistant", content: string) {
-    // fire-and-forget — the UI already shows it
-    supabase.from("chat_messages").insert({ user_id: game.uid, advisor, topic_id: threadTopic, role, content }).then(() => {});
+  async function persistMsg(role: "user" | "assistant", content: string) {
+    // supabase-js resolves DB errors instead of throwing — return it so the
+    // caller can decide whether a dropped write is safe to ignore
+    const { error } = await supabase.from("chat_messages").insert({ user_id: game.uid, advisor, topic_id: threadTopic, role, content });
+    return error;
   }
 
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
     const forAdvisor = advisor;
+    const prev = msgs;
+    setSendErr(false);
     setInput(""); setBusy(true);
     const next = [...msgs, { role: "user" as const, content: text }];
     setMsgs(next);
-    persistMsg("user", text);
     setTimeout(() => scrollRef.current?.scrollTo(0, 1e9), 50);
 
+    // persist the user's message BEFORE calling the advisor — a silently
+    // dropped insert leaves a thread that only looks persisted, so on failure
+    // put the text back in the box, drop the optimistic bubble, and stop
+    const perr = await persistMsg("user", text);
+    if (perr) {
+      setMsgs(prev);
+      setInput(text);
+      setSendErr(true);
+      setBusy(false);
+      return;
+    }
+
     try {
-      const json = await callAdvisor({ advisor: forAdvisor, message: text, history: msgs.slice(-14), topicId });
+      const json = await callAdvisor({ advisor: forAdvisor, message: text, history: prev.slice(-14), topicId });
       const reply = json.text || json.error || "No response.";
-      if (json.text) persistMsg("assistant", json.text);
+      if (json.text) void persistMsg("assistant", json.text);
       // if Ben switched tabs mid-flight, don't paint this thread over the new one
       if (advisorRef.current === forAdvisor) setMsgs([...next, { role: "assistant", content: reply }]);
     } catch {
@@ -115,12 +141,21 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
 
   async function openMemories() {
     setMemOpen(true);
+    setMemErr("");
     const { data } = await supabase.from("ai_memories").select("*").eq("user_id", game.uid).order("created_at", { ascending: false }).limit(100);
     setMemories((data ?? []) as Memory[]);
   }
   async function deleteMemory(id: string) {
+    const removed = memories.find((x) => x.id === id);
+    setMemErr("");
     setMemories((m) => m.filter((x) => x.id !== id));
-    await supabase.from("ai_memories").delete().eq("id", id);
+    const { error } = await supabase.from("ai_memories").delete().eq("id", id);
+    // a memory that reads as deleted but is still steering every future chat is
+    // the exact trust-breaker this viewer exists to prevent — roll it back
+    if (error && removed) {
+      setMemories((m) => [...m, removed].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)));
+      setMemErr("Couldn't delete that memory — it's back in the list. Try again.");
+    }
   }
 
   async function buildRecap() {
@@ -147,28 +182,47 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
       const chunks = keep(recap.chunks, "c");
       const weakSpots = keep(recap.weak_spots, "w");
       const retrieval = keep(recap.retrieval, "r");
-      const writes: PromiseLike<{ error: unknown }>[] = [];
+      // These tables have no unique constraint, so a blind retry would DUPLICATE
+      // every row that already saved. Each write carries a keepOnFail that puts
+      // only the un-saved item back into the preview, so retry writes just those.
+      const remainingChunks: string[] = [];
+      const remainingWeak: string[] = [];
+      const remainingRetrieval: Recap["retrieval"] = [];
+      const writes: { p: PromiseLike<{ error: unknown }>; keepOnFail: () => void }[] = [];
       if (chunks.length) {
-        writes.push(supabase.from("learning_sessions").insert({
-          user_id: game.uid, topic_id: topicId, day: todayStr(),
-          chunks: chunks.map((c) => ({ note: c })), brain_dump: "",
-        }));
+        writes.push({
+          p: supabase.from("learning_sessions").insert({
+            user_id: game.uid, topic_id: topicId, day: todayStr(),
+            chunks: chunks.map((c) => ({ note: c })), brain_dump: "",
+          }),
+          keepOnFail: () => { remainingChunks.push(...chunks); },
+        });
       }
-      for (const w of weakSpots) writes.push(supabase.from("learning_weak_spots").insert({ user_id: game.uid, topic_id: topicId, text: w }));
-      for (const r of retrieval) writes.push(supabase.from("learning_retrieval").insert({ user_id: game.uid, topic_id: topicId, question: r.question, got_it: !!r.got_it }));
+      for (const w of weakSpots) writes.push({
+        p: supabase.from("learning_weak_spots").insert({ user_id: game.uid, topic_id: topicId, text: w }),
+        keepOnFail: () => { remainingWeak.push(w); },
+      });
+      for (const r of retrieval) writes.push({
+        p: supabase.from("learning_retrieval").insert({ user_id: game.uid, topic_id: topicId, question: r.question, got_it: !!r.got_it }),
+        keepOnFail: () => { remainingRetrieval.push(r); },
+      });
       // supabase-js resolves errors instead of throwing — celebrating a failed
       // save would be the exact trust-breaker this preview flow exists to avoid
-      const results = await Promise.all(writes);
-      const failed = results.filter((x) => x?.error).length;
+      const results = await Promise.all(writes.map((w) => w.p));
+      results.forEach((res, i) => { if (res?.error) writes[i].keepOnFail(); });
+      const failed = remainingChunks.length + remainingWeak.length + remainingRetrieval.length;
       if (failed > 0) {
-        setError(`${failed} of ${results.length} saves failed — nothing was dismissed. Check your connection and tap Save again.`);
+        // rebuild the preview with ONLY what didn't save — the successes are
+        // already in the Learning hub and must not be written a second time
+        setRecap({ chunks: remainingChunks, weak_spots: remainingWeak, retrieval: remainingRetrieval });
+        setRecapDrop(new Set());
+        setError(`${failed} item(s) couldn't be saved — the rest are in your Learning hub. Tap Save to retry just these.`);
         return;
       }
       setRecap(null);
       setError("");
       burstConfetti("small");
       sfx.fanfare();
-      xpToast(30, "session banked");
       game.refresh();
       setMsgs((m) => [...m, { role: "assistant", content: "📝 Session saved into your Learning hub — chunks, weak spots, and retrieval log. Sleep locks it in. 😴" }]);
       setTimeout(() => scrollRef.current?.scrollTo(0, 1e9), 50);
@@ -222,6 +276,8 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
         {busy && <div className="opacity-50 text-sm">{active.name} is thinking…</div>}
       </div>
 
+      {sendErr && <p className="px-4 pt-2 text-xs text-orange-400">Couldn&apos;t send — your message is back in the box. Try again.</p>}
+
       <div className="p-3 border-t border-white/10 flex gap-2" style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
         <input value={input} onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()} placeholder={voice.listening ? "listening…" : `Ask ${active.name}…`}
@@ -247,6 +303,7 @@ export default function Board({ onClose, initialAdvisor, topicId }: { onClose: (
             <button onClick={() => setMemOpen(false)} className="opacity-60 text-lg px-2 active:scale-90">✕</button>
           </div>
           <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+            {memErr && <p className="text-xs text-orange-400">{memErr}</p>}
             {memories.length === 0 && <p className="opacity-40 text-sm text-center mt-8">Nothing yet — memories appear as you talk to the coaches.</p>}
             {memories.map((m) => (
               <div key={m.id} className="flex items-start gap-2 rounded-xl bg-white/5 border border-white/10 px-3 py-2.5">

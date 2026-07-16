@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr, ADVISOR_FN, SUPABASE_ANON, type LearningTopic, type LearningRetrieval, type LearningWeakSpot } from "@/lib/supabase";
+import { useGame } from "@/lib/useGameData";
 import { SectionTitle, Card, Pill } from "./ui";
 
 type ChatMsg = { role: string; content: string };
@@ -20,9 +21,10 @@ function TutorChat({ uid, topicId, onFullScreen }: { uid: string; topicId: strin
   const scrollDown = () => setTimeout(() => scrollRef.current?.scrollTo(0, 1e9), 60);
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from("chat_messages").select("role,content")
+    const { data, error } = await supabase.from("chat_messages").select("role,content")
       .eq("user_id", uid).eq("advisor", "tutor").eq("topic_id", topicId)
       .order("created_at", { ascending: false }).limit(30);
+    if (error) { setLoaded(true); return; } // keep any messages already shown; don't wipe on a transient read
     setMsgs(((data ?? []) as ChatMsg[]).reverse());
     setLoaded(true);
     scrollDown();
@@ -46,7 +48,7 @@ function TutorChat({ uid, topicId, onFullScreen }: { uid: string; topicId: strin
       const res = await fetch(ADVISOR_FN, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${session.session?.access_token}` },
-        body: JSON.stringify({ advisor: "tutor", message: text, history, topicId }),
+        body: JSON.stringify({ advisor: "tutor", message: text, history, topicId, clientDay: todayStr() }),
       });
       const json = await res.json();
       const reply = json.text || json.error || "No response.";
@@ -101,7 +103,8 @@ export default function Learning({ uid, onOpenAdvisor }: { uid: string; onOpenAd
   const [creating, setCreating] = useState(false);
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from("learning_topics").select("*").eq("user_id", uid).eq("status", "active").order("created_at", { ascending: false });
+    const { data, error } = await supabase.from("learning_topics").select("*").eq("user_id", uid).eq("status", "active").order("created_at", { ascending: false });
+    if (error) return; // keep the topics already on screen; don't wipe on a transient read
     setTopics((data ?? []) as LearningTopic[]);
   }, [uid]);
   useEffect(() => { load(); }, [load]);
@@ -151,10 +154,13 @@ function NewTopic({ uid, onDone, onCancel }: { uid: string; onDone: () => void; 
   const [title, setTitle] = useState("");
   const [goal, setGoal] = useState("");
   const [why, setWhy] = useState("");
+  const [err, setErr] = useState(false);
 
   async function create() {
     if (!title.trim()) return;
-    await supabase.from("learning_topics").insert({ user_id: uid, title: title.trim(), goal: goal.trim(), why: why.trim() });
+    setErr(false);
+    const { error } = await supabase.from("learning_topics").insert({ user_id: uid, title: title.trim(), goal: goal.trim(), why: why.trim() });
+    if (error) { setErr(true); return; } // keep the form + typed title/goal/why
     onDone();
   }
 
@@ -172,6 +178,7 @@ function NewTopic({ uid, onDone, onCancel }: { uid: string; onDone: () => void; 
           <button onClick={onCancel} className="flex-1 rounded-xl bg-white/10 py-2.5 active:scale-95">Cancel</button>
           <button onClick={create} className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95">Start (find the trunk first)</button>
         </div>
+        {err && <p className="text-xs text-orange-400">Couldn&apos;t start the topic — your details are still here. Try again.</p>}
       </div>
     </Card>
   );
@@ -193,13 +200,19 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
   const [sessions, setSessions] = useState<{ id: string; day: string; chunks: { note: string }[]; brain_dump: string }[]>([]);
   const [openSession, setOpenSession] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [treeErr, setTreeErr] = useState(false);
+  const [retrievalErr, setRetrievalErr] = useState(false);
+  const [weakErr, setWeakErr] = useState(false);
+  const [sessionErr, setSessionErr] = useState(false);
+  const game = useGame();
 
   const load = useCallback(async () => {
-    const [{ data: r }, { data: w }, { data: s }] = await Promise.all([
+    const [{ data: r, error: rErr }, { data: w, error: wErr }, { data: s, error: sErr }] = await Promise.all([
       supabase.from("learning_retrieval").select("*").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(20),
       supabase.from("learning_weak_spots").select("*").eq("topic_id", topic.id).eq("resolved", false),
       supabase.from("learning_sessions").select("id,day,chunks,brain_dump").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(20),
     ]);
+    if (rErr || wErr || sErr) return; // keep prior state; a transient read must not blank the topic
     setRetrieval((r ?? []) as LearningRetrieval[]);
     setWeakSpots((w ?? []) as LearningWeakSpot[]);
     setSessions((s ?? []) as typeof sessions);
@@ -207,20 +220,26 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
   useEffect(() => { load(); }, [load]);
 
   async function saveTree() {
-    await supabase.from("learning_topics").update({ trunk, branches: branches.filter((b) => b.trim()), leaves, updated_at: new Date().toISOString() }).eq("id", topic.id);
+    setTreeErr(false);
+    const { error } = await supabase.from("learning_topics").update({ trunk, branches: branches.filter((b) => b.trim()), leaves, updated_at: new Date().toISOString() }).eq("id", topic.id);
+    if (error) { setTreeErr(true); return; } // keep the editor open — edits intact
     setEditingTree(false);
     onUpdated();
   }
 
   async function addRetrieval(gotIt: boolean) {
     if (!q.trim()) return;
-    await supabase.from("learning_retrieval").insert({ user_id: uid, topic_id: topic.id, question: q.trim(), got_it: gotIt });
+    setRetrievalErr(false);
+    const { error } = await supabase.from("learning_retrieval").insert({ user_id: uid, topic_id: topic.id, question: q.trim(), got_it: gotIt });
+    if (error) { setRetrievalErr(true); return; } // keep the question in the box
     setQ("");
     load();
   }
   async function addWeakSpot() {
     if (!weakText.trim()) return;
-    await supabase.from("learning_weak_spots").insert({ user_id: uid, topic_id: topic.id, text: weakText.trim() });
+    setWeakErr(false);
+    const { error } = await supabase.from("learning_weak_spots").insert({ user_id: uid, topic_id: topic.id, text: weakText.trim() });
+    if (error) { setWeakErr(true); return; } // keep the text in the box
     setWeakText("");
     load();
   }
@@ -231,13 +250,16 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
   async function saveSession() {
     const filledChunks = chunks.filter((c) => c.trim()).map((c) => ({ note: c.trim() }));
     if (filledChunks.length === 0 && !brainDump.trim()) return;
-    await supabase.from("learning_sessions").insert({
+    setSessionErr(false);
+    const { error } = await supabase.from("learning_sessions").insert({
       user_id: uid, topic_id: topic.id, day: todayStr(), chunks: filledChunks, brain_dump: brainDump.trim(),
     });
+    if (error) { setSessionErr(true); return; } // keep chunks + brain dump — nothing lost
     setChunks(["", "", "", ""]); setBrainDump("");
     setSavedFlash(true);
     setTimeout(() => setSavedFlash(false), 2500);
     load();
+    game.refresh(); // saved sessions feed the Twenty Sessions achievement
   }
 
   const recentScore = retrieval.length ? Math.round((retrieval.filter((r) => r.got_it).length / retrieval.length) * 100) : null;
@@ -276,6 +298,7 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
           <p className="text-xs opacity-50 mb-1 mt-1">Leaves — facts, only after branches are named</p>
           <textarea value={leaves} onChange={(e) => setLeaves(e.target.value)} rows={2} className="w-full rounded-xl bg-black/30 px-3 py-2.5 outline-none mb-2" />
           <button onClick={saveTree} className="w-full rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95">Save tree</button>
+          {treeErr && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t save the tree — check your connection and try again.</p>}
         </Card>
       )}
 
@@ -289,6 +312,7 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
         <button onClick={() => addRetrieval(true)} className="flex-1 rounded-xl bg-[var(--neon)]/20 text-[var(--neon)] font-semibold py-2 active:scale-95">✓ Got it</button>
         <button onClick={() => addRetrieval(false)} className="flex-1 rounded-xl bg-white/10 font-semibold py-2 active:scale-95">✗ Missed it</button>
       </div>
+      {retrievalErr && <p className="text-xs text-orange-400 mb-3 -mt-1">Couldn&apos;t log that — your question is still here. Try again.</p>}
       <div className="space-y-1.5">
         {retrieval.slice(0, 6).map((r) => (
           <p key={r.id} className="text-xs opacity-60">{r.got_it ? "✅" : "❌"} {r.question}</p>
@@ -301,6 +325,7 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
           className="flex-1 rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none" />
         <button onClick={addWeakSpot} className="px-4 rounded-xl bg-white/10 font-bold active:scale-95">Add</button>
       </div>
+      {weakErr && <p className="text-xs text-orange-400 mb-2 -mt-1">Couldn&apos;t add that — your text is still here. Try again.</p>}
       <div className="space-y-1.5">
         {weakSpots.map((w) => (
           <div key={w.id} className="flex items-center gap-2 text-sm">
@@ -325,6 +350,7 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
       <button onClick={saveSession} className="mt-2 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">
         {savedFlash ? "✓ Saved — it's in the log below" : "Save session"}
       </button>
+      {sessionErr && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t save the session — your chunks and brain dump are still here. Try again.</p>}
 
       {sessions.length > 0 && (
         <>

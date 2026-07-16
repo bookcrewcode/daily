@@ -19,6 +19,8 @@ function FocusTimer() {
   const [left, setLeft] = useState(50 * 60);
   const [running, setRunning] = useState(false);
   const [todayStats, setTodayStats] = useState({ blocks: 0, minutes: 0 });
+  const [banking, setBanking] = useState(false);   // bank insert in flight
+  const [bankError, setBankError] = useState(false); // block finished but the row didn't save
   const endAt = useRef<number | null>(null);
 
   const loadToday = useCallback(async () => {
@@ -28,22 +30,52 @@ function FocusTimer() {
   }, [game.uid]);
   useEffect(() => { loadToday(); }, [loadToday]);
 
+  // Survive tab switches / PWA reloads: a running block lives in localStorage,
+  // not just component state. On mount, resume it if it's still live.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("daily.focus");
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { endAt?: number; total?: number };
+      if (typeof saved.endAt !== "number" || typeof saved.total !== "number") { localStorage.removeItem("daily.focus"); return; }
+      if (saved.endAt > Date.now()) {
+        endAt.current = saved.endAt;
+        setTotal(saved.total);
+        setLeft(Math.max(0, Math.round((saved.endAt - Date.now()) / 1000)));
+        setRunning(true);
+      } else {
+        // Block already ran out while we were gone — we can't verify the focus, so drop it.
+        localStorage.removeItem("daily.focus");
+      }
+    } catch { /* corrupt/blocked storage — ignore */ }
+  }, []);
+
   const complete = useCallback(async () => {
     const minutes = Math.round(total / 60);
+    setBanking(true);
+    // BANK FIRST — a failed insert must not spend confetti/XP on nothing.
+    const { error } = await supabase.from("focus_sessions").insert({ user_id: game.uid, day: todayStr(), minutes });
+    if (error) {
+      // Keep the completed block on screen (left stays at 0) so the retry button can re-bank it.
+      setBanking(false);
+      setBankError(true);
+      return;
+    }
+    try { localStorage.removeItem("daily.focus"); } catch { /* storage blocked */ }
+    setBankError(false);
+    setBanking(false);
+    // ONLY here — the row is safely in the DB.
     burstConfetti("big");
     sfx.fanfare();
     document.title = "⏰ Focus block done!";
     setTimeout(() => (document.title = "Daily"), 5000);
-
-    const { error } = await supabase.from("focus_sessions").insert({ user_id: game.uid, day: todayStr(), minutes });
-    if (!error) {
-      xpToast(focusXP(minutes), `${minutes}-min block`);
-      if (minutes >= 50) {
-        await supabase.from("days").upsert({ user_id: game.uid, day: todayStr(), ws_work: true }, { onConflict: "user_id,day" });
-      }
-      loadToday();
-      game.refresh();
+    xpToast(focusXP(minutes), `${minutes}-min block`);
+    if (minutes >= 50) {
+      // Secondary win flag — best-effort; the block itself is already banked.
+      await supabase.from("days").upsert({ user_id: game.uid, day: todayStr(), ws_work: true }, { onConflict: "user_id,day" });
     }
+    loadToday();
+    game.refresh();
   }, [total, game, loadToday]);
 
   useEffect(() => {
@@ -60,14 +92,27 @@ function FocusTimer() {
   }, [running, complete]);
 
   function start() {
-    endAt.current = Date.now() + left * 1000;
+    const end = Date.now() + left * 1000;
+    endAt.current = end;
+    setBankError(false);
+    try { localStorage.setItem("daily.focus", JSON.stringify({ endAt: end, total })); } catch { /* storage blocked */ }
     setRunning(true);
+  }
+  function pause() {
+    // Clear the persisted end — otherwise a reload would count paused wall-clock
+    // time as elapsed. Resume recomputes endAt from the remaining seconds.
+    setRunning(false);
+    endAt.current = null;
+    try { localStorage.removeItem("daily.focus"); } catch { /* storage blocked */ }
   }
   function reset(mins?: number) {
     const secs = (mins ?? total / 60) * 60;
     setRunning(false);
     setTotal(secs);
     setLeft(secs);
+    setBankError(false);
+    endAt.current = null;
+    try { localStorage.removeItem("daily.focus"); } catch { /* storage blocked */ }
   }
 
   const mm = String(Math.floor(left / 60)).padStart(2, "0");
@@ -90,7 +135,7 @@ function FocusTimer() {
       </div>
       <div className="flex gap-2">
         {running ? (
-          <button onClick={() => setRunning(false)} className="flex-1 rounded-xl bg-white/10 font-bold py-3 active:scale-95">Pause</button>
+          <button onClick={pause} className="flex-1 rounded-xl bg-white/10 font-bold py-3 active:scale-95">Pause</button>
         ) : (
           <button onClick={start} disabled={left === 0} className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95 disabled:opacity-40">
             {left === total ? "Start focus block" : "Resume"}
@@ -98,6 +143,15 @@ function FocusTimer() {
         )}
         <button onClick={() => reset()} className="px-5 rounded-xl bg-white/10 font-bold active:scale-95">↺</button>
       </div>
+      {bankError && (
+        <div className="mt-2">
+          <p className="text-xs text-orange-400">Block finished but didn&apos;t save — nothing lost, tap to bank it.</p>
+          <button onClick={complete} disabled={banking}
+            className="mt-1 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95 disabled:opacity-50">
+            {banking ? "…" : `Bank ${Math.round(total / 60)}-min block`}
+          </button>
+        </div>
+      )}
       <p className="text-[10px] opacity-40 mt-2">
         {todayStats.blocks > 0
           ? <>Today: <span className="text-[var(--neon)] opacity-100 font-bold">{todayStats.blocks} block{todayStats.blocks > 1 ? "s" : ""} · {todayStats.minutes} min</span> · 50+ min banks the 💼 win</>
@@ -611,26 +665,55 @@ export default function Tools() {
   const [copied, setCopied] = useState(false);
   const [sound, setSound] = useState(true);
   const [exporting, setExporting] = useState(false);
+  const [exportNote, setExportNote] = useState("");
 
   useEffect(() => { setSound(soundOn()); }, []);
 
   // Your data is YOURS — one tap dumps every table to a JSON file.
+  // Paginated so nothing is truncated at Supabase's 1000-row default, and a
+  // read error on any table aborts that table's rows instead of silently
+  // exporting [] into a "backup" that looks complete.
+  async function fetchTable(table: string): Promise<unknown[] | null> {
+    const PAGE = 1000;
+    const rows: unknown[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase.from(table).select("*").eq("user_id", game.uid).range(from, from + PAGE - 1);
+      if (error) return null; // signal failure — caller records it, no partial page is trusted
+      const page = data ?? [];
+      rows.push(...page);
+      if (page.length < PAGE) break; // last page reached
+    }
+    return rows;
+  }
+
   async function exportAll() {
     if (exporting) return;
     setExporting(true);
+    setExportNote("");
     try {
       const dump: Record<string, unknown> = { exported_at: new Date().toISOString(), app: "daily" };
+      const failed: string[] = [];
       await Promise.all(EXPORT_TABLES.map(async (t) => {
-        const { data } = await supabase.from(t).select("*").eq("user_id", game.uid);
-        dump[t] = data ?? [];
+        const rows = await fetchTable(t);
+        if (rows === null) failed.push(t); // omit the key entirely — no misleading empty array
+        else dump[t] = rows;
       }));
+      if (failed.length) {
+        // Mark the file so it can never be mistaken for a clean backup.
+        dump.incomplete = true;
+        dump.failed_tables = failed;
+      }
       const blob = new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = `daily-export-${todayStr()}.json`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-      sfx.coin();
+      if (failed.length) {
+        setExportNote(`Incomplete — couldn't read: ${failed.join(", ")}. This file is NOT a full backup; try again.`);
+      } else {
+        sfx.coin();
+      }
     } finally {
       setExporting(false);
     }
@@ -731,6 +814,7 @@ export default function Tools() {
           </span>
         </button>
       </Card>
+      {exportNote && <p className="text-xs text-orange-400 mt-2">{exportNote}</p>}
 
       <SectionTitle>⚙️ Settings</SectionTitle>
       <Card padded={false} className="p-3">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr } from "@/lib/supabase";
 import { questsForDay, loadQuestCtx, SWEEP_XP, CHEST_CHANCE, chestXP, type QuestCtx } from "@/lib/quests";
 import { useGame } from "@/lib/useGameData";
@@ -14,14 +14,32 @@ export default function Quests({ refreshKey }: { refreshKey?: unknown }) {
   const [chest, setChest] = useState<number | null>(null);
   const quests = questsForDay(todayStr());
 
+  // the day `ctx` was loaded for — a stale ctx must not be claimed against
+  const ctxDay = useRef(todayStr());
+
   const load = useCallback(async () => {
+    ctxDay.current = todayStr();
     const { data: settings } = await supabase.from("user_settings").select("protein_goal").eq("user_id", game.uid).maybeSingle();
     setCtx(await loadQuestCtx(game.uid, settings?.protein_goal ?? 160));
   }, [game.uid]);
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
+  // MIDNIGHT ROLLOVER GUARD: a tab open past midnight still holds yesterday's
+  // ctx, whose already-"done" quests would let the user claim NEW-day XP for
+  // things not done today. Reload ctx + re-render the board on rollover.
+  useEffect(() => {
+    const check = () => { if (todayStr() !== ctxDay.current) load(); };
+    const id = setInterval(check, 30000);
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, [load]);
+
   async function claim(key: string, xp: number) {
+    // bankQuestXP banks against todayStr(); if ctx is from a prior day the
+    // "done" state is stale — refuse and reload rather than bank new-day XP
+    if (todayStr() !== ctxDay.current) { load(); return; }
     const ok = await game.bankQuestXP(key, xp);
     if (!ok) return;
     xpToast(xp, "quest");

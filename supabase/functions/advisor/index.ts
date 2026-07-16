@@ -113,21 +113,55 @@ function levelFromXP(xp: number) {
   return { level, into: xp - xpForLevel(level), span: xpForLevel(level + 1) - xpForLevel(level) };
 }
 
-async function context(token: string): Promise<string> {
+async function context(token: string, clientDay?: string): Promise<string> {
   const h = { apikey: ANON, Authorization: `Bearer ${token}` };
+  // Track tables whose read failed so we never present a transient outage as
+  // "streak 0 / no data" fact — a failed read must not masquerade as empty state.
+  const failed = new Set<string>();
   const q = async (p: string) => {
-    try { const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { headers: h }); return r.ok ? await r.json() : []; } catch { return []; }
+    const table = p.split("?")[0];
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { headers: h });
+      if (!r.ok) { failed.add(table); return []; }
+      return await r.json();
+    } catch { failed.add(table); return []; }
   };
-  const since = new Date(Date.now() - 13 * 86400000).toISOString().slice(0, 10);
-  const [days, allDays, goals, assets, meals, liftSets, achievements, questClaims, gigShifts, focusSessions, vocabRows, memories, captures, weekly, engRows, engReps] = await Promise.all([
+  // Exact row count via PostgREST count=exact. The client uses count:'exact';
+  // .length of a plain select caps at PostgREST's max-rows (1000) and silently
+  // undercounts XP once meals/sets/reps grow past it.
+  const countOf = async (p: string): Promise<number> => {
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, {
+        headers: { ...h, Prefer: "count=exact", Range: "0-0", "Range-Unit": "items" },
+      });
+      if (!r.ok) return 0;
+      const total = (r.headers.get("content-range") ?? "").split("/")[1];
+      return total && total !== "*" ? parseInt(total, 10) : 0;
+    } catch { return 0; }
+  };
+
+  // Anchor "today" to the client's LOCAL date (every DB day key is local time).
+  // Only fall back to the isolate's UTC date when clientDay is absent/malformed —
+  // an evening call in a US timezone must not treat the in-progress local day as
+  // a finished miss (burned shield / broken streak). Validated to YYYY-MM-DD so
+  // it can't inject into the date-filtered query strings below.
+  const safeDay = clientDay && /^\d{4}-\d{2}-\d{2}$/.test(clientDay) ? clientDay : "";
+  const today = safeDay || new Date().toISOString().slice(0, 10);
+  const anchor = new Date(today + "T00:00:00Z");
+  const sliceBack = (ms: number) => new Date(anchor.getTime() - ms).toISOString().slice(0, 10);
+  const since = sliceBack(13 * 86400000);
+  const weekCut = sliceBack(7 * 86400000);
+
+  const [days, allDays, goals, goalsDoneCount, assets, mealsCount, liftSetsDoneCount, achievements, questClaims, gigShifts, focusSessions, vocabRows, memories, captures, weekly, engRows, engRepsCount, engRepsRecent] = await Promise.all([
     q(`days?day=gte.${since}&select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,calories,protein,bodyweight&order=day.desc`),
     q(`days?select=day,ws_meds,ws_eat,ws_lift,ws_stretch,ws_vocab,ws_chinese,ws_work,ws_water,ws_sleep,ws_school,ws_affirmations,bodyweight`),
     q(`goals?status=eq.active&select=title,due,priority`),
+    countOf(`goals?status=eq.done&select=id`),
     q(`assets?select=name,kind,value`),
-    q(`meals?select=id`),
-    q(`lift_sets?done=eq.true&select=id`),
+    countOf(`meals?select=id`),
+    countOf(`lift_sets?done=eq.true&select=id`),
     q(`user_achievements?select=key`),
-    q(`quest_claims?select=day,xp`),
+    q(`quest_claims?select=day,quest_key,xp`),
     q(`gig_shifts?select=earnings`),
     q(`focus_sessions?select=minutes`),
     q(`vocab?select=seen`),
@@ -135,8 +169,10 @@ async function context(token: string): Promise<string> {
     q(`captures?done=eq.false&select=text&order=created_at.desc&limit=10`),
     q(`weekly_plans?select=week_start,priorities&order=week_start.desc&limit=1`),
     q(`engine_rows?archived=eq.false&select=id,emoji,name,rep,identity`),
-    q(`engine_reps?select=row_id,day&order=day.desc&limit=400`),
+    countOf(`engine_reps?select=row_id`),
+    q(`engine_reps?day=gte.${weekCut}&select=row_id,day&order=day.desc`),
   ]);
+  const daysUnavailable = failed.has("days");
 
   type Day = Record<string, unknown>;
   const winKeys = ["ws_meds", "ws_eat", "ws_lift", "ws_stretch", "ws_vocab", "ws_chinese", "ws_work", "ws_water", "ws_sleep", "ws_school", "ws_affirmations"];
@@ -151,7 +187,7 @@ async function context(token: string): Promise<string> {
   // a missed day consumes a shield (2 max, regen 1 per 7 full-win days) before
   // breaking the chain; each full-win day banks min(10 × chain-day, 100) bonus XP.
   const map = new Map((allDays as Day[]).map((d) => [d.day as string, d]));
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = today; // client-local anchor (see above), never the isolate's UTC date
   const sortedDays = (allDays as Day[]).map((d) => d.day as string).sort();
   let streak = 0, shields = 2, sinceRegen = 0, streakBonus = 0;
   if (sortedDays.length) {
@@ -175,19 +211,23 @@ async function context(token: string): Promise<string> {
     }
   }
 
-  // Base XP (mirrors the client's gamification.ts — achievements bonus omitted for speed)
+  // Base XP (mirrors the client's gamification.ts — achievements bonus omitted).
+  // meals/sets/goals-done/reps use exact count=exact totals (not capped .length)
+  // so they agree with the client past 1000 rows, and goal-completion XP (50 per
+  // done goal) is now included — the client counts it and we previously did not.
   let baseXp = streakBonus;
   for (const d of allDays as Day[]) {
     for (const k of winKeys) if (d[k]) baseXp += habitXp[k];
     if (d.bodyweight != null) baseXp += 5;
   }
-  baseXp += (meals as unknown[]).length * 3;
-  baseXp += (liftSets as unknown[]).length * 2;
+  baseXp += (mealsCount as number) * 3;
+  baseXp += (liftSetsDoneCount as number) * 2;
+  baseXp += (goalsDoneCount as number) * 50; // GOAL_DONE_XP — the client banks 50 per completed goal
   baseXp += (questClaims as { xp: number }[]).reduce((s, r) => s + (r.xp || 0), 0);
   baseXp += Math.floor((gigShifts as { earnings: number }[]).reduce((s, r) => s + Number(r.earnings || 0), 0) / 10);
   baseXp += (focusSessions as { minutes: number }[]).reduce((s, r) => s + (r.minutes >= 80 ? 35 : r.minutes >= 45 ? 20 : 10), 0);
   baseXp += (vocabRows as { seen: number }[]).reduce((s, r) => s + (r.seen || 0), 0) * 2;
-  baseXp += (engReps as unknown[]).length * 8;
+  baseXp += (engRepsCount as number) * 8;
   const lvl = levelFromXP(baseXp);
 
   const lastWeighIn = (allDays as Day[]).filter((d) => d.bodyweight != null).sort((a, b) => String(a.day).localeCompare(String(b.day))).pop();
@@ -195,9 +235,10 @@ async function context(token: string): Promise<string> {
 
   // THE ENGINE — Ben's own framework: each life row has a daily rep that
   // votes for an identity. Coach in this language: reps not outcomes.
-  const weekCut = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  // engRepsRecent is the last-7-days slice (per-row "voted today" / "this week");
+  // all-time rep XP above uses the exact engRepsCount, not this window.
   const engLines = (engRows as { id: string; emoji: string; name: string; identity: string }[]).map((row) => {
-    const rowReps = (engReps as { row_id: string; day: string }[]).filter((r) => r.row_id === row.id);
+    const rowReps = (engRepsRecent as { row_id: string; day: string }[]).filter((r) => r.row_id === row.id);
     const doneToday = rowReps.some((r) => r.day === todayStr);
     const week = rowReps.filter((r) => r.day >= weekCut).length;
     return `- ${row.emoji} ${row.name} ("${row.identity}"): today ${doneToday ? "✓ voted" : "— not yet"}, ${week}/7 this week`;
@@ -212,9 +253,26 @@ async function context(token: string): Promise<string> {
     ? `\nThis week's declared priorities (week of ${wp.week_start}): ${wp.priorities.filter(Boolean).join(" · ")}`
     : "";
 
-  return `BEN'S LIVE DATA — GAME STATE
-Level ${lvl.level} (${lvl.into}/${lvl.span} XP to next level, ${baseXp} total XP) · 🔥 ${streak}-day full-win streak · 🛡 ${shields}/2 streak shields (a missed day consumes one instead of breaking the chain) · ${(achievements as unknown[]).length} achievements unlocked
-Daily quests claimed all-time: ${(questClaims as unknown[]).length} · Focus blocks done: ${(focusSessions as unknown[]).length} · Gig earnings: $${(gigShifts as { earnings: number }[]).reduce((s, r) => s + Number(r.earnings || 0), 0)}
+  // "Daily quests claimed all-time" counts only real daily quests — exclude the
+  // sweep / weekly_review / chest_ / boss_ / gstep_ / month_ bonus rows that also
+  // live in quest_claims (mirrors useGameData's questClaimCount filter).
+  const questClaimCount = (questClaims as { quest_key: string }[]).filter((r) => {
+    const k = String(r.quest_key);
+    return k !== "sweep" && k !== "weekly_review" &&
+      !k.startsWith("chest_") && !k.startsWith("boss_") && !k.startsWith("gstep_") && !k.startsWith("month_");
+  }).length;
+
+  // If the core days read failed, say so up front so the persona doesn't state a
+  // zeroed streak / "no data" as fact off a transient outage.
+  const dataNote = daysUnavailable
+    ? "⚠️ LIVE DATA COULD NOT BE FULLY REFRESHED THIS CALL — the day/streak/XP figures below may be stale or blank due to a transient read error. Do NOT tell Ben his streak is 0 or that he has no data; treat any missing number as unknown, not zero.\n\n"
+    : "";
+
+  // baseXp omits achievement bonuses (and level shifts once they're added), so
+  // state XP/level approximately — never as an exact total the app will contradict.
+  return `${dataNote}BEN'S LIVE DATA — GAME STATE
+~Level ${lvl.level} · ~${baseXp}+ XP (approximate — excludes achievement bonuses) · 🔥 ${streak}-day full-win streak · 🛡 ${shields}/2 streak shields (a missed day consumes one instead of breaking the chain) · ${(achievements as unknown[]).length} achievements unlocked
+Daily quests claimed all-time: ${questClaimCount} · Focus blocks done: ${(focusSessions as unknown[]).length} · Gig earnings: $${(gigShifts as { earnings: number }[]).reduce((s, r) => s + Number(r.earnings || 0), 0)}
 North Star 1 — Net worth: $${net} / $${NORTH_STAR.netWorthTarget} (${((net / NORTH_STAR.netWorthTarget) * 100).toFixed(2)}%)
 North Star 2 — Bodyweight: ${weightLine}
 Last 14 days: ${wk || "no data"}
@@ -294,7 +352,7 @@ Deno.serve(async (req) => {
     if (!ANTHROPIC_API_KEY) return new Response(JSON.stringify({ error: "AI key not configured yet. Ask Claude to add ANTHROPIC_API_KEY." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 
     const body = await req.json();
-    const { advisor = "overseer", message = "", history = [], topicId = "" } = body;
+    const { advisor = "overseer", message = "", history = [], topicId = "", clientDay = "" } = body;
 
     // Vocab word generator — separate fast path, returns strict JSON, no chat context needed.
     if (advisor === "vocab-gen") {
@@ -319,7 +377,7 @@ Reply with ONLY valid JSON, no markdown fences, no other text: {"word": "...", "
 
     // ☀️ Morning briefing — one short generated brief per day, cached client-side.
     if (advisor === "briefing") {
-      const ctx = await context(token);
+      const ctx = await context(token, clientDay || undefined);
       const sys = `You are The Overseer writing Ben's MORNING BRIEFING inside his life app. Ben has ADHD — the briefing's job is to collapse the fog into ONE clear picture in under 15 seconds of reading.
 Write 4-6 SHORT lines, no headers, no preamble, no markdown syntax except emoji:
 1. One-line greeting with the streak/shield state (never shame).
@@ -419,7 +477,7 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
     }
 
     const persona = PERSONAS[advisor] ?? PERSONAS.overseer;
-    const ctx = await context(token);
+    const ctx = await context(token, clientDay || undefined);
     const learnCtx = advisor === "tutor" && topicId ? await learningContext(token, topicId) : "";
     const system = `${persona}\n\nBen has ADHD; keep it short, scannable, ADHD-friendly, execution over explanation. Use his live data below when relevant.\n\n${ctx}${learnCtx}`;
 

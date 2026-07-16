@@ -76,6 +76,10 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
   const [review, setReview] = useState<{ win: string; drag: string } | null>(null);
   const [saved, setSaved] = useState(false);
   const [captureError, setCaptureError] = useState(false);
+  const [weekSaveError, setWeekSaveError] = useState(false);
+  const [triageError, setTriageError] = useState<string | null>(null);
+  const [reviewError, setReviewError] = useState(false);
+  const [reviewClaimed, setReviewClaimed] = useState(false);
   const [lockTask, setLockTask] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const triaging = useRef(false);
@@ -114,6 +118,15 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
   }, [uid, ws]);
   useEffect(() => { load(); }, [load]);
 
+  // a weekly_review claim keyed to this week's Monday is the DB-level "done"
+  // signal — check it so a stale tab (or a lost reviewed_at) can't re-offer the
+  // review and let it be farmed. Re-runs when ws rolls over Sunday→Monday.
+  const checkReviewClaim = useCallback(async () => {
+    const { data } = await supabase.from("quest_claims").select("id").eq("user_id", uid).eq("quest_key", "weekly_review").eq("day", ws).limit(1);
+    setReviewClaimed((data ?? []).length > 0);
+  }, [uid, ws]);
+  useEffect(() => { checkReviewClaim(); }, [checkReviewClaim]);
+
   // ── capture: one box, zero decisions — but "captured" must mean SAVED ──
   async function capture() {
     const text = captureText.trim();
@@ -135,6 +148,7 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
   async function triage(fn: () => Promise<void>) {
     if (triaging.current) return;
     triaging.current = true;
+    setTriageError(null);
     try { await fn(); } finally { triaging.current = false; }
   }
   const toGoal = (c: Capture) => triage(async () => {
@@ -143,13 +157,23 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
   });
   const toTomorrow = (c: Capture) => triage(async () => {
     const day = tomorrowStr();
-    const { data } = await supabase.from("nights").select("items,top3,notes").eq("user_id", uid).eq("day", day).maybeSingle();
+    const { data, error: readErr } = await supabase.from("nights").select("items,top3,notes").eq("user_id", uid).eq("day", day).maybeSingle();
+    if (readErr) {
+      // a failed read is NOT "no row" — upserting now would clobber tomorrow's
+      // real plan (items/top3/notes) with just this one capture. Abort instead.
+      setTriageError("Couldn't reach tomorrow's plan — item kept in your inbox. Try again.");
+      return;
+    }
     const items = [...(((data?.items as { time: string; what: string }[]) ?? [])), { time: "", what: c.text }];
     const { error } = await supabase.from("nights").upsert(
       { user_id: uid, day, items, top3: (data?.top3 as string[]) ?? ["", "", ""], notes: data?.notes ?? "" },
       { onConflict: "user_id,day" },
     );
-    if (!error) await dismiss(c, "🌙 on tomorrow's plan");
+    if (error) {
+      setTriageError("Couldn't move it to tomorrow — item kept in your inbox. Try again.");
+      return;
+    }
+    await dismiss(c, "🌙 on tomorrow's plan");
   });
   const toSomeday = (c: Capture) => triage(async () => {
     const { error } = await supabase.from("goals").insert({ user_id: uid, title: c.text, priority: 3, status: "someday" });
@@ -167,10 +191,12 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
     setWeek(next);
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
-      await supabase.from("weekly_plans").upsert(
+      const { error } = await supabase.from("weekly_plans").upsert(
         { user_id: uid, week_start: ws, priorities: next.priorities, notes: next.notes, reviewed_at: next.reviewed_at },
         { onConflict: "user_id,week_start" },
       );
+      if (error) { setWeekSaveError(true); return; } // don't claim "saved ✓" on a failed write
+      setWeekSaveError(false);
       setSaved(true); setTimeout(() => setSaved(false), 1200);
     }, 600);
   }
@@ -195,22 +221,38 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
   }
 
   // ── weekly review: exactly 3 questions, banked XP ───────────────────
-  const reviewDue = !week.reviewed_at || (Date.now() - new Date(week.reviewed_at).getTime()) > 6 * 86400000;
+  // done for this week if the claim exists OR reviewed_at is fresh (< a week old)
+  const reviewDue = !reviewClaimed && (!week.reviewed_at || (Date.now() - new Date(week.reviewed_at).getTime()) > 6 * 86400000);
   async function finishReview() {
     if (!review) return;
+    // kill any pending debounced persistWeek — otherwise it could fire AFTER us
+    // and revert reviewed_at back to null (or overwrite the review notes)
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
     const stamp = new Date().toISOString();
     const noteAdd = `— Review ${todayStr()} —\nWin: ${review.win || "(none written)"}\nDragged: ${review.drag || "(none written)"}`;
     const next = { ...week, notes: week.notes ? `${week.notes}\n\n${noteAdd}` : noteAdd, reviewed_at: stamp };
-    // write the review DIRECTLY — a debounce timer dies if the PWA is
-    // backgrounded right after the tap, and review answers must not be lost
+
+    // Bank the review as a DIRECT quest_claims insert keyed to this week's
+    // Monday (day = ws). The (user_id, day, quest_key) unique constraint makes
+    // it exactly one-per-week — not farmable per-day — the same guarantee
+    // BossCard relies on. Bank FIRST so we never stamp reviewed_at (which hides
+    // the card) unless the XP actually landed.
+    const { error: bankErr } = await supabase.from("quest_claims").insert({
+      user_id: uid, day: ws, quest_key: "weekly_review", xp: 40,
+    });
+    if (bankErr) {
+      setReviewError(true); // keep the form open — the answers are not lost
+      return;
+    }
+    setReviewClaimed(true);
+    setReviewError(false);
+    // only NOW stamp reviewed_at + persist the review notes, then celebrate
     setWeek(next);
-    const { error } = await supabase.from("weekly_plans").upsert(
+    await supabase.from("weekly_plans").upsert(
       { user_id: uid, week_start: ws, priorities: next.priorities, notes: next.notes, reviewed_at: stamp },
       { onConflict: "user_id,week_start" },
     );
-    if (error) return; // keep the review form open — answers not lost
     setReview(null);
-    await game.bankQuestXP("weekly_review", 40);
     burstConfetti("small");
     sfx.fanfare();
     xpToast(40, "weekly review");
@@ -227,6 +269,7 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
       <p className="opacity-50 text-sm mt-1">
         Everything out of your head, into the system. <span className={`text-[var(--neon)] transition-opacity ${saved ? "opacity-100" : "opacity-0"}`}>saved ✓</span>
       </p>
+      {weekSaveError && <p className="text-xs text-orange-400 mt-1">Not saved — your changes stay on screen; keep editing to retry.</p>}
 
       {/* capture — the always-there box */}
       <Card tone="neon" className="mt-4">
@@ -249,6 +292,7 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
       {captures.length > 0 && (
         <>
           <SectionTitle>📥 Inbox · {captures.length}</SectionTitle>
+          {triageError && <p className="text-xs text-orange-400 mb-2">{triageError}</p>}
           <div className="space-y-2">
             {captures.map((c) => (
               <Card key={c.id} padded={false} className="p-3">
@@ -327,6 +371,7 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
                 className="w-full rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" placeholder="name it, don't judge it" />
               <p className="text-xs font-bold">3 · Set next week&apos;s 3 priorities above ☝️ then —</p>
               <button onClick={finishReview} className="w-full rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95">Done · +40 XP</button>
+              {reviewError && <p className="text-xs text-orange-400">Couldn&apos;t bank the review — your answers are safe here. Try again.</p>}
             </div>
           )}
         </Card>

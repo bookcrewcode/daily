@@ -23,10 +23,14 @@ export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?
   useEffect(() => {
     (async () => {
       const since = new Date(); since.setDate(since.getDate() - 6);
-      const [{ data }, { data: todayPlan }] = await Promise.all([
+      const [{ data, error }, { data: todayPlan }] = await Promise.all([
         supabase.from("days").select("*").eq("user_id", uid).gte("day", dateStr(since)),
         supabase.from("nights").select("top3").eq("user_id", uid).eq("day", todayStr()).maybeSingle(),
       ]);
+      // read-error guard: a transient failure must not be read as "no wins" —
+      // empty rows would fabricate a false "zero taps yet" nudge. Keep whatever
+      // message is already on screen and bail rather than treat null as truth.
+      if (error) return;
       const rows = data ?? [];
       const today = rows.find((r) => r.day === todayStr());
       const hour = new Date().getHours();

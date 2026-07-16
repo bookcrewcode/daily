@@ -14,16 +14,25 @@ const TIER_STYLE: Record<Reward["tier"], string> = {
 
 export default function Rewards({ uid, level }: { uid: string; level: number }) {
   const [claimed, setClaimed] = useState<Set<string>>(new Set());
+  const [claimError, setClaimError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from("claimed_rewards").select("key").eq("user_id", uid);
+    const { data, error } = await supabase.from("claimed_rewards").select("key").eq("user_id", uid);
+    // a transient read failure must NOT drop existing ✓ marks — keep prior state
+    if (error) return;
     setClaimed(new Set((data ?? []).map((r) => r.key as string)));
   }, [uid]);
   useEffect(() => { load(); }, [load]);
 
   async function claim(key: string) {
+    // write first — only show "✓ claimed" once the row actually lands
+    const { error } = await supabase.from("claimed_rewards").insert({ user_id: uid, key });
+    if (error) {
+      setClaimError(key); // card stays on "Claim"; a small note appears
+      return;
+    }
+    setClaimError(null);
     setClaimed((s) => new Set(s).add(key));
-    await supabase.from("claimed_rewards").insert({ user_id: uid, key });
   }
 
   const unlocked = REWARDS.filter((r) => level >= r.level);
@@ -50,7 +59,10 @@ export default function Rewards({ uid, level }: { uid: string; level: number }) 
                 isClaimed ? (
                   <p className="text-[10px] text-[var(--neon)] mt-2">✓ claimed</p>
                 ) : (
-                  <button onClick={() => claim(r.key)} className="mt-2 w-full text-xs font-bold rounded-lg bg-[var(--neon)] text-black py-1.5 active:scale-95">Claim</button>
+                  <>
+                    <button onClick={() => claim(r.key)} className="mt-2 w-full text-xs font-bold rounded-lg bg-[var(--neon)] text-black py-1.5 active:scale-95">Claim</button>
+                    {claimError === r.key && <p className="text-[10px] text-orange-400 mt-1">Couldn&apos;t claim — try again.</p>}
+                  </>
                 )
               ) : (
                 <p className="text-[10px] opacity-40 mt-2">🔒 locked</p>

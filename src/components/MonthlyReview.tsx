@@ -69,12 +69,19 @@ export default function MonthlyReview({ uid }: { uid: string }) {
   async function submit() {
     if (!month || !stats) return;
     setNote("");
+    // Bank the XP FIRST. load() hides this card permanently once a
+    // monthly_reviews row exists, so that row must be written LAST — if it went
+    // in first and the bank then failed, the +60 could never be re-earned.
+    const banked = await game.bankQuestXP(`month_${month}`, MONTH_REVIEW_XP);
+    if (!banked) {
+      setNote("Couldn't bank the XP — your answers are still here. Try again.");
+      return;
+    }
     const { error } = await supabase.from("monthly_reviews").insert({ user_id: uid, month, answers, stats });
     if (error) {
       setNote("Couldn't save — your answers are still here. Try again.");
       return; // unique(user_id,month) also makes an accidental double-tap harmless
     }
-    await game.bankQuestXP(`month_${month}`, MONTH_REVIEW_XP);
     burstConfetti("big");
     sfx.fanfare();
     xpToast(MONTH_REVIEW_XP, "month closed");

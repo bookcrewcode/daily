@@ -10,6 +10,7 @@
 // corrupt the real calendar (an 8h overnighter becoming a 15-min block).
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { dateStr } from "@/lib/supabase";
 import { listDay, createEvent, patchEvent, deleteEvent, acquireToken, NeedsAuth, type GEvent } from "@/lib/gcal";
 import { sfx, buzz } from "@/lib/fx";
@@ -159,7 +160,10 @@ export default function CalendarEditor({ clientId, initialDay, onClose, onChange
   const allDay = events.filter((e) => e.start.date);
   const nowMins = new Date().getHours() * 60 + new Date().getMinutes();
 
-  return (
+  // Portal to <body>: this <div> is fixed inset-0, but any ancestor with a
+  // backdrop-filter (CalendarCard's <Card>) becomes the containing block for
+  // fixed children, which would trap the "fullscreen" editor inside the card.
+  return createPortal(
     <div className="fixed inset-0 z-40 bg-[var(--background)] flex flex-col max-w-md mx-auto md:max-w-2xl">
       {/* header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10">
@@ -283,7 +287,8 @@ export default function CalendarEditor({ clientId, initialDay, onClose, onChange
           </div>
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -20,7 +20,9 @@ export default function Vocab({ uid }: { uid: string }) {
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
   const [lookingUp, setLookingUp] = useState(false);
+  const [addErr, setAddErr] = useState(false);
   const reviewsToday = useRef<number | null>(null);
+  const dayRef = useRef(todayStr());
 
   // Free dictionary lookup (dictionaryapi.dev) — type a word, tap once,
   // definition + example fill themselves. No key, no backend.
@@ -51,16 +53,39 @@ export default function Vocab({ uid }: { uid: string }) {
   }
 
   const load = useCallback(async () => {
-    const { data } = await supabase.from("vocab").select("*").eq("user_id", uid).order("added", { ascending: false });
+    const { data, error } = await supabase.from("vocab").select("*").eq("user_id", uid).order("added", { ascending: false });
+    if (error) return; // keep the words already on screen; a transient read must not wipe the bank
     setWords((data ?? []) as VocabWord[]);
   }, [uid]);
   useEffect(() => { load(); }, [load]);
 
+  // midnight rollover: a PWA left open overnight must attach reviews to the NEW
+  // day. Reseed the per-day counter from the new day's row (0) so answering
+  // after midnight doesn't bank yesterday's count+1 as phantom XP.
+  useEffect(() => {
+    const check = () => {
+      if (todayStr() !== dayRef.current) {
+        dayRef.current = todayStr();
+        reviewsToday.current = null; // next answer reseeds from today's row
+        setQuiz(null); setShowAnswer(false);
+        load();
+        game.refresh();
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    const id = setInterval(check, 30000);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, [load, game]);
+
   async function add() {
     if (!word.trim()) return;
+    setAddErr(false);
     const row = { user_id: uid, word: word.trim(), definition: def.trim(), sentence: sentence.trim(), mnemonic: mnemonic.trim(), added: todayStr() };
-    const { data } = await supabase.from("vocab").insert(row).select().single();
-    if (data) setWords((w) => [data as VocabWord, ...w]);
+    const { data, error } = await supabase.from("vocab").insert(row).select().single();
+    // don't bank the +5 habit / vocab_count or clear the fields for a word that didn't save
+    if (error || !data) { setAddErr(true); return; }
+    setWords((w) => [data as VocabWord, ...w]);
     const addedToday = words.filter((w) => w.added === todayStr()).length + 1;
     await supabase.from("days").upsert(
       { user_id: uid, day: todayStr(), ws_vocab: true, vocab_count: addedToday },
@@ -90,18 +115,27 @@ export default function Vocab({ uid }: { uid: string }) {
 
   async function answer(gotIt: boolean) {
     if (!quiz) return;
+    const prev = quiz; // snapshot for rollback if the write fails
     const patch = { seen: (quiz.seen ?? 0) + 1, missed: (quiz.missed ?? 0) + (gotIt ? 0 : 1) };
     setWords((w) => w.map((x) => (x.id === quiz.id ? { ...x, ...patch } : x)));
-    await supabase.from("vocab").update(patch).eq("id", quiz.id);
-    // per-day review counter feeds the "⚡ +N today" badge (session-safe via ref)
+    const { error: seenErr } = await supabase.from("vocab").update(patch).eq("id", quiz.id);
+    if (seenErr) {
+      // roll back the optimistic seen/missed bump — nothing was banked, don't toast
+      setWords((w) => w.map((x) => (x.id === prev.id ? { ...x, seen: prev.seen, missed: prev.missed } : x)));
+      return;
+    }
+    // per-day review counter feeds the "⚡ +N today" badge. Reseed from the day
+    // row on first use; the midnight guard nulls it so counts attach to today.
     if (reviewsToday.current == null) {
       reviewsToday.current = game.days.find((d) => d.day === todayStr())?.vocab_reviews ?? 0;
     }
-    reviewsToday.current += 1;
-    await supabase.from("days").upsert(
-      { user_id: uid, day: todayStr(), vocab_reviews: reviewsToday.current },
+    const nextCount = reviewsToday.current + 1;
+    const { error: dayErr } = await supabase.from("days").upsert(
+      { user_id: uid, day: todayStr(), vocab_reviews: nextCount },
       { onConflict: "user_id,day" },
     );
+    if (dayErr) return; // seen/missed is banked; skip the toast and retry the counter next answer
+    reviewsToday.current = nextCount; // only advance after the write lands
     if (gotIt) sfx.pop();
     xpToast(VOCAB_REVIEW_XP, gotIt ? "recalled" : "reviewed");
     game.refresh();
@@ -194,6 +228,7 @@ export default function Vocab({ uid }: { uid: string }) {
           </>
         )}
         <button onClick={add} className="w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">Add word · +5 XP</button>
+        {addErr && <p className="text-xs text-orange-400">Couldn&apos;t save that word — your entry is still here. Try again.</p>}
       </div>
 
       <SectionTitle>Your bank</SectionTitle>

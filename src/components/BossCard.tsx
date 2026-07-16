@@ -25,6 +25,7 @@ type Boss = { key: string; emoji: string; name: string; desc: string; target: nu
 export default function BossCard() {
   const game = useGame();
   const [claimed, setClaimed] = useState<boolean | null>(null);
+  const [claimErr, setClaimErr] = useState(false);
   const ws = mondayOf();
 
   const checkClaim = useCallback(async () => {
@@ -86,16 +87,24 @@ export default function BossCard() {
     // insert with day = the week's Monday, so the (user_id, day, quest_key)
     // unique constraint makes one-claim-per-week a DATABASE guarantee, not a
     // client hope — a stale second tab physically cannot double-bank it
+    setClaimErr(false);
     const { error } = await supabase.from("quest_claims").insert({
       user_id: game.uid, day: ws, quest_key: `boss_${ws}`, xp: BOSS_XP,
     });
-    setClaimed(true);
-    if (!error) {
-      burstConfetti("big");
-      sfx.levelup();
-      xpToast(BOSS_XP, "boss defeated");
-      game.refresh();
+    if (error) {
+      // WRITE-THEN-CELEBRATE: only mark defeated once the insert lands. A false
+      // "defeated ✓" here permanently loses 75 XP — the button is gone next week.
+      // Re-check: a duplicate-key error means it's genuinely already claimed
+      // (flip to defeated); a real failure keeps it claimable with a retry note.
+      setClaimErr(true);
+      checkClaim();
+      return;
     }
+    setClaimed(true);
+    burstConfetti("big");
+    sfx.levelup();
+    xpToast(BOSS_XP, "boss defeated");
+    game.refresh();
   }
 
   return (
@@ -118,6 +127,7 @@ export default function BossCard() {
           ⚔️ CLAIM VICTORY · +{BOSS_XP} XP
         </button>
       )}
+      {claimErr && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t bank the win — tap CLAIM to try again.</p>}
       {!beaten && <p className="text-[10px] opacity-40 mt-1.5">the only opponent is last-week-you · +{BOSS_XP} XP on the kill</p>}
     </Card>
   );

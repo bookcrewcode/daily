@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { burstConfetti } from "@/lib/confetti";
 import { REWARDS } from "@/lib/gamification";
 
@@ -27,16 +27,32 @@ export function Ring({ score, total }: { score: number; total: number }) {
 export function NumCard({ label, value, onChange, step, decimals }: {
   label: string; value: number; onChange: (v: number) => void; step: number; decimals?: boolean;
 }) {
+  // Typing "185" used to fire onChange on every keystroke (1 → 18 → 185), so
+  // three DB upserts raced and an out-of-order one could bank a wrong prefix.
+  // Hold a local draft and commit ONCE on blur / Enter; the steppers commit
+  // immediately (they're discrete, single writes).
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (value ? String(value) : "");
+  const round = (v: number) => +v.toFixed(decimals ? 1 : 0);
+  const commit = () => {
+    if (draft === null) return;
+    const v = draft.trim() === "" ? 0 : Number(draft);
+    setDraft(null);
+    if (!Number.isNaN(v) && round(v) !== value) onChange(round(v));
+  };
+  const bump = (delta: number) => { setDraft(null); onChange(Math.max(0, round(value + delta))); };
   return (
     <Card padded={false} className="p-3">
       <p className="text-xs opacity-60 mb-1">{label}</p>
       <div className="flex items-center gap-2">
-        <button onClick={() => onChange(Math.max(0, +(value - step).toFixed(decimals ? 1 : 0)))}
+        <button onClick={() => bump(-step)}
           className="w-8 h-8 rounded-lg bg-white/10 text-lg active:scale-90">−</button>
-        <input type="number" inputMode="decimal" value={value || ""}
-          onChange={(e) => onChange(e.target.value === "" ? 0 : Number(e.target.value))}
+        <input type="number" inputMode="decimal" value={shown}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
           className="flex-1 w-full bg-transparent text-center text-xl font-bold outline-none" placeholder="0" />
-        <button onClick={() => onChange(+(value + step).toFixed(decimals ? 1 : 0))}
+        <button onClick={() => bump(step)}
           className="w-8 h-8 rounded-lg bg-white/10 text-lg active:scale-90">+</button>
       </div>
     </Card>

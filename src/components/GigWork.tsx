@@ -21,12 +21,20 @@ export default function GigWork({ uid }: { uid: string }) {
   const [goal, setGoal] = useState(10000);
   const [deadline, setDeadline] = useState("2026-08-01");
   const [editingGoal, setEditingGoal] = useState(false);
+  const [offline, setOffline] = useState(false);      // last read failed — showing prior data
+  const [logError, setLogError] = useState(false);
+  const [removeError, setRemoveError] = useState(false);
+  const [goalError, setGoalError] = useState(false);
 
   const load = useCallback(async () => {
-    const [{ data }, { data: settings }] = await Promise.all([
+    const [{ data, error }, { data: settings, error: sErr }] = await Promise.all([
       supabase.from("gig_shifts").select("*").eq("user_id", uid).order("day", { ascending: false }),
       supabase.from("user_settings").select("gig_goal,gig_deadline").eq("user_id", uid).maybeSingle(),
     ]);
+    // READ-ERROR GUARD: a transient read must not render a fabricated "$0 / $10,000"
+    // and then let a later write overwrite real rows. Keep prior state and flag it.
+    if (error || sErr) { setOffline(true); return; }
+    setOffline(false);
     setShifts((data ?? []) as Shift[]);
     if (settings) {
       setGoal(settings.gig_goal ?? 10000);
@@ -38,23 +46,36 @@ export default function GigWork({ uid }: { uid: string }) {
   async function log() {
     if (!hours && !earnings) return;
     const row = { user_id: uid, day: todayStr(), platform, hours: Number(hours) || 0, earnings: Number(earnings) || 0 };
-    const { data } = await supabase.from("gig_shifts").insert(row).select().single();
-    if (data) {
-      setShifts((s) => [data as Shift, ...s]);
-      const xp = Math.floor(row.earnings / GIG_XP_PER_DOLLARS);
-      if (xp > 0) xpToast(xp, "hustle");
-      game.refresh();
-    }
+    const { data, error } = await supabase.from("gig_shifts").insert(row).select().single();
+    if (error || !data) { setLogError(true); return; } // keep hours/earnings in the inputs — nothing lost
+    setLogError(false);
+    setShifts((s) => [data as Shift, ...s]);
+    const xp = Math.floor(row.earnings / GIG_XP_PER_DOLLARS);
+    if (xp > 0) xpToast(xp, "hustle");
+    game.refresh();
     setHours(""); setEarnings("");
   }
   async function remove(id: string) {
+    const prev = shifts;
     setShifts((s) => s.filter((x) => x.id !== id));
-    await supabase.from("gig_shifts").delete().eq("id", id);
+    const { error } = await supabase.from("gig_shifts").delete().eq("id", id);
+    if (error) { setShifts(prev); setRemoveError(true); return; }
+    setRemoveError(false);
     game.refresh();
   }
   async function saveGoal(g: number, d: string) {
-    setGoal(g); setDeadline(d); setEditingGoal(false);
-    await supabase.from("user_settings").upsert({ user_id: uid, gig_goal: g, gig_deadline: d }, { onConflict: "user_id" });
+    const prevGoal = goal, prevDeadline = deadline;
+    setGoal(g); setDeadline(d);
+    const { error } = await supabase.from("user_settings").upsert({ user_id: uid, gig_goal: g, gig_deadline: d }, { onConflict: "user_id" });
+    if (error) {
+      // roll back so the displayed goal matches what's actually stored; keep the
+      // editor open so the user can retry with their values still in place.
+      setGoal(prevGoal); setDeadline(prevDeadline);
+      setGoalError(true);
+      return;
+    }
+    setGoalError(false);
+    setEditingGoal(false);
   }
 
   const totalEarnings = shifts.reduce((s, x) => s + Number(x.earnings), 0);
@@ -100,6 +121,7 @@ export default function GigWork({ uid }: { uid: string }) {
           </div>
         </div>
         {editingGoal && <GoalEditor goal={goal} deadline={deadline} onSave={saveGoal} />}
+        {goalError && <p className="text-xs text-orange-400 mb-1">Couldn&apos;t save the goal — try again.</p>}
         <p className="text-2xl font-extrabold mb-2">{fmt(totalEarnings)} <span className="opacity-40 text-sm font-normal">/ {fmt(goal)}</span></p>
         <ProgressBar pct={pct} />
         <div className="flex justify-between mt-3 text-xs opacity-70">
@@ -119,6 +141,7 @@ export default function GigWork({ uid }: { uid: string }) {
         )}
         {remaining === 0 && <p className="text-xs text-[var(--neon)] mt-2">🎉 Goal hit. Raise it?</p>}
       </Card>
+      {offline && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t refresh — showing your last saved data.</p>}
 
       {shifts.length > 0 && (
         <div className="flex gap-2 mt-3 items-end">
@@ -148,6 +171,7 @@ export default function GigWork({ uid }: { uid: string }) {
           <button onClick={log} className="px-5 rounded-xl bg-white/10 font-bold active:scale-95">Log</button>
         </div>
         <p className="text-[10px] opacity-40">Every $10 earned = 1 XP. The hustle counts.</p>
+        {logError && <p className="text-xs text-orange-400">Couldn&apos;t log that shift — your hours and earnings are still here. Try again.</p>}
       </div>
 
       {shifts.length > 0 && (
@@ -161,6 +185,7 @@ export default function GigWork({ uid }: { uid: string }) {
           ))}
         </div>
       )}
+      {removeError && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t remove that shift — try again.</p>}
     </div>
   );
 }

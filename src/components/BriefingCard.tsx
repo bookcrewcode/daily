@@ -21,7 +21,9 @@ export default function BriefingCard({ uid }: { uid: string }) {
       const res = await fetch(ADVISOR_FN, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${session.session?.access_token}` },
-        body: JSON.stringify({ advisor: "briefing" }),
+        // clientDay anchors the edge function's streak/day math to Ben's LOCAL
+        // day (todayStr is local time) instead of the function's UTC clock
+        body: JSON.stringify({ advisor: "briefing", clientDay: todayStr() }),
       });
       const json = await res.json();
       if (json.text) {

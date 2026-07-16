@@ -42,22 +42,30 @@ export default function Food({ uid }: { uid: string }) {
   const [snap, setSnap] = useState<Snap | null>(null);
   const [snapBusy, setSnapBusy] = useState(false);
   const [snapError, setSnapError] = useState("");
+  const [loadWarn, setLoadWarn] = useState(false);
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [goalError, setGoalError] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const isToday = viewDay === todayStr();
 
   const load = useCallback(async () => {
-    const [{ data }, { data: settingsRow }, { data: favRows }] = await Promise.all([
+    const [{ data, error }, { data: settingsRow, error: settingsErr }, { data: favRows, error: favErr }] = await Promise.all([
       supabase.from("meals").select("*").eq("user_id", uid).eq("day", viewDay).order("created_at"),
       supabase.from("user_settings").select("calorie_goal,protein_goal,carb_goal,fat_goal").eq("user_id", uid).maybeSingle(),
       supabase.from("meal_favorites").select("*").eq("user_id", uid).order("created_at", { ascending: false }).limit(12),
     ]);
+    // READ-ERROR GUARD: a transient read must never blank the day — an empty render
+    // makes an ADHD user re-log, and the next write mirrors duplicates over real rows.
+    if (error) { setLoadWarn(true); return; }
+    setLoadWarn(false);
     setMeals((data ?? []) as Meal[]);
-    if (settingsRow) setGoals({ ...DEFAULT_GOALS, ...settingsRow });
-    setFavs((favRows ?? []) as Fav[]);
+    if (!settingsErr && settingsRow) setGoals({ ...DEFAULT_GOALS, ...settingsRow });
+    if (!favErr) setFavs((favRows ?? []) as Fav[]);
 
     const since = new Date(); since.setDate(since.getDate() - 6);
-    const { data: w } = await supabase.from("meals").select("day,calories").eq("user_id", uid).gte("day", dateStr(since));
+    const { data: w, error: weekErr } = await supabase.from("meals").select("day,calories").eq("user_id", uid).gte("day", dateStr(since));
+    if (weekErr) return; // keep the existing 7-day chart rather than zeroing it out
     const totals = new Map<string, number>();
     (w ?? []).forEach((m: { day: string; calories: number }) => totals.set(m.day, (totals.get(m.day) ?? 0) + m.calories));
     const out: { day: string; cal: number }[] = [];
@@ -66,22 +74,32 @@ export default function Food({ uid }: { uid: string }) {
   }, [uid, viewDay]);
   useEffect(() => { load(); }, [load]);
 
-  // midnight rollover guard — resumed PWAs must not log meals onto yesterday
+  // midnight rollover guard — a resumed PWA must not log meals onto yesterday.
+  // Track the calendar day in a ref; when it flips, snap viewDay to the new today
+  // IF we were viewing what used to be today, otherwise just refresh the browsed day.
+  const dayRef = useRef(todayStr());
   useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      setViewDay((d) => (d === todayStr() ? d : d)); // keep explicit browsing
-      load();
+    const check = () => {
+      const now = todayStr();
+      if (now === dayRef.current) return;
+      const wasToday = viewDay === dayRef.current;
+      dayRef.current = now;
+      if (wasToday) setViewDay(now); // reloads via the [load] effect once viewDay changes
+      else load();                   // keep explicit browsing, but pull fresh data
     };
+    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    const id = setInterval(check, 30000);
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, [load]);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+  }, [viewDay, load]);
 
   async function syncDayTotals(day: string) {
-    const { data } = await supabase.from("meals").select("calories,protein").eq("user_id", uid).eq("day", day);
+    const { data, error: readErr } = await supabase.from("meals").select("calories,protein").eq("user_id", uid).eq("day", day);
+    if (readErr) { console.error("food: syncDayTotals read failed", readErr); return; } // don't mirror a 0 over real totals
     const c = (data ?? []).reduce((s, m: { calories: number }) => s + m.calories, 0);
     const p = (data ?? []).reduce((s, m: { protein: number }) => s + m.protein, 0);
-    await supabase.from("days").upsert({ user_id: uid, day, calories: c, protein: p }, { onConflict: "user_id,day" });
+    const { error } = await supabase.from("days").upsert({ user_id: uid, day, calories: c, protein: p }, { onConflict: "user_id,day" });
+    if (error) { console.error("food: days mirror upsert failed", error); setLoadWarn(true); } // scoreboard/protein quest may lag; meals stay source of truth
     load();
     game.refresh();
   }
@@ -122,12 +140,20 @@ export default function Food({ uid }: { uid: string }) {
   }
 
   async function copyYesterday() {
-    const y = new Date(viewDay + "T00:00:00"); y.setDate(y.getDate() - 1);
-    const { data } = await supabase.from("meals").select("name,calories,protein,carbs,fat").eq("user_id", uid).eq("day", dateStr(y));
-    if (!data?.length) { setSnapError("Nothing logged yesterday to copy."); setTimeout(() => setSnapError(""), 2500); return; }
-    const rows = data.map((m) => ({ user_id: uid, day: viewDay, ...m }));
-    const { error } = await supabase.from("meals").insert(rows);
-    if (!error) { sfx.coin(); syncDayTotals(viewDay); }
+    if (copyBusy) return; // in-flight guard: a double-tap would duplicate a whole day + double-pay XP
+    setCopyBusy(true);
+    try {
+      const y = new Date(viewDay + "T00:00:00"); y.setDate(y.getDate() - 1);
+      const { data, error: readErr } = await supabase.from("meals").select("name,calories,protein,carbs,fat").eq("user_id", uid).eq("day", dateStr(y));
+      if (readErr) { setSnapError("Couldn't reach the log — try again."); setTimeout(() => setSnapError(""), 2500); return; }
+      if (!data?.length) { setSnapError("Nothing logged yesterday to copy."); setTimeout(() => setSnapError(""), 2500); return; }
+      const rows = data.map((m) => ({ user_id: uid, day: viewDay, ...m }));
+      const { error } = await supabase.from("meals").insert(rows);
+      if (error) { setSnapError("Couldn't copy yesterday — try again."); setTimeout(() => setSnapError(""), 2500); return; }
+      sfx.coin(); syncDayTotals(viewDay);
+    } finally {
+      setCopyBusy(false);
+    }
   }
 
   async function snapMeal(file: File) {
@@ -144,7 +170,7 @@ export default function Food({ uid }: { uid: string }) {
       const res = await fetch(ADVISOR_FN, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${session.session?.access_token}` },
-        body: JSON.stringify({ advisor: "food-vision", image: b64, mediaType }),
+        body: JSON.stringify({ advisor: "food-vision", image: b64, mediaType, clientDay: todayStr() }),
       });
       const json = await res.json();
       if (json.error) setSnapError(json.error);
@@ -176,7 +202,7 @@ export default function Food({ uid }: { uid: string }) {
     <div>
       <div className="flex items-center justify-between pt-3">
         <h1 className="text-2xl font-bold">🍎 Food</h1>
-        <button onClick={() => setEditingGoals((v) => !v)} className="text-xs opacity-50 underline">goals</button>
+        <button onClick={() => { setGoalError(false); setEditingGoals((v) => !v); }} className="text-xs opacity-50 underline">goals</button>
       </div>
 
       {/* day browser */}
@@ -192,9 +218,13 @@ export default function Food({ uid }: { uid: string }) {
       {editingGoals && (
         <Card className="mt-3">
           <GoalEditor goals={goals} onSave={async (g) => {
+            // WRITE-THEN-APPLY: don't close/apply until the upsert lands, else goals silently revert
+            const { error } = await supabase.from("user_settings").upsert({ user_id: uid, ...g }, { onConflict: "user_id" });
+            if (error) { setGoalError(true); return; } // keep editor open with typed values
+            setGoalError(false);
             setGoals(g); setEditingGoals(false);
-            await supabase.from("user_settings").upsert({ user_id: uid, ...g }, { onConflict: "user_id" });
           }} />
+          {goalError && <p className="text-xs text-orange-400 mt-2">Couldn&apos;t save your goals — they&apos;re still here. Try again.</p>}
         </Card>
       )}
 
@@ -226,8 +256,8 @@ export default function Food({ uid }: { uid: string }) {
                 ⭐ {f.name} <span className="opacity-40">· {f.calories}</span>
               </button>
             ))}
-            <button onClick={copyYesterday} className="text-xs font-medium px-3 py-2 rounded-full bg-white/5 border border-white/10 active:scale-95">
-              📋 copy yesterday
+            <button onClick={copyYesterday} disabled={copyBusy} className="text-xs font-medium px-3 py-2 rounded-full bg-white/5 border border-white/10 active:scale-95 disabled:opacity-50">
+              {copyBusy ? "📋 copying…" : "📋 copy yesterday"}
             </button>
           </div>
           {favs.length === 0 && <p className="text-[10px] opacity-40 mt-1.5">star a logged meal below and it lives here forever</p>}
@@ -293,6 +323,7 @@ export default function Food({ uid }: { uid: string }) {
       )}
 
       <SectionTitle>{isToday ? "Today's meals" : "Meals that day"}</SectionTitle>
+      {loadWarn && <p className="text-xs text-orange-400 mb-1">Couldn&apos;t refresh — showing the last data. Check your connection.</p>}
       {meals.length === 0 && <p className="opacity-40 text-sm">Nothing logged{isToday ? " yet" : ""}.</p>}
       <div className="space-y-2">
         {meals.map((m) => {
