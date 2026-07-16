@@ -94,10 +94,16 @@ export default function IsItWorking({ uid }: { uid: string }) {
   const perYear = income.weekRev * 52;
   const daysToMillion = perYear > 0 ? ((MILLION - start) / perYear) * 365 : null;
   let moneyLine: React.ReactNode;
-  if (!income.anyLogged) {
+  if (start >= MILLION) {
+    moneyLine = <>You&apos;re past $1M (${start.toLocaleString()}). Pick the next number and keep the reps up.</>;
+  } else if (!income.anyLogged) {
     moneyLine = <span className="opacity-60">Log income reps in the Income Engine — your first close projects a date to $1M and every sale pulls it closer.</span>;
   } else if (daysToMillion == null || daysToMillion <= 0) {
     moneyLine = <>You&apos;re at ${start.toLocaleString()}. No revenue booked this week — the $1M line only moves when you sell. This week&apos;s reps are the lead measure.</>;
+  } else if (daysToMillion >= 36500) {
+    // upper-range guard (mirrors the body side): a tiny weekly run-rate projects
+    // absurd century dates / overflows Date. Show the lever instead of a fake date.
+    moneyLine = <>At ${income.weekRev.toLocaleString()}/wk that&apos;s many decades out — too slow to plan around. The lever is bigger weekly revenue: double it and the date jumps in hard.</>;
   } else {
     moneyLine = <>At ${income.weekRev.toLocaleString()}/wk (${perYear.toLocaleString()}/yr) on top of ${start.toLocaleString()}, you hit <b className="text-[var(--neon)]">$1M around {fmtDate(daysToMillion)}</b> ({fmtSpan(daysToMillion)}). Double weekly revenue → roughly halve the wait.</>;
   }
