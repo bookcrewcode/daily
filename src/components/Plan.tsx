@@ -15,6 +15,7 @@ import { burstConfetti } from "@/lib/confetti";
 import { xpToast, sfx, buzz } from "@/lib/fx";
 import { SectionTitle, Card } from "./ui";
 import NowScreen from "./NowScreen";
+import MonthlyReview from "./MonthlyReview";
 
 type Capture = { id: string; text: string; done: boolean; created_at: string };
 type WeekPlan = { id?: string; week_start: string; priorities: string[]; notes: string; reviewed_at: string | null };
@@ -330,6 +331,9 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
           )}
         </Card>
       )}
+
+      {/* monthly review — only surfaces at month boundaries */}
+      <MonthlyReview uid={uid} />
 
       {/* notes / thoughts for the week */}
       <SectionTitle>🧠 Week notes — thoughts, plans, worries</SectionTitle>

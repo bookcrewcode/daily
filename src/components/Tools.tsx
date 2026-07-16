@@ -166,7 +166,233 @@ const EXPORT_TABLES = [
   "learning_sessions", "learning_retrieval", "learning_weak_spots",
   "claimed_rewards", "user_settings", "captures", "weekly_plans", "ai_memories", "chat_messages",
   "engine_rows", "engine_reps", "goal_steps", "meal_favorites", "workout_templates", "countdowns",
+  "monthly_reviews",
 ];
+
+// ── 1-rep max — Epley estimate + working percentages ──
+function OneRepMax() {
+  const [w, setW] = useState("");
+  const [r, setR] = useState("");
+  const weight = Number(w) || 0;
+  const reps = Number(r) || 0;
+  const orm = weight > 0 && reps > 0 ? Math.round(weight * (1 + reps / 30)) : 0;
+  const PCTS = [95, 90, 85, 80, 75, 70];
+  return (
+    <Card>
+      <div className="flex gap-2">
+        <input value={w} onChange={(e) => setW(e.target.value)} inputMode="decimal" placeholder="weight (lb)"
+          className="flex-1 min-w-0 rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" />
+        <input value={r} onChange={(e) => setR(e.target.value)} inputMode="numeric" placeholder="reps"
+          className="w-24 rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" />
+      </div>
+      {orm > 0 && (
+        <>
+          <p className="text-center mt-3">
+            <span className="font-display font-extrabold text-3xl text-[var(--neon)]">{orm}</span>
+            <span className="text-xs opacity-50"> lb estimated 1RM</span>
+          </p>
+          <div className="grid grid-cols-3 gap-1.5 mt-2">
+            {PCTS.map((p) => (
+              <div key={p} className="rounded-lg bg-black/30 py-1.5 text-center">
+                <p className="text-sm font-bold tabular-nums">{Math.round((orm * p) / 100)}</p>
+                <p className="text-[9px] opacity-40">{p}%</p>
+              </div>
+            ))}
+          </div>
+          <p className="text-[10px] opacity-40 mt-2">Epley formula — most accurate under 10 reps. 85% ≈ your 5-rep working weight.</p>
+        </>
+      )}
+    </Card>
+  );
+}
+
+// ── TDEE — Mifflin-St Jeor, with one-tap "make it my calorie goal" ──
+function TdeeCalc() {
+  const game = useGame();
+  const [wt, setWt] = useState("");
+  const [ht, setHt] = useState("70");
+  const [age, setAge] = useState("21");
+  const [sex, setSex] = useState<"m" | "f">("m");
+  const [act, setAct] = useState("1.55");
+  const [applied, setApplied] = useState("");
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    if (game.latestBodyweight && !wt) setWt(String(Math.round(game.latestBodyweight)));
+    // prefill once from the last weigh-in — typing wins after that
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game.latestBodyweight]);
+
+  const lb = Number(wt) || 0;
+  const inches = Number(ht) || 0;
+  const yrs = Number(age) || 0;
+  const kg = lb * 0.4536, cm = inches * 2.54;
+  const bmr = lb > 0 && inches > 0 && yrs > 0 ? 10 * kg + 6.25 * cm - 5 * yrs + (sex === "m" ? 5 : -161) : 0;
+  const tdee = Math.round(bmr * Number(act));
+  const targets = [
+    { label: "Cut", kcal: tdee - 500, hint: "−1 lb/wk" },
+    { label: "Maintain", kcal: tdee, hint: "recomp" },
+    { label: "Bulk", kcal: tdee + 300, hint: "lean gain" },
+  ];
+  const protein = Math.round(lb); // 1 g/lb — the simple rule that works
+
+  async function apply(kcal: number, label: string) {
+    setNote("");
+    const { error } = await supabase.from("user_settings").upsert(
+      { user_id: game.uid, calorie_goal: kcal, protein_goal: protein },
+      { onConflict: "user_id" },
+    );
+    if (error) { setNote("Couldn't save the goal — try again."); return; }
+    setApplied(label);
+    sfx.coin();
+    setTimeout(() => setApplied(""), 2500);
+  }
+
+  return (
+    <Card>
+      <div className="grid grid-cols-2 gap-2">
+        <input value={wt} onChange={(e) => setWt(e.target.value)} inputMode="decimal" placeholder="weight (lb)"
+          className="rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" />
+        <input value={ht} onChange={(e) => setHt(e.target.value)} inputMode="decimal" placeholder="height (in)"
+          className="rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" />
+        <input value={age} onChange={(e) => setAge(e.target.value)} inputMode="numeric" placeholder="age"
+          className="rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" />
+        <div className="flex gap-1.5">
+          <button onClick={() => setSex("m")} className={`flex-1 rounded-xl text-sm font-semibold active:scale-95 ${sex === "m" ? "bg-[var(--neon)] text-black" : "bg-black/30"}`}>M</button>
+          <button onClick={() => setSex("f")} className={`flex-1 rounded-xl text-sm font-semibold active:scale-95 ${sex === "f" ? "bg-[var(--neon)] text-black" : "bg-black/30"}`}>F</button>
+        </div>
+      </div>
+      <select value={act} onChange={(e) => setAct(e.target.value)}
+        className="w-full mt-2 rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm">
+        <option value="1.2">Mostly sitting</option>
+        <option value="1.375">Light activity (1–3 workouts/wk)</option>
+        <option value="1.55">Active (3–5 workouts/wk)</option>
+        <option value="1.725">Very active (6–7/wk or physical job)</option>
+      </select>
+      {tdee > 0 && (
+        <>
+          <p className="text-center mt-3">
+            <span className="font-display font-extrabold text-3xl text-[var(--neon)]">{tdee}</span>
+            <span className="text-xs opacity-50"> kcal/day to maintain · protein target ~{protein}g</span>
+          </p>
+          <div className="grid grid-cols-3 gap-1.5 mt-2">
+            {targets.map((t) => (
+              <button key={t.label} onClick={() => apply(t.kcal, t.label)}
+                className="rounded-lg bg-black/30 py-2 text-center active:scale-95">
+                <p className="text-sm font-bold tabular-nums">{applied === t.label ? "✓ set" : t.kcal}</p>
+                <p className="text-[9px] opacity-40">{t.label} · {t.hint}</p>
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] opacity-40 mt-2">Tap a target to make it your Food-tab calorie goal (protein goes to {protein}g with it).</p>
+          {note && <p className="text-xs text-orange-400 mt-1">{note}</p>}
+        </>
+      )}
+    </Card>
+  );
+}
+
+// ── Sleep cycles — wake up between 90-min cycles, not mid-cycle ──
+function SleepCycles() {
+  const [wake, setWake] = useState("07:00");
+  const [mode, setMode] = useState<"wake" | "now">("wake");
+  const FALL_ASLEEP = 15;
+
+  const fmt = (d: Date) => d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  let rows: { time: string; cycles: number; hours: string }[] = [];
+  if (mode === "wake") {
+    const [h, m] = wake.split(":").map(Number);
+    if (!isNaN(h) && !isNaN(m)) {
+      const w = new Date(); w.setHours(h, m, 0, 0);
+      rows = [6, 5, 4].map((c) => {
+        const bed = new Date(w.getTime() - (c * 90 + FALL_ASLEEP) * 60000);
+        return { time: fmt(bed), cycles: c, hours: `${(c * 1.5).toFixed(1)}h` };
+      });
+    }
+  } else {
+    const now = new Date();
+    rows = [4, 5, 6].map((c) => {
+      const w = new Date(now.getTime() + (c * 90 + FALL_ASLEEP) * 60000);
+      return { time: fmt(w), cycles: c, hours: `${(c * 1.5).toFixed(1)}h` };
+    });
+  }
+
+  return (
+    <Card>
+      <div className="flex gap-2 items-center">
+        <button onClick={() => setMode("wake")} className={`flex-1 rounded-xl py-2 text-xs font-semibold active:scale-95 ${mode === "wake" ? "bg-[var(--neon)] text-black" : "bg-black/30"}`}>I wake up at…</button>
+        <button onClick={() => setMode("now")} className={`flex-1 rounded-xl py-2 text-xs font-semibold active:scale-95 ${mode === "now" ? "bg-[var(--neon)] text-black" : "bg-black/30"}`}>If I sleep now</button>
+      </div>
+      {mode === "wake" && (
+        <input type="time" value={wake} onChange={(e) => setWake(e.target.value)}
+          className="w-full mt-2 rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" />
+      )}
+      <div className="grid grid-cols-3 gap-1.5 mt-2">
+        {rows.map((r, i) => (
+          <div key={i} className={`rounded-lg py-2 text-center ${r.cycles >= 5 ? "bg-[var(--neon)]/15" : "bg-black/30"}`}>
+            <p className="text-sm font-bold">{r.time}</p>
+            <p className="text-[9px] opacity-40">{r.cycles} cycles · {r.hours}</p>
+          </div>
+        ))}
+      </div>
+      <p className="text-[10px] opacity-40 mt-2">{mode === "wake" ? "Be asleep by one of these (15 min to drift off is built in). Waking mid-cycle is why 8h can feel worse than 7.5." : "Wake times if you're in bed in the next few minutes."}</p>
+    </Card>
+  );
+}
+
+// ── Millionaire math — compound growth against the $1M north star ──
+function MillionaireMath() {
+  const game = useGame();
+  const [monthly, setMonthly] = useState("500");
+  const [rate, setRate] = useState("8");
+  const start = Math.max(0, game.netWorth);
+  const m = Number(monthly) || 0;
+  const yr = (Number(rate) || 0) / 100;
+  const mr = yr / 12;
+
+  const fv = (months: number) => {
+    if (mr === 0) return start + m * months;
+    return start * Math.pow(1 + mr, months) + m * ((Math.pow(1 + mr, months) - 1) / mr);
+  };
+  let toMillion: number | null = null;
+  if (m > 0 || (start > 0 && mr > 0)) {
+    for (let months = 1; months <= 1200; months++) {
+      if (fv(months) >= 1_000_000) { toMillion = months; break; }
+    }
+  }
+  const marks = [5, 10, 20];
+
+  return (
+    <Card>
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <p className="text-[10px] opacity-50 mb-1">invested / month ($)</p>
+          <input value={monthly} onChange={(e) => setMonthly(e.target.value)} inputMode="numeric"
+            className="w-full rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" />
+        </div>
+        <div className="w-28">
+          <p className="text-[10px] opacity-50 mb-1">return %/yr</p>
+          <input value={rate} onChange={(e) => setRate(e.target.value)} inputMode="decimal"
+            className="w-full rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" />
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5 mt-3">
+        {marks.map((y) => (
+          <div key={y} className="rounded-lg bg-black/30 py-2 text-center">
+            <p className="text-sm font-bold tabular-nums">${Math.round(fv(y * 12)).toLocaleString()}</p>
+            <p className="text-[9px] opacity-40">in {y} years</p>
+          </div>
+        ))}
+      </div>
+      <p className="text-center text-sm mt-3">
+        {toMillion
+          ? <>🌟 <b className="text-[var(--neon)]">$1,000,000</b> in <b className="text-[var(--neon)]">{Math.floor(toMillion / 12)}y {toMillion % 12}m</b> at this pace</>
+          : <span className="opacity-50">Set a monthly amount to see your path to $1M.</span>}
+      </p>
+      <p className="text-[10px] opacity-40 mt-1.5">Starts from your live net worth (${start.toLocaleString()}). Every gig shift you log moves this date.</p>
+    </Card>
+  );
+}
 
 // ── Soundscape — brown/pink noise straight from WebAudio, loops forever ──
 // ADHD focus staple: steady broadband noise masks the distracting spikes.
@@ -451,6 +677,18 @@ export default function Tools() {
 
       <SectionTitle>⏳ Countdowns</SectionTitle>
       <Countdowns />
+
+      <SectionTitle>🏋️ 1-rep max</SectionTitle>
+      <OneRepMax />
+
+      <SectionTitle>🔥 Calorie targets (TDEE)</SectionTitle>
+      <TdeeCalc />
+
+      <SectionTitle>😴 Sleep cycles</SectionTitle>
+      <SleepCycles />
+
+      <SectionTitle>📈 Millionaire math</SectionTitle>
+      <MillionaireMath />
 
       <SectionTitle>🎡 Decision wheel</SectionTitle>
       <DecisionWheel />

@@ -1,8 +1,99 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { supabase, todayStr, type LearningTopic, type LearningRetrieval, type LearningWeakSpot } from "@/lib/supabase";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { supabase, todayStr, ADVISOR_FN, SUPABASE_ANON, type LearningTopic, type LearningRetrieval, type LearningWeakSpot } from "@/lib/supabase";
 import { SectionTitle, Card, Pill } from "./ui";
+
+type ChatMsg = { role: string; content: string };
+
+// 🎓 The Tutor, embedded — learn with the AI right here, inside the topic.
+// Same thread as the full-screen Board tutor (chat_messages, advisor='tutor',
+// per-topic), so Recap & save and the fullscreen view all see one conversation.
+function TutorChat({ uid, topicId, onFullScreen }: { uid: string; topicId: string; onFullScreen?: () => void }) {
+  const [msgs, setMsgs] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const scrollDown = () => setTimeout(() => scrollRef.current?.scrollTo(0, 1e9), 60);
+
+  const load = useCallback(async () => {
+    const { data } = await supabase.from("chat_messages").select("role,content")
+      .eq("user_id", uid).eq("advisor", "tutor").eq("topic_id", topicId)
+      .order("created_at", { ascending: false }).limit(30);
+    setMsgs(((data ?? []) as ChatMsg[]).reverse());
+    setLoaded(true);
+    scrollDown();
+  }, [uid, topicId]);
+  useEffect(() => { load(); }, [load]);
+
+  async function send() {
+    const text = input.trim();
+    if (!text || busy) return;
+    setBusy(true); setNote("");
+    // save FIRST — "sent" must mean saved; input stays put on failure
+    const { error } = await supabase.from("chat_messages")
+      .insert({ user_id: uid, advisor: "tutor", topic_id: topicId, role: "user", content: text });
+    if (error) { setNote("Couldn't save that — check your connection and try again."); setBusy(false); return; }
+    const history = msgs.slice(-14);
+    setInput("");
+    setMsgs((m) => [...m, { role: "user", content: text }]);
+    scrollDown();
+    try {
+      const { data: session } = await supabase.auth.getSession();
+      const res = await fetch(ADVISOR_FN, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${session.session?.access_token}` },
+        body: JSON.stringify({ advisor: "tutor", message: text, history, topicId }),
+      });
+      const json = await res.json();
+      const reply = json.text || json.error || "No response.";
+      if (json.text) {
+        await supabase.from("chat_messages")
+          .insert({ user_id: uid, advisor: "tutor", topic_id: topicId, role: "assistant", content: json.text });
+      }
+      setMsgs((m) => [...m, { role: "assistant", content: reply }]);
+    } catch {
+      setMsgs((m) => [...m, { role: "assistant", content: "Couldn't reach the Tutor — your message is saved. Try again." }]);
+    } finally {
+      setBusy(false);
+      scrollDown();
+    }
+  }
+
+  return (
+    <Card tone="neon" className="mt-3" padded={false}>
+      <div className="flex items-center justify-between px-4 pt-3 pb-2">
+        <p className="text-xs uppercase tracking-widest text-[var(--neon)]">🎓 Tutor — learn it right here</p>
+        {onFullScreen && (
+          <button onClick={onFullScreen} title="Full screen + Recap & save"
+            className="text-xs opacity-60 active:scale-90">⛶ full</button>
+        )}
+      </div>
+      <div ref={scrollRef} className="max-h-[45vh] overflow-y-auto px-4 space-y-2">
+        {loaded && msgs.length === 0 && (
+          <p className="text-xs opacity-50 pb-1">Ask anything about this topic — the Tutor runs your 3C protocol: trunk first, retrieval always. It already knows your tree, weak spots, and accuracy.</p>
+        )}
+        {msgs.map((m, i) => (
+          <div key={i} className={`text-sm whitespace-pre-wrap rounded-xl px-3 py-2 ${m.role === "user" ? "bg-[var(--neon)]/15 ml-6" : "bg-black/30 mr-2"}`}>
+            {m.content}
+          </div>
+        ))}
+        {busy && <div className="skeleton h-10 mr-2" />}
+      </div>
+      <div className="flex gap-2 p-3">
+        <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder={busy ? "tutor is thinking…" : "ask, answer, or say “quiz me”"}
+          className="flex-1 min-w-0 rounded-xl bg-black/30 px-3 py-2.5 outline-none text-sm" />
+        <button onClick={send} disabled={busy}
+          className="px-4 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95 disabled:opacity-40">↑</button>
+      </div>
+      {note && <p className="text-xs text-orange-400 px-4 pb-3 -mt-1">{note}</p>}
+    </Card>
+  );
+}
 
 export default function Learning({ uid, onOpenAdvisor }: { uid: string; onOpenAdvisor?: (advisor: string, topicId?: string) => void }) {
   const [topics, setTopics] = useState<LearningTopic[]>([]);
@@ -102,19 +193,16 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
   const [sessions, setSessions] = useState<{ id: string; day: string; chunks: { note: string }[]; brain_dump: string }[]>([]);
   const [openSession, setOpenSession] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
-  const [lastChat, setLastChat] = useState<{ role: string; content: string; created_at: string }[]>([]);
 
   const load = useCallback(async () => {
-    const [{ data: r }, { data: w }, { data: s }, { data: chat }] = await Promise.all([
+    const [{ data: r }, { data: w }, { data: s }] = await Promise.all([
       supabase.from("learning_retrieval").select("*").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(20),
       supabase.from("learning_weak_spots").select("*").eq("topic_id", topic.id).eq("resolved", false),
       supabase.from("learning_sessions").select("id,day,chunks,brain_dump").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(20),
-      supabase.from("chat_messages").select("role,content,created_at").eq("topic_id", topic.id).eq("advisor", "tutor").order("created_at", { ascending: false }).limit(2),
     ]);
     setRetrieval((r ?? []) as LearningRetrieval[]);
     setWeakSpots((w ?? []) as LearningWeakSpot[]);
     setSessions((s ?? []) as typeof sessions);
-    setLastChat(((chat ?? []) as typeof lastChat).reverse());
   }, [topic.id]);
   useEffect(() => { load(); }, [load]);
 
@@ -160,27 +248,8 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
       <h1 className="text-2xl font-bold mt-1">{topic.title}</h1>
       {topic.goal && <p className="text-sm opacity-60 mt-1">🎯 {topic.goal}</p>}
 
-      {lastChat.length > 0 ? (
-        <Card tone="neon" className="mt-3">
-          <p className="text-xs uppercase tracking-widest text-[var(--neon)] mb-1.5">
-            🎓 Pick up where you left off · {new Date(lastChat[lastChat.length - 1].created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-          </p>
-          {lastChat.map((m, i) => (
-            <p key={i} className={`text-xs ${m.role === "user" ? "opacity-60" : "opacity-90"} mb-1 line-clamp-2`}>
-              <b>{m.role === "user" ? "you" : "tutor"}:</b> {m.content}
-            </p>
-          ))}
-          <button onClick={() => onOpenAdvisor?.("tutor", topic.id)}
-            className="mt-2 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">
-            Continue with the Tutor →
-          </button>
-        </Card>
-      ) : (
-        <button onClick={() => onOpenAdvisor?.("tutor", topic.id)}
-          className="mt-3 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">
-          🎓 Ask the Tutor — 3C session
-        </button>
-      )}
+      <TutorChat uid={uid} topicId={topic.id} onFullScreen={onOpenAdvisor ? () => onOpenAdvisor("tutor", topic.id) : undefined} />
+      <p className="text-[10px] opacity-40 mt-1.5">Same conversation everywhere — ⛶ full screen adds 📝 Recap &amp; save, which turns the session into chunks, weak spots, and retrieval log below.</p>
 
       <SectionTitle>🌳 The Tree (first principles)</SectionTitle>
       {!editingTree ? (
