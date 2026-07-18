@@ -49,13 +49,15 @@ function normalizeAnchor(s: string): string {
 
 // A floor you can't refuse: shrink a number, else just "start it".
 function deriveFloor(rep: string): string {
+  // TIME first: "20 min journal" must floor to "1 min journal", not "4 min".
+  // The generic leading-number shrink would otherwise swallow this (its .* eats
+  // "min"), quietly breaking the 2-minute promise the whole feature rests on.
+  if (/(\d+)\s*(min|minute)/i.test(rep)) return rep.replace(/(\d+)\s*(min|minute)s?/i, "1 min");
   const n = rep.match(/^(\d+)\s+(.*)$/);
   if (n) {
     const small = Math.max(1, Math.round(Number(n[1]) / 5));
     return `${small} ${n[2]}`;
   }
-  const mins = rep.match(/(\d+)\s*(min|minute)/i);
-  if (mins) return rep.replace(/(\d+)\s*(min|minute)/i, "1 min");
   return `Just start ${rep.replace(/^(do|go|read|write)\s+/i, "").slice(0, 40)} for 2 minutes`;
 }
 
@@ -85,7 +87,8 @@ export default function QuickHabit({ uid, sortStart, onAdded }: {
 
   async function addTyped() {
     const { anchor, rep } = parseHabit(text);
-    if (!rep.trim()) return;
+    // needs real content — "→" alone trims to a truthy string but says nothing
+    if (!/[a-z0-9]/i.test(rep)) { setErr("Give it an action, like “after coffee → 10 pushups”."); return; }
     const name = rep.length > 22 ? rep.slice(0, 22).trim() + "…" : rep;
     await add({
       emoji: "⚡",

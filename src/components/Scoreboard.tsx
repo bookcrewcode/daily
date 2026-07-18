@@ -53,6 +53,11 @@ export default function Scoreboard({ uid }: { uid: string }) {
   const [designing, setDesigning] = useState<string | null>(null); // row id whose design panel is open
   const [why, setWhy] = useState(false);
   const [draft, setDraft] = useState({ emoji: "⚙️", name: "", rep: "", identity: "" });
+  const [rowErr, setRowErr] = useState("");
+  // the checkbox and the 2-min button both call toggleRep for the SAME row —
+  // without this, overlapping taps race and the loser's rollback erases a rep
+  // that actually banked. One in-flight toggle per row.
+  const pending = useRef<Set<string>>(new Set());
 
   const load = useCallback(async () => {
     const since = new Date(); since.setDate(since.getDate() - 120);
@@ -88,6 +93,12 @@ export default function Scoreboard({ uid }: { uid: string }) {
   }
 
   async function toggleRep(row: EngineRow) {
+    if (pending.current.has(row.id)) return; // a toggle for this row is already in flight
+    pending.current.add(row.id);
+    try { await toggleRepInner(row); } finally { pending.current.delete(row.id); }
+  }
+
+  async function toggleRepInner(row: EngineRow) {
     // compute the day at CALL time — a tab open past midnight must bank/undo on
     // the real current day, never the stale day captured at the last render
     const day = todayStr();
@@ -95,7 +106,13 @@ export default function Scoreboard({ uid }: { uid: string }) {
     if (days.has(day)) {
       // undo — honest scoreboards allow corrections
       setReps((x) => x.filter((r) => !(r.row_id === row.id && r.day === day)));
-      const { error } = await supabase.from("engine_reps").delete().eq("user_id", uid).eq("row_id", row.id).eq("day", day);
+      const { data: gone, error } = await supabase.from("engine_reps").delete().eq("user_id", uid).eq("row_id", row.id).eq("day", day).select("row_id");
+      // a DELETE matching zero rows is NOT an error — treat "nothing removed" as
+      // an undo that didn't happen rather than a silent success
+      if (!error && (gone ?? []).length === 0) {
+        setReps((x) => [...x, { row_id: row.id, day }]);
+        return;
+      }
       if (error) {
         // delete didn't land — roll the rep back so the checkbox matches banked XP
         setReps((x) => [...x, { row_id: row.id, day }]);
@@ -107,6 +124,9 @@ export default function Scoreboard({ uid }: { uid: string }) {
     setReps((x) => [...x, { row_id: row.id, day }]);
     const { error } = await supabase.from("engine_reps").insert({ user_id: uid, row_id: row.id, day });
     if (error) {
+      // 23505 = the unique (user,row,day) constraint fired: it IS banked, so
+      // rolling back would erase a real rep from the UI. Keep it, skip the toast.
+      if ((error as { code?: string }).code === "23505") { game.refresh(); return; }
       setReps((x) => x.filter((r) => !(r.row_id === row.id && r.day === day)));
       return;
     }
@@ -122,17 +142,22 @@ export default function Scoreboard({ uid }: { uid: string }) {
       user_id: uid, emoji: d.emoji || "⚙️", name: d.name.trim(), rep: d.rep.trim(), identity: d.identity.trim(),
       sort: (rows?.length ?? 0),
     });
-    if (!error) {
-      setDraft({ emoji: "⚙️", name: "", rep: "", identity: "" });
-      setAdding(false);
-      sfx.coin();
-      load();
-    }
+    if (error) { setRowErr("Couldn't add that row — your text is still here. Try again."); return; }
+    setRowErr("");
+    setDraft({ emoji: "⚙️", name: "", rep: "", identity: "" });
+    setAdding(false);
+    sfx.coin();
+    load();
   }
 
   async function archiveRow(id: string) {
+    // write FIRST — removing it from the list before the update lands means a
+    // failed archive shows the row gone here while Plan/Affirmations/Stage
+    // Tomorrow all still query it as active. Confirm, then remove.
+    const { error } = await supabase.from("engine_rows").update({ archived: true }).eq("id", id);
+    if (error) { setRowErr("Couldn't remove that row — try again."); return; }
+    setRowErr("");
     setRows((r) => (r ?? []).filter((x) => x.id !== id));
-    await supabase.from("engine_rows").update({ archived: true }).eq("id", id);
     game.refresh();
   }
 
@@ -162,6 +187,8 @@ export default function Scoreboard({ uid }: { uid: string }) {
           <p className="opacity-60 mt-1">If a row stalls, one of these four is missing. That&apos;s the diagnosis — every time. And the rule: <b>reps, not outcomes.</b></p>
         </div>
       )}
+
+      {rowErr && <p className="text-xs text-orange-400 mb-2">{rowErr}</p>}
 
       {rows.length === 0 && !adding && (
         <div className="text-center py-2">
