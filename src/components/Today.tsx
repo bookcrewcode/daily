@@ -221,10 +221,20 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       if (readErr) return { ok: false, msg: "Couldn't check existing calendar events — try again." };
       const prev = Array.isArray(row?.gcal_event_ids) ? (row!.gcal_event_ids as string[]) : [];
       const res = await pushSchedule(gcalClientId, blocks, prev);
-      await supabase.from("nights").update({ gcal_event_ids: res.ids, calendar_synced_at: new Date().toISOString() })
+      // Saving these ids is what makes the NEXT push able to replace instead of
+      // duplicate. If this write fails the events are already real on the
+      // calendar, so never report a clean success — say exactly what happened.
+      const { error: idErr } = await supabase.from("nights")
+        .update({ gcal_event_ids: res.ids, ...(res.failed === 0 && !res.needsAuth ? { calendar_synced_at: new Date().toISOString() } : {}) })
         .eq("user_id", uid).eq("day", day);
+      if (idErr) {
+        return { ok: false, msg: `${res.created} event${res.created === 1 ? "" : "s"} landed on your calendar, but I couldn't record them here — check the calendar before pushing again or you'll get duplicates.` };
+      }
+      if (res.needsAuth) {
+        return { ok: false, msg: `Google needs you to reconnect — ${res.created} of ${blocks.length} made it. Reconnect and push again (it replaces, won't duplicate).` };
+      }
       if (res.failed > 0) {
-        return { ok: false, msg: `Only ${res.created} of ${blocks.length} landed on your calendar — check it before pushing again.` };
+        return { ok: false, msg: `Only ${res.created} of ${blocks.length} landed on your calendar — push again to retry (it replaces, won't duplicate).` };
       }
       return { ok: true, msg: `📅 ${res.created} block${res.created === 1 ? "" : "s"} on your calendar with 10-min reminders${res.removed ? ` (replaced ${res.removed})` : ""}.` };
     } catch (e) {

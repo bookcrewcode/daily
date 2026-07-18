@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, dateStr, type Night as NightT, type ScheduleItem } from "@/lib/supabase";
 import { useVoiceInput } from "@/lib/useVoiceInput";
-import { acquireToken, createAllDayEvent, pushSchedule, NeedsAuth } from "@/lib/gcal";
+import { acquireToken, pushSchedule, pushAllDay, NeedsAuth } from "@/lib/gcal";
 import { burstConfetti } from "@/lib/confetti";
 import { SectionTitle, Card } from "./ui";
 import { parseTime, fmtMinutes, resolveBlocks, gcalTemplateUrl, downloadIcs } from "@/lib/calendar";
@@ -36,6 +36,11 @@ export default function Night({ uid }: { uid: string }) {
   const [pushNote, setPushNote] = useState("");
   const [top3State, setTop3State] = useState<"idle" | "pushing" | "done" | "error">("idle");
   const [top3Note, setTop3Note] = useState("");
+  // ONE lock for every calendar-writing path (manual push, chat push, Top 3).
+  // Two concurrent pushes each read the same prior id list, both create a full
+  // set, and the last write-back orphans the other set on the real calendar.
+  const pushLock = useRef(false);
+  const [pushBusy, setPushBusy] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noteBase = useRef("");
   const voice = useVoiceInput((text) => {
@@ -129,25 +134,34 @@ export default function Night({ uid }: { uid: string }) {
   // replacing whatever this app put there before (ids stored on the nights row).
   async function pushTomorrowToCalendar(items: ScheduleItem[]): Promise<{ ok: boolean; msg: string }> {
     if (!clientId) return { ok: false, msg: "Connect Google Calendar in the calendar card above first." };
+    if (pushLock.current) return { ok: false, msg: "Another calendar push is still running — give it a second." };
     const blocks = resolveBlocks(items, tomorrow());
     if (!blocks.length) return { ok: false, msg: "No timed blocks to push — add times like 07:00." };
+    pushLock.current = true; setPushBusy(true);
     try {
       const token = (await acquireToken(clientId, false)) ?? (await acquireToken(clientId, true));
       if (!token) return { ok: false, msg: "Google didn't grant access — tap again to authorize." };
       const { data: row, error: readErr } = await supabase.from("nights").select("gcal_event_ids").eq("user_id", uid).eq("day", day).maybeSingle();
+      // a failed read looks like "no previous events" and would duplicate the day
       if (readErr) return { ok: false, msg: "Couldn't check existing calendar events — try again." };
       const prev = Array.isArray(row?.gcal_event_ids) ? (row!.gcal_event_ids as string[]) : [];
       const res = await pushSchedule(clientId, blocks, prev);
-      await supabase.from("nights").update({ gcal_event_ids: res.ids, calendar_synced_at: new Date().toISOString() })
+      // recording the ids is what lets the NEXT push replace instead of duplicate
+      const { error: idErr } = await supabase.from("nights")
+        .update({ gcal_event_ids: res.ids, ...(res.failed === 0 && !res.needsAuth ? { calendar_synced_at: new Date().toISOString() } : {}) })
         .eq("user_id", uid).eq("day", day);
-      setN((x) => ({ ...x, calendar_synced_at: new Date().toISOString() }));
-      if (res.failed > 0) {
-        return { ok: false, msg: `Only ${res.created} of ${blocks.length} landed — check your calendar before pushing again.` };
+      if (idErr) {
+        return { ok: false, msg: `${res.created} event${res.created === 1 ? "" : "s"} landed, but I couldn't record them here — check your calendar before pushing again or you'll get duplicates.` };
       }
+      if (res.failed === 0 && !res.needsAuth) setN((x) => ({ ...x, calendar_synced_at: new Date().toISOString() }));
+      if (res.needsAuth) return { ok: false, msg: `Google needs you to reconnect — ${res.created} of ${blocks.length} made it. Reconnect and push again (it replaces, won't duplicate).` };
+      if (res.failed > 0) return { ok: false, msg: `Only ${res.created} of ${blocks.length} landed — push again to retry (it replaces, won't duplicate).` };
       return { ok: true, msg: `📅 ${res.created} block${res.created === 1 ? "" : "s"} on tomorrow's calendar with 10-min reminders${res.removed ? ` (replaced ${res.removed})` : ""}.` };
     } catch (e) {
       if (e instanceof NeedsAuth) return { ok: false, msg: "Google needs you to reconnect — tap to authorize." };
       return { ok: false, msg: "Calendar push failed — your plan is saved. Try again." };
+    } finally {
+      pushLock.current = false; setPushBusy(false);
     }
   }
 
@@ -184,24 +198,35 @@ export default function Night({ uid }: { uid: string }) {
   // Honesty rule: only claim success when EVERY block landed; a partial push
   // says exactly what happened (blind retries would duplicate events).
   async function pushAllApi() {
-    if (!blocks.length || !clientId || pushState === "pushing") return;
+    if (!blocks.length || !clientId || pushState === "pushing" || pushLock.current) return;
+    pushLock.current = true; setPushBusy(true);
     setPushState("pushing"); setPushNote("");
     try {
       const t = (await acquireToken(clientId, false)) ?? (await acquireToken(clientId, true));
       if (!t) { setPushState("error"); setPushNote("Google didn't grant access."); return; }
-      const { data: prevRow } = await supabase.from("nights").select("gcal_event_ids").eq("user_id", uid).eq("day", day).maybeSingle();
+      const { data: prevRow, error: readErr } = await supabase.from("nights").select("gcal_event_ids").eq("user_id", uid).eq("day", day).maybeSingle();
+      if (readErr) { setPushState("error"); setPushNote("Couldn't check existing calendar events — try again."); return; }
       const prevIds = Array.isArray(prevRow?.gcal_event_ids) ? (prevRow!.gcal_event_ids as string[]) : [];
       const pushed = await pushSchedule(clientId, blocks, prevIds);
-      await supabase.from("nights").update({ gcal_event_ids: pushed.ids }).eq("user_id", uid).eq("day", day);
+      // recording ids is what makes the next push replace instead of duplicate
+      const { error: idErr } = await supabase.from("nights").update({ gcal_event_ids: pushed.ids }).eq("user_id", uid).eq("day", day);
+      if (idErr) {
+        setPushState("error");
+        setPushNote(`${pushed.created} event(s) landed, but I couldn't record them here — check Google Calendar before pushing again or you'll get duplicates.`);
+        return;
+      }
       const created = pushed.created;
-      if (created === blocks.length) {
+      if (pushed.needsAuth) {
+        setPushState("error");
+        setPushNote(`Google needs you to reconnect — ${created} of ${blocks.length} made it. Reconnect and push again (it replaces, won't duplicate).`);
+      } else if (created === blocks.length) {
         burstConfetti("small");
         markSynced();
         setPushState("done");
         setTimeout(() => setPushState("idle"), 4000);
       } else if (created > 0) {
         setPushState("error");
-        setPushNote(`Only ${created} of ${blocks.length} made it — check Google Calendar before retrying, or you'll get duplicates.`);
+        setPushNote(`Only ${created} of ${blocks.length} made it — push again to retry (it replaces, won't duplicate).`);
       } else {
         setPushState("error");
         setPushNote("Nothing was pushed — check your connection and try again.");
@@ -209,6 +234,8 @@ export default function Night({ uid }: { uid: string }) {
     } catch {
       setPushState("error");
       setPushNote("Push interrupted — check Google Calendar to see what landed before retrying.");
+    } finally {
+      pushLock.current = false; setPushBusy(false);
     }
   }
 
@@ -216,26 +243,36 @@ export default function Night({ uid }: { uid: string }) {
   // Calendar. Same honesty rule as pushAllApi: report exactly what landed.
   async function pushTop3() {
     const filled = n.top3.map((t) => t.trim()).filter(Boolean);
-    if (!filled.length || !clientId || top3State === "pushing") return;
+    if (!filled.length || !clientId || top3State === "pushing" || pushLock.current) return;
+    pushLock.current = true; setPushBusy(true);
     setTop3State("pushing"); setTop3Note("");
     try {
       const t = (await acquireToken(clientId, false)) ?? (await acquireToken(clientId, true));
       if (!t) { setTop3State("error"); setTop3Note("Google didn't grant access."); return; }
-      let created = 0;
-      for (let i = 0; i < filled.length; i++) {
-        try {
-          await createAllDayEvent(clientId, `★ ${i + 1}. ${filled[i]}`, day);
-          created++;
-        } catch { break; }
+      const { data: prevRow, error: readErr } = await supabase.from("nights").select("gcal_top3_event_ids").eq("user_id", uid).eq("day", day).maybeSingle();
+      if (readErr) { setTop3State("error"); setTop3Note("Couldn't check existing Top-3 events — try again."); return; }
+      const prevIds = Array.isArray(prevRow?.gcal_top3_event_ids) ? (prevRow!.gcal_top3_event_ids as string[]) : [];
+      // delete-then-create, like the blocks push: re-pinning must REPLACE the
+      // previous all-day events, never stack a second set on the real calendar
+      const pushed = await pushAllDay(clientId, filled.map((f, i) => `★ ${i + 1}. ${f}`), day, prevIds);
+      const { error: idErr } = await supabase.from("nights").update({ gcal_top3_event_ids: pushed.ids }).eq("user_id", uid).eq("day", day);
+      if (idErr) {
+        setTop3State("error");
+        setTop3Note(`${pushed.created} pinned, but I couldn't record them here — check Google Calendar before pinning again or you'll get duplicates.`);
+        return;
       }
-      if (created === filled.length) {
+      const created = pushed.created;
+      if (pushed.needsAuth) {
+        setTop3State("error");
+        setTop3Note(`Google needs you to reconnect — ${created} of ${filled.length} made it. Reconnect and pin again (it replaces, won't duplicate).`);
+      } else if (created === filled.length) {
         burstConfetti("small");
         markSynced();
         setTop3State("done");
         setTimeout(() => setTop3State("idle"), 4000);
       } else if (created > 0) {
         setTop3State("error");
-        setTop3Note(`Only ${created} of ${filled.length} landed — check Google Calendar before retrying, or you'll get duplicates.`);
+        setTop3Note(`Only ${created} of ${filled.length} landed — pin again to retry (it replaces, won't duplicate).`);
       } else {
         setTop3State("error");
         setTop3Note("Nothing was pushed — check your connection and try again.");
@@ -243,6 +280,8 @@ export default function Night({ uid }: { uid: string }) {
     } catch {
       setTop3State("error");
       setTop3Note("Push interrupted — check Google Calendar to see what landed before retrying.");
+    } finally {
+      pushLock.current = false; setPushBusy(false);
     }
   }
 
@@ -304,7 +343,7 @@ export default function Night({ uid }: { uid: string }) {
               ))}
             </div>
             {clientId ? (
-              <button onClick={pushAllApi} disabled={pushState === "pushing"}
+              <button onClick={pushAllApi} disabled={pushState === "pushing" || pushBusy}
                 className="mt-3 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95 disabled:opacity-50">
                 {pushState === "pushing" ? "Pushing…" : pushState === "done" ? "✓ All on your calendar" : pushState === "error" ? "Didn't finish — see note" : `⚡ Push all ${blocks.length} to Google Calendar`}
               </button>
@@ -336,7 +375,7 @@ export default function Night({ uid }: { uid: string }) {
         ))}
         {clientId && n.top3.some((t) => t.trim()) && (
           <>
-            <button onClick={pushTop3} disabled={top3State === "pushing"}
+            <button onClick={pushTop3} disabled={top3State === "pushing" || pushBusy}
               className="w-full rounded-xl border border-[var(--neon)]/40 text-[var(--neon)] font-semibold py-2.5 text-sm active:scale-95 disabled:opacity-50">
               {top3State === "pushing" ? "Pushing…" : top3State === "done" ? "✓ On your calendar" : top3State === "error" ? "Didn't finish — see note" : "★ Pin Top 3 to Google Calendar (all-day)"}
             </button>

@@ -141,29 +141,71 @@ export async function createEvent(clientId: string, summary: string, start: Date
 // Push a whole day's schedule IDEMPOTENTLY: delete the events this app created
 // for that day last time, then create the current set. Without this, every
 // re-push of a revised schedule would stack duplicates on the calendar.
+export type PushResult = { ids: string[]; created: number; failed: number; removed: number; needsAuth: boolean };
+
 export async function pushSchedule(
   clientId: string,
   blocks: { what: string; start: Date; end: Date }[],
   previousIds: string[],
-): Promise<{ ids: string[]; created: number; failed: number; removed: number }> {
+): Promise<PushResult> {
   let removed = 0;
+  let needsAuth = false;
   for (const id of previousIds) {
     try { await deleteEvent(clientId, id); removed++; }
-    catch (e) { if (e instanceof NeedsAuth) throw e; /* already gone / transient — don't block the re-push */ }
+    catch (e) {
+      if (e instanceof NeedsAuth) { needsAuth = true; break; } // stop early; caller reconnects
+      /* already gone / transient — don't block the re-push */
+    }
   }
   const ids: string[] = [];
   let created = 0, failed = 0;
-  for (const b of blocks) {
-    try {
-      const ev = await createEvent(clientId, b.what, b.start, b.end);
-      if (ev?.id) ids.push(ev.id);
-      created++;
-    } catch (e) {
-      if (e instanceof NeedsAuth) throw e; // auth failure affects every block
-      failed++; // partial push is better than none — the caller reports honestly
+  if (!needsAuth) {
+    for (const b of blocks) {
+      try {
+        const ev = await createEvent(clientId, b.what, b.start, b.end);
+        if (ev?.id) ids.push(ev.id);
+        created++;
+      } catch (e) {
+        // NEVER throw out of this loop: events created so far are REAL and their
+        // ids must reach the caller, or they become untracked orphans that the
+        // next push can't clean up and will duplicate.
+        if (e instanceof NeedsAuth) { needsAuth = true; break; }
+        failed++; // partial push is better than none — the caller reports honestly
+      }
     }
   }
-  return { ids, created, failed, removed };
+  return { ids, created, failed, removed, needsAuth };
+}
+
+// Same replace-don't-stack contract for all-day items (the Top 3), which were
+// previously created untracked — every re-pin duplicated them permanently.
+export async function pushAllDay(
+  clientId: string,
+  summaries: string[],
+  day: string,
+  previousIds: string[],
+): Promise<PushResult> {
+  let removed = 0;
+  let needsAuth = false;
+  for (const id of previousIds) {
+    try { await deleteEvent(clientId, id); removed++; }
+    catch (e) { if (e instanceof NeedsAuth) { needsAuth = true; break; } }
+  }
+  const ids: string[] = [];
+  let created = 0, failed = 0;
+  if (!needsAuth) {
+    for (const s of summaries) {
+      try {
+        const ev = await createAllDayEvent(clientId, s, day);
+        if (ev?.id) ids.push(ev.id);
+        created++;
+      } catch (e) {
+        if (e instanceof NeedsAuth) { needsAuth = true; break; }
+        failed++;
+      }
+    }
+  }
+  return { ids, created, failed, removed, needsAuth };
 }
 
 // all-day event: Google wants {date} (inclusive start, EXCLUSIVE end = day+1)
