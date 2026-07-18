@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr, dateStr } from "@/lib/supabase";
 import RowDesign from "./RowDesign";
+import QuickHabit from "./QuickHabit";
 import { REP_XP } from "@/lib/gamification";
 import { useGame } from "@/lib/useGameData";
 import { xpToast, sfx, buzz } from "@/lib/fx";
@@ -174,7 +175,8 @@ export default function Scoreboard({ uid }: { uid: string }) {
               </button>
             ))}
           </div>
-          <button onClick={() => setAdding(true)} className="text-xs opacity-50 underline">or build your own row</button>
+          <QuickHabit uid={uid} sortStart={0} onAdded={load} />
+          <button onClick={() => setAdding(true)} className="text-xs opacity-40 underline mt-2 inline-block">or build your own row</button>
         </div>
       )}
 
@@ -215,9 +217,14 @@ export default function Scoreboard({ uid }: { uid: string }) {
                   <button onClick={() => archiveRow(row.id)} className="shrink-0 opacity-40 text-xs px-1 active:scale-90">✕</button>
                 )}
               </div>
-              {/* the 2-min floor is the thing that saves a bad day — keep it visible */}
+              {/* THE 2-MINUTE RULE, made tappable. On a bad day the floor is the
+                  whole system: one tap does the smallest version and still casts
+                  the vote. Text you can't act on is just a note. */}
               {row.min_version && !done && (
-                <p className="text-[10px] opacity-45 mt-1 pl-11">floor: {row.min_version}</p>
+                <button onClick={() => toggleRep(row)}
+                  className="mt-1 ml-11 text-[10px] rounded-full bg-white/5 border border-white/10 px-2.5 py-1 active:scale-95">
+                  ▸ 2-min version: <span className="opacity-70">{row.min_version}</span>
+                </button>
               )}
               {designing === row.id && (
                 <RowDesign
@@ -233,7 +240,10 @@ export default function Scoreboard({ uid }: { uid: string }) {
       </div>
 
       {rows.length > 0 && !adding && (
-        <button onClick={() => setAdding(true)} className="mt-2 text-[10px] opacity-40 underline">+ add a row (one at a time — that&apos;s the rule)</button>
+        <>
+          <QuickHabit uid={uid} sortStart={rows.length} onAdded={load} />
+          <button onClick={() => setAdding(true)} className="mt-1 text-[10px] opacity-30 underline">or use the full form (name · rep · identity)</button>
+        </>
       )}
 
       {adding && (
