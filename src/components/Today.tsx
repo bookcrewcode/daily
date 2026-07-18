@@ -180,7 +180,11 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   // it locally — only report success once it actually landed.
   async function applyTodaySchedule(items: ScheduleItem[]): Promise<boolean> {
     const day = todayStr();
-    const { data: existing } = await supabase.from("nights").select("top3,notes").eq("user_id", uid).eq("day", day).maybeSingle();
+    // READ-ERROR GUARD: a failed read returns {data:null} exactly like "no row
+    // yet". Treating them the same would upsert blank top3/notes OVER real data.
+    // Bail instead — ScheduleChat keeps the proposal and shows a retry note.
+    const { data: existing, error: readErr } = await supabase.from("nights").select("top3,notes").eq("user_id", uid).eq("day", day).maybeSingle();
+    if (readErr) return false;
     const { error } = await supabase.from("nights").upsert(
       { user_id: uid, day, items, top3: (existing?.top3 as string[]) ?? ["", "", ""], notes: existing?.notes ?? "" },
       { onConflict: "user_id,day" },

@@ -154,7 +154,10 @@ export default function ScheduleChat({
         <button onClick={() => send()} disabled={busy}
           className="px-4 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95 disabled:opacity-40">↑</button>
       </div>
-      <p className="text-[10px] opacity-40 mt-2">Nothing changes until you tap Apply. It schedules around your fixed calendar events.</p>
+      <p className="text-[10px] opacity-40 mt-2">
+        Nothing changes until you tap Apply.
+        {(fixed?.length ?? 0) > 0 ? " It schedules around your fixed calendar events." : " Check it against your calendar before applying."}
+      </p>
     </Card>
   );
 }

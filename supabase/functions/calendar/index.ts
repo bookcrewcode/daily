@@ -64,6 +64,12 @@ function parseEvents(icsText: string, fromMs: number, toMs: number, day: string)
 
   for (const ve of comp.getAllSubcomponents("vevent")) {
     try {
+      // A VEVENT carrying RECURRENCE-ID is a MODIFIED single occurrence of a
+      // series (e.g. "this week's standup moved to 3pm"). ical.js already folds
+      // it into the master's iteration via getOccurrenceDetails, so processing
+      // it again here would emit a DUPLICATE row — once with the master's stale
+      // title flagged repeating, once with the real title flagged one-off.
+      if (ve.getFirstPropertyValue("recurrence-id")) continue;
       const ev = new ICAL.Event(ve);
       if (!ev.startDate) continue;
       if (ev.isRecurring()) {
@@ -73,7 +79,9 @@ function parseEvents(icsText: string, fromMs: number, toMs: number, day: string)
         while ((next = iter.next()) && guard++ < 2000) {
           if (next.toJSDate().getTime() >= toMs) break;
           const occ = ev.getOccurrenceDetails(next);
-          push(ev.summary, occ.startDate, occ.endDate, true); // expanded from an RRULE
+          // use the OCCURRENCE's own summary so a retitled instance shows its
+          // real current title, not the series' original one
+          push(occ.item?.summary ?? ev.summary, occ.startDate, occ.endDate, true);
         }
       } else {
         push(ev.summary, ev.startDate, ev.endDate);

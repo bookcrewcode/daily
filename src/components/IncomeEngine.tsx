@@ -214,9 +214,15 @@ export default function IncomeEngine() {
           <span className="text-xs opacity-60">booked this week</span>
         </div>
         <p className="text-sm mt-2">
-          {yearsToMillion != null && yearsToMillion > 0
-            ? <>At this run-rate (${perYear.toLocaleString()}/yr on top of ${start.toLocaleString()}), you hit <b className="text-[var(--neon)]">$1M in {yearsToMillion < 1 ? `${Math.round(yearsToMillion * 12)} months` : `${yearsToMillion.toFixed(1)} years`}</b>.</>
-            : <span className="opacity-60">Book your first close this week to see your projected date to $1M — and watch it move every week you sell.</span>}
+          {/* Same bounds as the IsItWorking projection: past-$1M gets its own
+              case, and a tiny run-rate shows the lever instead of an absurd number. */}
+          {start >= 1_000_000
+            ? <>You&apos;re past $1M (${start.toLocaleString()}). Pick the next number and keep selling.</>
+            : yearsToMillion == null || yearsToMillion <= 0
+              ? <span className="opacity-60">Book your first close this week to see your projected date to $1M — and watch it move every week you sell.</span>
+              : yearsToMillion >= 100
+                ? <>At ${weekRevenue.toLocaleString()}/wk that&apos;s many decades out — too slow to plan around. The lever is bigger weekly revenue.</>
+                : <>At this run-rate (${perYear.toLocaleString()}/yr on top of ${start.toLocaleString()}), you hit <b className="text-[var(--neon)]">$1M in {yearsToMillion < 1 ? `${Math.round(yearsToMillion * 12)} months` : `${yearsToMillion.toFixed(1)} years`}</b>.</>}
         </p>
         <p className="text-[10px] opacity-40 mt-2">Double your weekly revenue and you roughly halve the years. That&apos;s the whole game.</p>
       </Card>

@@ -38,7 +38,8 @@ async function getUser(token: string) {
   return await r.json();
 }
 
-function extractVideoId(url: string): string | null {
+function extractVideoId(raw: unknown): string | null {
+  const url = typeof raw === "string" ? raw : "";
   const m = url.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([a-zA-Z0-9_-]{11})/);
   if (m) return m[1];
   return /^[a-zA-Z0-9_-]{11}$/.test(url.trim()) ? url.trim() : null;

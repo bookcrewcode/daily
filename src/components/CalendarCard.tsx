@@ -5,7 +5,7 @@
 //    Calendar API + a full day editor (add/move/delete syncs to GCal).
 //  READ mode (secret iCal address) — view-only fallback, zero setup.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { fetchCalendarEvents, type CalEvent } from "@/lib/calendar";
 import { listDay, acquireToken, everGranted, NeedsAuth, type GEvent } from "@/lib/gcal";
@@ -29,6 +29,11 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
   const [setupOpen, setSetupOpen] = useState(false);
   const [draftIcs, setDraftIcs] = useState("");
   const [draftClient, setDraftClient] = useState("");
+  // Which day the currently-held rows were SUCCESSFULLY loaded for. If a
+  // post-midnight refresh fails, rows still hold yesterday's events — showing
+  // them under "Today" would be a lie, so gate the render on this matching.
+  const loadedDayRef = useRef<string | null>(null);
+  const [loadedDay, setLoadedDay] = useState<string | null>(null);
   // Standing weekly series turn every day into the same wallpaper. Hiding them
   // keeps each day's card specific to THAT day. Device-local, reversible.
   const [hideRepeats, setHideRepeats] = useState(false);
@@ -63,6 +68,7 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
             time: e.start.dateTime ? `${fmtT(e.start.dateTime)}–${e.end.dateTime ? fmtT(e.end.dateTime) : ""}` : "All day",
           })));
           setMode("api");
+          loadedDayRef.current = dayKey; setLoadedDay(dayKey);
           return;
         } catch (e) {
           // ANY api failure falls through to the ICS fallback when configured —
@@ -81,6 +87,7 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
           repeating: e.repeating,
         })));
         setMode("ics");
+        loadedDayRef.current = dayKey; setLoadedDay(dayKey);
       } else if (!settings.clientId) {
         setMode("none");
       }
@@ -91,6 +98,16 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
     }
   }, [settings, dayKey]);
   useEffect(() => { loadEvents(); }, [loadEvents]);
+
+  // Rollover self-heal: if the day flipped and the refresh failed, retry on the
+  // same cadence the rest of the app uses instead of stranding stale events.
+  useEffect(() => {
+    const check = () => { if (loadedDayRef.current !== dayKey) loadEvents(); };
+    const id = setInterval(check, 30000);
+    const onVis = () => { if (document.visibilityState === "visible") check(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+  }, [dayKey, loadEvents]);
 
   async function connect() {
     if (!settings?.clientId) return;
@@ -116,9 +133,11 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
 
   // Recurring series are "wallpaper" — same blocks every single day. Filter
   // them out so the card shows what's actually specific to THIS day.
-  const repeatCount = (rows ?? []).filter((r) => r.repeating).length;
-  const shown = hideRepeats ? (rows ?? []).filter((r) => !r.repeating) : (rows ?? []);
-  const hiddenCount = (rows ?? []).length - shown.length;
+  // rows from a previous day are NOT this day's truth — drop them from the view
+  const fresh = loadedDay === dayKey ? (rows ?? []) : [];
+  const repeatCount = fresh.filter((r) => r.repeating).length;
+  const shown = hideRepeats ? fresh.filter((r) => !r.repeating) : fresh;
+  const hiddenCount = fresh.length - shown.length;
 
   const nothingConfigured = !settings.ics && !settings.clientId;
 
@@ -148,14 +167,14 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
 
       {busy && rows === null && <div className="space-y-1.5"><div className="skeleton h-5" /><div className="skeleton h-5 w-2/3" /></div>}
       {error && <p className="text-xs text-orange-400 mb-1">{error}</p>}
-      {rows && shown.length === 0 && !error && (
+      {loadedDay === dayKey && shown.length === 0 && !error && (
         <p className="text-sm opacity-40">
           {hiddenCount > 0
             ? `Nothing one-off today — ${hiddenCount} repeating ${hiddenCount === 1 ? "event" : "events"} hidden. 🙌`
             : "Nothing on the calendar — open day. 🙌"}
         </p>
       )}
-      {rows && shown.length > 0 && (
+      {shown.length > 0 && (
         <div className="space-y-1.5">
           {shown.map((r, i) => (
             <div key={i} className="flex items-baseline gap-2 text-sm">
@@ -166,7 +185,7 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
           ))}
         </div>
       )}
-      {rows && repeatCount > 0 && (
+      {repeatCount > 0 && (
         <button onClick={toggleRepeats} className="mt-2 text-[10px] opacity-40 underline">
           {hideRepeats ? `show ${repeatCount} repeating ↻` : `hide ${repeatCount} repeating ↻`}
         </button>

@@ -503,7 +503,7 @@ ${ctx}`;
         const items = (Array.isArray(parsed?.items) ? parsed.items : [])
           .filter((it: { time?: string; what?: string }) => it && typeof it.what === "string" && it.what.trim())
           .map((it: { time?: string; what?: string }) => ({
-            time: /^\d{1,2}:\d{2}$/.test(String(it.time ?? "")) ? String(it.time) : "",
+            time: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(it.time ?? "")) ? String(it.time) : "",
             what: String(it.what).slice(0, 120),
           }))
           .slice(0, 24);

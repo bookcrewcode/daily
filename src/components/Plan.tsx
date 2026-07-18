@@ -249,7 +249,7 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
     setReviewError(false);
     // only NOW stamp reviewed_at + persist the review notes, then celebrate
     setWeek(next);
-    await supabase.from("weekly_plans").upsert(
+    const { error: notesErr } = await supabase.from("weekly_plans").upsert(
       { user_id: uid, week_start: ws, priorities: next.priorities, notes: next.notes, reviewed_at: stamp },
       { onConflict: "user_id,week_start" },
     );
@@ -257,6 +257,9 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
     burstConfetti("small");
     sfx.fanfare();
     xpToast(40, "weekly review");
+    // The XP genuinely banked, so celebrate — but if the notes write failed,
+    // say so rather than silently swallowing the answers he just typed.
+    if (notesErr) setWeekSaveError(true);
     game.refresh();
   }
 

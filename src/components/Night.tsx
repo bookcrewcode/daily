@@ -109,13 +109,16 @@ export default function Night({ uid }: { uid: string }) {
   // the debounced persist — a backgrounded PWA would drop that timer) and only
   // report success once it actually landed.
   async function applySchedule(items: ScheduleItem[]): Promise<boolean> {
+    // Disarm the pending debounce FIRST — synchronously, before the await.
+    // Clearing it afterwards is too late: a 600ms timer armed by a manual edit
+    // can fire during this round trip and write stale items over the new ones.
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
     const cur = nRef.current;
     const { error } = await supabase.from("nights").upsert(
       { user_id: uid, day, items, top3: cur.top3, notes: cur.notes },
       { onConflict: "user_id,day" },
     );
     if (error) return false;
-    if (timer.current) { clearTimeout(timer.current); timer.current = null; } // a stale debounce would revert this
     setN((x) => ({ ...x, items }));
     setSaveError(false);
     setSaved(true); setTimeout(() => setSaved(false), 1200);
