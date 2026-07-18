@@ -198,9 +198,10 @@ export default function Scoreboard({ uid }: { uid: string }) {
                     <span className="text-[10px] opacity-40 shrink-0">{weekCount}/7 wk</span>
                   </div>
                   <p className={`text-xs leading-tight truncate ${done ? "opacity-40 line-through" : "opacity-60"}`}>{row.rep}</p>
-                  {row.anchor
-                    ? <p className="text-[10px] text-[var(--neon)]/70 truncate">⚓ {row.anchor}</p>
-                    : <p className="text-[10px] italic text-[var(--neon)]/60 truncate">🗳 {row.identity}</p>}
+                  {/* anchor is the CUE, identity is the WHY — the row needs both;
+                      hiding the identity would gut the vote this rep casts */}
+                  {row.anchor && <p className="text-[10px] text-[var(--neon)]/70 truncate">⚓ {row.anchor}</p>}
+                  <p className="text-[10px] italic text-[var(--neon)]/60 truncate">🗳 {row.identity}</p>
                 </div>
                 <div className="flex gap-[3px] shrink-0">
                   {week.map((d) => (

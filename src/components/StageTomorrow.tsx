@@ -83,7 +83,7 @@ export default function StageTomorrow({ uid }: { uid: string }) {
           {rows.map((r) => {
             const staged = r.staged_on === day;
             return (
-              <button key={r.id} onClick={() => toggle(r)} disabled={busyId === r.id}
+              <button key={r.id} onClick={() => toggle(r)} disabled={!!busyId}
                 className="flex items-center gap-2.5 w-full text-left active:scale-[0.99] disabled:opacity-50">
                 <span className={`w-5 h-5 shrink-0 rounded-md grid place-items-center text-[10px] font-bold ${staged ? "bg-[var(--neon)] text-black" : "border border-white/25"}`}>
                   {staged ? "✓" : ""}

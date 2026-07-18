@@ -47,17 +47,18 @@ export default function RowDesign({
   const [friction, setFriction] = useState(row.friction ?? "");
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState("");
+  const [note, setNote] = useState("");   // informational rationale ("why")
+  const [err, setErr] = useState("");     // hard failure — styled distinctly
   const [law, setLaw] = useState("");
 
   async function save() {
     if (saving) return;
-    setSaving(true); setNote("");
+    setSaving(true); setErr("");
     const patch = { anchor: anchor.trim(), min_version: minV.trim(), friction: friction.trim() };
     // write first — only close on a confirmed save, keep the typed design on failure
     const { error } = await supabase.from("engine_rows").update(patch).eq("id", row.id);
     setSaving(false);
-    if (error) { setNote("Couldn't save — your design is still here. Try again."); return; }
+    if (error) { setErr("Couldn't save — your design is still here. Try again."); return; }
     sfx.pop();
     onSaved(patch);
     onClose();
@@ -66,7 +67,7 @@ export default function RowDesign({
   // Ask the engineer to diagnose it. Lands in the fields as a SUGGESTION.
   async function redesign() {
     if (busy) return;
-    setBusy(true); setNote("");
+    setBusy(true); setErr(""); setNote("");
     try {
       const { data: session } = await supabase.auth.getSession();
       const res = await fetch(ADVISOR_FN, {
@@ -79,14 +80,14 @@ export default function RowDesign({
         }),
       });
       const json = await res.json();
-      if (json.error) { setNote(json.error); return; }
+      if (json.error) { setErr(json.error); return; }
       if (json.anchor) setAnchor(json.anchor);
       if (json.min_version) setMinV(json.min_version);
       if (json.friction) setFriction(json.friction);
       if (json.law) setLaw(json.law);
       if (json.why) setNote(json.why);
     } catch {
-      setNote("Couldn't reach the engineer — design it yourself below.");
+      setErr("Couldn't reach the engineer — design it yourself below.");
     } finally {
       setBusy(false);
     }
@@ -125,6 +126,7 @@ export default function RowDesign({
 
       {law && <p className="text-[10px] text-[var(--neon)]/80 mb-1">broken law: {LAW_LABEL[law] ?? law}</p>}
       {note && <p className="text-xs opacity-70 mb-2">{note}</p>}
+      {err && <p className="text-xs text-orange-400 mb-2">{err}</p>}
 
       <div className="flex gap-2">
         <button onClick={redesign} disabled={busy}

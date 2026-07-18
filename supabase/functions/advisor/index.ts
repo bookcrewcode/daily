@@ -518,11 +518,13 @@ ${ctx}`;
     // design fixes (anchor / 2-min version / friction removal) as a suggestion
     // Ben edits and commits. Never an auto-write.
     if (advisor === "habit-design") {
-      const rowName = String(body.rowName ?? "").slice(0, 120);
-      const rowRep = String(body.rowRep ?? "").slice(0, 200);
-      const rowIdentity = String(body.rowIdentity ?? "").slice(0, 200);
+      // strip quotes/backticks/newlines before interpolating into the prompt
+      const clean = (v: unknown, n: number) => String(v ?? "").replace(/[`"\r\n]/g, " ").slice(0, n);
+      const rowName = clean(body.rowName, 120);
+      const rowRep = clean(body.rowRep, 200);
+      const rowIdentity = clean(body.rowIdentity, 200);
       const recentReps = Number(body.recentReps) || 0;
-      const anchor = String(body.anchor ?? "").slice(0, 200);
+      const anchor = clean(body.anchor, 200);
       const sys = `You are Ben's habit engineer. He has ADHD. A row on his scoreboard is stalling: "${rowName}" — the daily rep is "${rowRep}"${rowIdentity ? `, voting for the identity "${rowIdentity}"` : ""}. It got ${recentReps}/7 reps this week.${anchor ? ` Current anchor: "${anchor}".` : " No anchor set yet."}
 
 Diagnose it as a DESIGN failure, never a character failure. Never imply he's lazy or undisciplined — the premise is that his brain is doing exactly what brains do (conserve energy, take the path of least resistance), and the fix is to redesign the path, not to try harder.
