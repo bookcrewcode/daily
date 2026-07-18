@@ -14,12 +14,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr, dateStr } from "@/lib/supabase";
+import RowDesign from "./RowDesign";
 import { REP_XP } from "@/lib/gamification";
 import { useGame } from "@/lib/useGameData";
 import { xpToast, sfx, buzz } from "@/lib/fx";
 import { Card } from "./ui";
 
-export type EngineRow = { id: string; emoji: string; name: string; rep: string; identity: string; archived: boolean; sort: number };
+export type EngineRow = { id: string; emoji: string; name: string; rep: string; identity: string; archived: boolean; sort: number; anchor?: string; min_version?: string; friction?: string };
 type RepDay = { row_id: string; day: string };
 
 const SUGGESTED: Omit<EngineRow, "id" | "archived" | "sort">[] = [
@@ -48,6 +49,7 @@ export default function Scoreboard({ uid }: { uid: string }) {
   const [reps, setReps] = useState<RepDay[]>([]);
   const [adding, setAdding] = useState(false);
   const [managing, setManaging] = useState(false);
+  const [designing, setDesigning] = useState<string | null>(null); // row id whose design panel is open
   const [why, setWhy] = useState(false);
   const [draft, setDraft] = useState({ emoji: "⚙️", name: "", rep: "", identity: "" });
 
@@ -196,17 +198,34 @@ export default function Scoreboard({ uid }: { uid: string }) {
                     <span className="text-[10px] opacity-40 shrink-0">{weekCount}/7 wk</span>
                   </div>
                   <p className={`text-xs leading-tight truncate ${done ? "opacity-40 line-through" : "opacity-60"}`}>{row.rep}</p>
-                  <p className="text-[10px] italic text-[var(--neon)]/60 truncate">🗳 {row.identity}</p>
+                  {row.anchor
+                    ? <p className="text-[10px] text-[var(--neon)]/70 truncate">⚓ {row.anchor}</p>
+                    : <p className="text-[10px] italic text-[var(--neon)]/60 truncate">🗳 {row.identity}</p>}
                 </div>
                 <div className="flex gap-[3px] shrink-0">
                   {week.map((d) => (
                     <span key={d} className={`w-[7px] h-[18px] rounded-sm ${days.has(d) ? "bg-[var(--neon)]/80" : d === today ? "bg-white/15" : "bg-white/[0.07]"}`} />
                   ))}
                 </div>
+                <button onClick={() => setDesigning(designing === row.id ? null : row.id)}
+                  title="Design this row — anchor, 2-min version, friction"
+                  className={`shrink-0 text-xs px-1 active:scale-90 ${weekCount <= 2 && !row.anchor ? "text-orange-300" : "opacity-30"}`}>🔧</button>
                 {managing && (
                   <button onClick={() => archiveRow(row.id)} className="shrink-0 opacity-40 text-xs px-1 active:scale-90">✕</button>
                 )}
               </div>
+              {/* the 2-min floor is the thing that saves a bad day — keep it visible */}
+              {row.min_version && !done && (
+                <p className="text-[10px] opacity-45 mt-1 pl-11">floor: {row.min_version}</p>
+              )}
+              {designing === row.id && (
+                <RowDesign
+                  row={row}
+                  recentReps={weekCount}
+                  onSaved={(patch) => setRows((rs) => (rs ?? []).map((r) => (r.id === row.id ? { ...r, ...patch } : r)))}
+                  onClose={() => setDesigning(null)}
+                />
+              )}
             </div>
           );
         })}

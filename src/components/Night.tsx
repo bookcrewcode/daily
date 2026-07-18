@@ -9,6 +9,7 @@ import { SectionTitle, Card } from "./ui";
 import { parseTime, fmtMinutes, resolveBlocks, gcalTemplateUrl, downloadIcs } from "@/lib/calendar";
 import CalendarCard from "./CalendarCard";
 import ScheduleChat from "./ScheduleChat";
+import StageTomorrow from "./StageTomorrow";
 import WeatherStrip from "./WeatherStrip";
 import { pushBlocks } from "./CalendarEditor";
 
@@ -314,6 +315,8 @@ export default function Night({ uid }: { uid: string }) {
           </>
         )}
       </div>
+
+      <StageTomorrow uid={uid} />
 
       <SectionTitle>Brain dump / notes</SectionTitle>
       <div className="relative mb-4">

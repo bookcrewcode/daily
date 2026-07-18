@@ -513,6 +513,49 @@ ${ctx}`;
       }
     }
 
+    // 🔧 Habit redesign — a stalling row is a DESIGN problem, not a character
+    // problem. Diagnose which of the Four Laws is broken and return concrete
+    // design fixes (anchor / 2-min version / friction removal) as a suggestion
+    // Ben edits and commits. Never an auto-write.
+    if (advisor === "habit-design") {
+      const rowName = String(body.rowName ?? "").slice(0, 120);
+      const rowRep = String(body.rowRep ?? "").slice(0, 200);
+      const rowIdentity = String(body.rowIdentity ?? "").slice(0, 200);
+      const recentReps = Number(body.recentReps) || 0;
+      const anchor = String(body.anchor ?? "").slice(0, 200);
+      const sys = `You are Ben's habit engineer. He has ADHD. A row on his scoreboard is stalling: "${rowName}" — the daily rep is "${rowRep}"${rowIdentity ? `, voting for the identity "${rowIdentity}"` : ""}. It got ${recentReps}/7 reps this week.${anchor ? ` Current anchor: "${anchor}".` : " No anchor set yet."}
+
+Diagnose it as a DESIGN failure, never a character failure. Never imply he's lazy or undisciplined — the premise is that his brain is doing exactly what brains do (conserve energy, take the path of least resistance), and the fix is to redesign the path, not to try harder.
+
+Use the Four Laws of Behavior Change to find which ONE is most broken:
+- obvious (no cue / out of sight)
+- attractive (no anticipation of reward)
+- easy (too much friction, too big a first step)
+- satisfying (no felt payoff at the end)
+
+Then give concrete design fixes:
+- "anchor": a habit-stacking cue in the exact form "After I <existing daily habit>" — pick a real anchor from a normal day (waking, coffee, brushing teeth, getting home, closing the laptop, dinner). Short.
+- "min_version": the 2-minute version of the rep — so small it's impossible to say no (e.g. "put on the shoes", "open the doc and write one line").
+- "friction": the ONE physical/environment change that makes it the path of least resistance (e.g. "shoes by the door", "phone charges in the kitchen", "laptop left open to the doc").
+- "why": one short sentence naming the broken law and why this fixes it. No preamble, no shaming.
+
+Reply ONLY valid JSON, no fences:
+{"law": "obvious|attractive|easy|satisfying", "anchor": "After I ...", "min_version": "...", "friction": "...", "why": "one sentence"}`;
+      try {
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Redesign this row." }], 400, ANTHROPIC_API_KEY);
+        const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
+        return new Response(JSON.stringify({
+          law: String(parsed?.law ?? "").slice(0, 20),
+          anchor: String(parsed?.anchor ?? "").slice(0, 200),
+          min_version: String(parsed?.min_version ?? "").slice(0, 200),
+          friction: String(parsed?.friction ?? "").slice(0, 200),
+          why: String(parsed?.why ?? "").slice(0, 300),
+        }), { headers: { ...cors, "Content-Type": "application/json" } });
+      } catch {
+        return new Response(JSON.stringify({ error: "Couldn't redesign it right now — set it yourself." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+    }
+
     // 🎯 Constraint diagnosis — the Overseer names the week's binding constraint
     // from live data. Returns structured JSON the client drops into the editor
     // for Ben to edit and commit; never an auto-write.
