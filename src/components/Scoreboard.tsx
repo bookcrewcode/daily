@@ -58,6 +58,7 @@ export default function Scoreboard({ uid }: { uid: string }) {
   // without this, overlapping taps race and the loser's rollback erases a rep
   // that actually banked. One in-flight toggle per row.
   const pending = useRef<Set<string>>(new Set());
+  const [pendingIds, setPendingIds] = useState<string[]>([]); // same info, for rendering
 
   const load = useCallback(async () => {
     const since = new Date(); since.setDate(since.getDate() - 120);
@@ -95,7 +96,12 @@ export default function Scoreboard({ uid }: { uid: string }) {
   async function toggleRep(row: EngineRow) {
     if (pending.current.has(row.id)) return; // a toggle for this row is already in flight
     pending.current.add(row.id);
-    try { await toggleRepInner(row); } finally { pending.current.delete(row.id); }
+    setPendingIds((p) => [...p, row.id]);
+    try { await toggleRepInner(row); }
+    finally {
+      pending.current.delete(row.id);
+      setPendingIds((p) => p.filter((id) => id !== row.id));
+    }
   }
 
   async function toggleRepInner(row: EngineRow) {
@@ -107,10 +113,13 @@ export default function Scoreboard({ uid }: { uid: string }) {
       // undo — honest scoreboards allow corrections
       setReps((x) => x.filter((r) => !(r.row_id === row.id && r.day === day)));
       const { data: gone, error } = await supabase.from("engine_reps").delete().eq("user_id", uid).eq("row_id", row.id).eq("day", day).select("row_id");
-      // a DELETE matching zero rows is NOT an error — treat "nothing removed" as
-      // an undo that didn't happen rather than a silent success
+      // A DELETE matching zero rows is NOT an error, and it is AMBIGUOUS: it can
+      // mean "raced an insert that hasn't landed" OR "already gone" (e.g. an
+      // earlier delete from a previous mount finally landed). Guessing either way
+      // shows a wrong row, so don't guess — re-read the truth and let the DB win.
       if (!error && (gone ?? []).length === 0) {
-        setReps((x) => [...x, { row_id: row.id, day }]);
+        await load();
+        game.refresh();
         return;
       }
       if (error) {
@@ -216,8 +225,8 @@ export default function Scoreboard({ uid }: { uid: string }) {
           return (
             <div key={row.id} className={`rounded-xl border p-2.5 ${done ? "border-[var(--neon)]/40 bg-[var(--neon)]/10" : "border-white/10 bg-white/[0.03]"}`}>
               <div className="flex items-center gap-2.5">
-                <button onClick={() => toggleRep(row)}
-                  className={`w-9 h-9 shrink-0 rounded-xl grid place-items-center text-base font-bold transition active:scale-90 ${done ? "bg-[var(--neon)] text-black pop-check" : "border-2 border-white/25"}`}>
+                <button onClick={() => toggleRep(row)} disabled={pendingIds.includes(row.id)}
+                  className={`w-9 h-9 shrink-0 rounded-xl grid place-items-center text-base font-bold transition active:scale-90 disabled:opacity-50 ${done ? "bg-[var(--neon)] text-black pop-check" : "border-2 border-white/25"}`}>
                   {done ? "✓" : row.emoji}
                 </button>
                 <div className="flex-1 min-w-0">
@@ -248,8 +257,8 @@ export default function Scoreboard({ uid }: { uid: string }) {
                   whole system: one tap does the smallest version and still casts
                   the vote. Text you can't act on is just a note. */}
               {row.min_version && !done && (
-                <button onClick={() => toggleRep(row)}
-                  className="mt-1 ml-11 text-[10px] rounded-full bg-white/5 border border-white/10 px-2.5 py-1 active:scale-95">
+                <button onClick={() => toggleRep(row)} disabled={pendingIds.includes(row.id)}
+                  className="mt-1 ml-11 text-[10px] rounded-full bg-white/5 border border-white/10 px-2.5 py-1 active:scale-95 disabled:opacity-50">
                   ▸ 2-min version: <span className="opacity-70">{row.min_version}</span>
                 </button>
               )}
@@ -289,7 +298,7 @@ export default function Scoreboard({ uid }: { uid: string }) {
             placeholder='the IDENTITY — "I&apos;m someone who …"'
             className="w-full rounded-xl bg-black/30 px-4 py-3 outline-none text-sm" />
           <div className="flex gap-2">
-            <button onClick={() => setAdding(false)} className="flex-1 rounded-xl bg-white/10 py-2.5 active:scale-95">Cancel</button>
+            <button onClick={() => { setAdding(false); setRowErr(""); }} className="flex-1 rounded-xl bg-white/10 py-2.5 active:scale-95">Cancel</button>
             <button onClick={() => addRow()} className="flex-1 rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95">Add row · +{REP_XP} XP per rep</button>
           </div>
         </div>
