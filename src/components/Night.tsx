@@ -156,6 +156,9 @@ export default function Night({ uid }: { uid: string }) {
       if (res.failed === 0 && !res.needsAuth) setN((x) => ({ ...x, calendar_synced_at: new Date().toISOString() }));
       if (res.needsAuth) return { ok: false, msg: `Google needs you to reconnect — ${res.created} of ${blocks.length} made it. Reconnect and push again (it replaces, won't duplicate).` };
       if (res.failed > 0) return { ok: false, msg: `Only ${res.created} of ${blocks.length} landed — push again to retry (it replaces, won't duplicate).` };
+      if (res.kept > 0) {
+        return { ok: false, msg: `📅 ${res.created} added, but ${res.kept} old event${res.kept === 1 ? "" : "s"} couldn't be removed — still tracked, so the next push cleans them up.` };
+      }
       return { ok: true, msg: `📅 ${res.created} block${res.created === 1 ? "" : "s"} on tomorrow's calendar with 10-min reminders${res.removed ? ` (replaced ${res.removed})` : ""}.` };
     } catch (e) {
       if (e instanceof NeedsAuth) return { ok: false, msg: "Google needs you to reconnect — tap to authorize." };
@@ -198,7 +201,8 @@ export default function Night({ uid }: { uid: string }) {
   // Honesty rule: only claim success when EVERY block landed; a partial push
   // says exactly what happened (blind retries would duplicate events).
   async function pushAllApi() {
-    if (!blocks.length || !clientId || pushState === "pushing" || pushLock.current) return;
+    if (!blocks.length || !clientId || pushState === "pushing") return;
+    if (pushLock.current) { setPushNote("Another calendar push is still running — give it a second."); return; }
     pushLock.current = true; setPushBusy(true);
     setPushState("pushing"); setPushNote("");
     try {
@@ -207,7 +211,10 @@ export default function Night({ uid }: { uid: string }) {
       const { data: prevRow, error: readErr } = await supabase.from("nights").select("gcal_event_ids").eq("user_id", uid).eq("day", day).maybeSingle();
       if (readErr) { setPushState("error"); setPushNote("Couldn't check existing calendar events — try again."); return; }
       const prevIds = Array.isArray(prevRow?.gcal_event_ids) ? (prevRow!.gcal_event_ids as string[]) : [];
-      const pushed = await pushSchedule(clientId, blocks, prevIds);
+      // freshest items (nRef), never this render's closure — a chat-apply may
+      // have just landed a new plan while this button was still on screen
+      const liveBlocks = resolveBlocks(nRef.current.items, tomorrow());
+      const pushed = await pushSchedule(clientId, liveBlocks, prevIds);
       // recording ids is what makes the next push replace instead of duplicate
       const { error: idErr } = await supabase.from("nights").update({ gcal_event_ids: pushed.ids }).eq("user_id", uid).eq("day", day);
       if (idErr) {
@@ -216,17 +223,20 @@ export default function Night({ uid }: { uid: string }) {
         return;
       }
       const created = pushed.created;
-      if (pushed.needsAuth) {
+      if (pushed.kept > 0) {
         setPushState("error");
-        setPushNote(`Google needs you to reconnect — ${created} of ${blocks.length} made it. Reconnect and push again (it replaces, won't duplicate).`);
-      } else if (created === blocks.length) {
+        setPushNote(`${created} added, but ${pushed.kept} old event(s) couldn't be removed — still tracked, so the next push cleans them up.`);
+      } else if (pushed.needsAuth) {
+        setPushState("error");
+        setPushNote(`Google needs you to reconnect — ${created} of ${liveBlocks.length} made it. Reconnect and push again (it replaces, won't duplicate).`);
+      } else if (created === liveBlocks.length) {
         burstConfetti("small");
         markSynced();
         setPushState("done");
         setTimeout(() => setPushState("idle"), 4000);
       } else if (created > 0) {
         setPushState("error");
-        setPushNote(`Only ${created} of ${blocks.length} made it — push again to retry (it replaces, won't duplicate).`);
+        setPushNote(`Only ${created} of ${liveBlocks.length} made it — push again to retry (it replaces, won't duplicate).`);
       } else {
         setPushState("error");
         setPushNote("Nothing was pushed — check your connection and try again.");
@@ -243,7 +253,8 @@ export default function Night({ uid }: { uid: string }) {
   // Calendar. Same honesty rule as pushAllApi: report exactly what landed.
   async function pushTop3() {
     const filled = n.top3.map((t) => t.trim()).filter(Boolean);
-    if (!filled.length || !clientId || top3State === "pushing" || pushLock.current) return;
+    if (!filled.length || !clientId || top3State === "pushing") return;
+    if (pushLock.current) { setTop3Note("Another calendar push is still running — give it a second."); return; }
     pushLock.current = true; setPushBusy(true);
     setTop3State("pushing"); setTop3Note("");
     try {
@@ -262,7 +273,10 @@ export default function Night({ uid }: { uid: string }) {
         return;
       }
       const created = pushed.created;
-      if (pushed.needsAuth) {
+      if (pushed.kept > 0) {
+        setTop3State("error");
+        setTop3Note(`${created} pinned, but ${pushed.kept} old one(s) couldn't be removed — still tracked, so the next pin cleans them up.`);
+      } else if (pushed.needsAuth) {
         setTop3State("error");
         setTop3Note(`Google needs you to reconnect — ${created} of ${filled.length} made it. Reconnect and pin again (it replaces, won't duplicate).`);
       } else if (created === filled.length) {

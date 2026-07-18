@@ -141,71 +141,74 @@ export async function createEvent(clientId: string, summary: string, start: Date
 // Push a whole day's schedule IDEMPOTENTLY: delete the events this app created
 // for that day last time, then create the current set. Without this, every
 // re-push of a revised schedule would stack duplicates on the calendar.
-export type PushResult = { ids: string[]; created: number; failed: number; removed: number; needsAuth: boolean };
+export type PushResult = {
+  ids: string[];      // everything this app still believes is on the calendar for the day
+  created: number;
+  failed: number;
+  removed: number;
+  needsAuth: boolean;
+  kept: number;       // old events we could NOT confirm removal of (still tracked)
+};
+
+// Delete the previously-created events, then create the current set.
+//
+// The load-bearing invariant: the returned `ids` is what the caller PERSISTS, so
+// it must describe reality — every previous event we could not CONFIRM was
+// deleted stays in the list. Returning only newly-created ids would drop a
+// still-live event from tracking, and no future push could ever clean it up
+// (a permanent duplicate). Keeping it tracked makes the next push self-healing.
+async function replaceEvents(
+  clientId: string,
+  previousIds: string[],
+  create: () => Promise<{ ids: string[]; created: number; failed: number; needsAuth: boolean }>,
+): Promise<PushResult> {
+  const kept: string[] = [];
+  let removed = 0;
+  let needsAuth = false;
+  let i = 0;
+  for (; i < previousIds.length; i++) {
+    try { await deleteEvent(clientId, previousIds[i]); removed++; }
+    catch (e) {
+      if (e instanceof NeedsAuth) { needsAuth = true; break; }
+      kept.push(previousIds[i]); // still out there — keep tracking it
+    }
+  }
+  // anything we never got to (auth broke the loop) is also unconfirmed
+  if (needsAuth) kept.push(...previousIds.slice(i));
+
+  if (needsAuth) return { ids: kept, created: 0, failed: 0, removed, needsAuth: true, kept: kept.length };
+  const made = await create();
+  return {
+    ids: [...kept, ...made.ids],
+    created: made.created,
+    failed: made.failed,
+    removed,
+    needsAuth: made.needsAuth,
+    kept: kept.length,
+  };
+}
 
 export async function pushSchedule(
   clientId: string,
   blocks: { what: string; start: Date; end: Date }[],
   previousIds: string[],
 ): Promise<PushResult> {
-  let removed = 0;
-  let needsAuth = false;
-  for (const id of previousIds) {
-    try { await deleteEvent(clientId, id); removed++; }
-    catch (e) {
-      if (e instanceof NeedsAuth) { needsAuth = true; break; } // stop early; caller reconnects
-      /* already gone / transient — don't block the re-push */
-    }
-  }
-  const ids: string[] = [];
-  let created = 0, failed = 0;
-  if (!needsAuth) {
+  return replaceEvents(clientId, previousIds, async () => {
+    const ids: string[] = [];
+    let created = 0, failed = 0, needsAuth = false;
     for (const b of blocks) {
       try {
         const ev = await createEvent(clientId, b.what, b.start, b.end);
         if (ev?.id) ids.push(ev.id);
         created++;
       } catch (e) {
-        // NEVER throw out of this loop: events created so far are REAL and their
-        // ids must reach the caller, or they become untracked orphans that the
-        // next push can't clean up and will duplicate.
-        if (e instanceof NeedsAuth) { needsAuth = true; break; }
-        failed++; // partial push is better than none — the caller reports honestly
-      }
-    }
-  }
-  return { ids, created, failed, removed, needsAuth };
-}
-
-// Same replace-don't-stack contract for all-day items (the Top 3), which were
-// previously created untracked — every re-pin duplicated them permanently.
-export async function pushAllDay(
-  clientId: string,
-  summaries: string[],
-  day: string,
-  previousIds: string[],
-): Promise<PushResult> {
-  let removed = 0;
-  let needsAuth = false;
-  for (const id of previousIds) {
-    try { await deleteEvent(clientId, id); removed++; }
-    catch (e) { if (e instanceof NeedsAuth) { needsAuth = true; break; } }
-  }
-  const ids: string[] = [];
-  let created = 0, failed = 0;
-  if (!needsAuth) {
-    for (const s of summaries) {
-      try {
-        const ev = await createAllDayEvent(clientId, s, day);
-        if (ev?.id) ids.push(ev.id);
-        created++;
-      } catch (e) {
+        // never throw out: events already made are REAL and must stay tracked
         if (e instanceof NeedsAuth) { needsAuth = true; break; }
         failed++;
       }
     }
-  }
-  return { ids, created, failed, removed, needsAuth };
+    return { ids, created, failed, needsAuth };
+  });
 }
 
 // all-day event: Google wants {date} (inclusive start, EXCLUSIVE end = day+1)
@@ -221,6 +224,31 @@ export async function createAllDayEvent(clientId: string, summary: string, day: 
   return await r.json();
 }
 
+// Same replace-don't-stack contract for all-day items (the Top 3), which were
+// previously created untracked — every re-pin duplicated them permanently.
+export async function pushAllDay(
+  clientId: string,
+  summaries: string[],
+  day: string,
+  previousIds: string[],
+): Promise<PushResult> {
+  return replaceEvents(clientId, previousIds, async () => {
+    const ids: string[] = [];
+    let created = 0, failed = 0, needsAuth = false;
+    for (const sum of summaries) {
+      try {
+        const ev = await createAllDayEvent(clientId, sum, day);
+        if (ev?.id) ids.push(ev.id);
+        created++;
+      } catch (e) {
+        if (e instanceof NeedsAuth) { needsAuth = true; break; }
+        failed++;
+      }
+    }
+    return { ids, created, failed, needsAuth };
+  });
+}
+
 export async function patchEvent(clientId: string, id: string, patch: { summary?: string; start?: Date; end?: Date }): Promise<GEvent> {
   const body: Record<string, unknown> = {};
   if (patch.summary !== undefined) body.summary = patch.summary;
@@ -233,5 +261,6 @@ export async function patchEvent(clientId: string, id: string, patch: { summary?
 
 export async function deleteEvent(clientId: string, id: string): Promise<void> {
   const r = await authedFetch(clientId, `${API}/${encodeURIComponent(id)}`, { method: "DELETE" });
-  if (!r.ok && r.status !== 410) throw new Error(`Couldn't delete the event (HTTP ${r.status})`);
+  // 410 Gone / 404 Not Found both mean the event is already absent — success.
+  if (!r.ok && r.status !== 410 && r.status !== 404) throw new Error(`Couldn't delete the event (HTTP ${r.status})`);
 }

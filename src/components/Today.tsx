@@ -236,6 +236,9 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       if (res.failed > 0) {
         return { ok: false, msg: `Only ${res.created} of ${blocks.length} landed on your calendar — push again to retry (it replaces, won't duplicate).` };
       }
+      if (res.kept > 0) {
+        return { ok: false, msg: `📅 ${res.created} added, but ${res.kept} old event${res.kept === 1 ? "" : "s"} couldn't be removed — still tracked, so the next push cleans them up.` };
+      }
       return { ok: true, msg: `📅 ${res.created} block${res.created === 1 ? "" : "s"} on your calendar with 10-min reminders${res.removed ? ` (replaced ${res.removed})` : ""}.` };
     } catch (e) {
       if (e instanceof NeedsAuth) return { ok: false, msg: "Google needs you to reconnect — tap to authorize." };
