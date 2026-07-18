@@ -11,6 +11,7 @@ import Lifts from "@/components/Lifts";
 import Night from "@/components/Night";
 import Goals from "@/components/Goals";
 import Money from "@/components/Money";
+import TradingBot from "@/components/TradingBot";
 import IncomeEngine from "@/components/IncomeEngine";
 import Vocab from "@/components/Vocab";
 import Tools from "@/components/Tools";
@@ -135,7 +136,7 @@ function Shell({ uid }: { uid: string }) {
           {tab === "food" && <Food uid={uid} />}
           {tab === "lifts" && <Lifts uid={uid} />}
           {tab === "vocab" && <Vocab uid={uid} />}
-          {tab === "money" && <Money uid={uid} />}
+          {tab === "money" && (<><Money uid={uid} /><TradingBot /></>)}
           {tab === "hustle" && <IncomeEngine />}
           {tab === "night" && <Night uid={uid} />}
           {tab === "tools" && <Tools />}

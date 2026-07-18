@@ -8,6 +8,7 @@ import { burstConfetti } from "@/lib/confetti";
 import { SectionTitle, Card } from "./ui";
 import { parseTime, fmtMinutes, resolveBlocks, gcalTemplateUrl, downloadIcs } from "@/lib/calendar";
 import CalendarCard from "./CalendarCard";
+import ScheduleChat from "./ScheduleChat";
 import WeatherStrip from "./WeatherStrip";
 import { pushBlocks } from "./CalendarEditor";
 
@@ -103,6 +104,23 @@ export default function Night({ uid }: { uid: string }) {
     }, 600);
   }
   persistRef.current = persist;
+
+  // Schedule chat applies a whole revised day. Write it DIRECTLY (not through
+  // the debounced persist — a backgrounded PWA would drop that timer) and only
+  // report success once it actually landed.
+  async function applySchedule(items: ScheduleItem[]): Promise<boolean> {
+    const cur = nRef.current;
+    const { error } = await supabase.from("nights").upsert(
+      { user_id: uid, day, items, top3: cur.top3, notes: cur.notes },
+      { onConflict: "user_id,day" },
+    );
+    if (error) return false;
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; } // a stale debounce would revert this
+    setN((x) => ({ ...x, items }));
+    setSaveError(false);
+    setSaved(true); setTimeout(() => setSaved(false), 1200);
+    return true;
+  }
 
   const setItem = (i: number, patch: Partial<ScheduleItem>) =>
     persist({ ...n, items: n.items.map((it, idx) => (idx === i ? { ...it, ...patch } : it)) });
@@ -229,6 +247,7 @@ export default function Night({ uid }: { uid: string }) {
           );
         })}
         <button onClick={addItem} className="w-full rounded-xl border border-dashed border-white/20 py-3 opacity-70 active:scale-95">+ Add time block</button>
+        <ScheduleChat dayLabel="tomorrow" items={n.items} onApply={applySchedule} />
       </div>
 
       {blocks.length > 0 && (

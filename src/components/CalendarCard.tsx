@@ -16,7 +16,7 @@ function fmtT(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
-type Row = { title: string; time: string };
+type Row = { title: string; time: string; repeating?: boolean };
 
 export default function CalendarCard({ uid, day, title }: { uid: string; day: Date; title: string }) {
   const [settings, setSettings] = useState<{ ics: string; clientId: string } | null>(null);
@@ -29,6 +29,19 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
   const [setupOpen, setSetupOpen] = useState(false);
   const [draftIcs, setDraftIcs] = useState("");
   const [draftClient, setDraftClient] = useState("");
+  // Standing weekly series turn every day into the same wallpaper. Hiding them
+  // keeps each day's card specific to THAT day. Device-local, reversible.
+  const [hideRepeats, setHideRepeats] = useState(false);
+  useEffect(() => {
+    try { setHideRepeats(localStorage.getItem("daily.cal.hideRepeats") === "1"); } catch { /* storage blocked */ }
+  }, []);
+  function toggleRepeats() {
+    setHideRepeats((v) => {
+      const next = !v;
+      try { localStorage.setItem("daily.cal.hideRepeats", next ? "1" : "0"); } catch { /* storage blocked */ }
+      return next;
+    });
+  }
 
   const dayKey = day.toDateString();
 
@@ -65,6 +78,7 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
         setRows(evs.map((e) => ({
           title: e.title,
           time: e.allDay ? "All day" : `${fmtT(e.start)}–${fmtT(e.end)}`,
+          repeating: e.repeating,
         })));
         setMode("ics");
       } else if (!settings.clientId) {
@@ -100,6 +114,12 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
 
   if (!settings) return <div className="skeleton h-16" />;
 
+  // Recurring series are "wallpaper" — same blocks every single day. Filter
+  // them out so the card shows what's actually specific to THIS day.
+  const repeatCount = (rows ?? []).filter((r) => r.repeating).length;
+  const shown = hideRepeats ? (rows ?? []).filter((r) => !r.repeating) : (rows ?? []);
+  const hiddenCount = (rows ?? []).length - shown.length;
+
   const nothingConfigured = !settings.ics && !settings.clientId;
 
   return (
@@ -128,16 +148,28 @@ export default function CalendarCard({ uid, day, title }: { uid: string; day: Da
 
       {busy && rows === null && <div className="space-y-1.5"><div className="skeleton h-5" /><div className="skeleton h-5 w-2/3" /></div>}
       {error && <p className="text-xs text-orange-400 mb-1">{error}</p>}
-      {rows && rows.length === 0 && !error && <p className="text-sm opacity-40">Nothing on the calendar — open day. 🙌</p>}
-      {rows && rows.length > 0 && (
+      {rows && shown.length === 0 && !error && (
+        <p className="text-sm opacity-40">
+          {hiddenCount > 0
+            ? `Nothing one-off today — ${hiddenCount} repeating ${hiddenCount === 1 ? "event" : "events"} hidden. 🙌`
+            : "Nothing on the calendar — open day. 🙌"}
+        </p>
+      )}
+      {rows && shown.length > 0 && (
         <div className="space-y-1.5">
-          {rows.map((r, i) => (
+          {shown.map((r, i) => (
             <div key={i} className="flex items-baseline gap-2 text-sm">
               <span className="shrink-0 w-[7.5rem] text-xs font-semibold text-[var(--neon)]/80 tabular-nums">{r.time}</span>
               <span className="min-w-0 truncate font-medium">{r.title}</span>
+              {r.repeating && <span className="shrink-0 text-[9px] opacity-30">↻</span>}
             </div>
           ))}
         </div>
+      )}
+      {rows && repeatCount > 0 && (
+        <button onClick={toggleRepeats} className="mt-2 text-[10px] opacity-40 underline">
+          {hideRepeats ? `show ${repeatCount} repeating ↻` : `hide ${repeatCount} repeating ↻`}
+        </button>
       )}
       {mode === "api" && rows && (
         <button onClick={() => setEditorOpen(true)} className="mt-2 text-[10px] opacity-40 underline">+ add / move something</button>

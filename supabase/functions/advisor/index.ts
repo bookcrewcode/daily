@@ -467,6 +467,52 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
       }
     }
 
+    // 🗓️ Schedule chat — build/edit a day's schedule by talking, not tapping.
+    // Takes the CURRENT blocks + what Ben said, returns the FULL revised day as
+    // structured JSON. The client shows it as a preview he applies — the AI
+    // never writes to his plan directly.
+    if (advisor === "schedule") {
+      const current = Array.isArray(body.items) ? body.items : [];
+      const dayLabel = String(body.dayLabel ?? "the day");
+      const fixed = Array.isArray(body.fixed) ? body.fixed : []; // calendar events he can't move
+      const ctx = await context(token, clientDay || undefined);
+      const sys = `You are Ben's scheduler inside his life app. He talks; you return his day as structured blocks. He has ADHD — protect ONE deep-work block, keep the day realistic, don't over-pack it, and leave buffer between things.
+
+RULES:
+- Return the COMPLETE revised schedule for ${dayLabel}, not just the change. Keep every existing block he didn't ask to change, with its original time and wording.
+- Times are 24h "HH:MM" strings. Order the list chronologically.
+- Respect fixed calendar commitments (listed below) — schedule around them, never on top of them.
+- If he's vague ("gym in the morning"), pick a sensible concrete time rather than asking.
+- Keep block labels short and concrete (2-5 words), the way he'd write them.
+- If he asks to remove something, drop it from the list.
+- Anchor to his real life from the data below (his weekly priorities, the week's ONE thing, urgent goals) — if he leaves space, suggest putting the constraint work there.
+- "note" is ONE short sentence to him about what you changed or a scheduling call you made. No preamble, no lists.
+
+CURRENT BLOCKS for ${dayLabel}: ${current.length ? JSON.stringify(current) : "(empty — building it fresh)"}
+FIXED CALENDAR COMMITMENTS (do not move, schedule around): ${fixed.length ? JSON.stringify(fixed) : "(none)"}
+
+Reply ONLY valid JSON, no fences:
+{"items": [{"time": "HH:MM", "what": "short label"}], "note": "one short sentence"}
+
+${ctx}`;
+      try {
+        const msgs = [...(Array.isArray(history) ? history : []), { role: "user", content: message }];
+        while (msgs.length && (msgs[0] as { role: string }).role !== "user") msgs.shift();
+        const raw = await callClaude("claude-opus-4-8", sys, msgs, 1200, ANTHROPIC_API_KEY);
+        const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
+        const items = (Array.isArray(parsed?.items) ? parsed.items : [])
+          .filter((it: { time?: string; what?: string }) => it && typeof it.what === "string" && it.what.trim())
+          .map((it: { time?: string; what?: string }) => ({
+            time: /^\d{1,2}:\d{2}$/.test(String(it.time ?? "")) ? String(it.time) : "",
+            what: String(it.what).slice(0, 120),
+          }))
+          .slice(0, 24);
+        return new Response(JSON.stringify({ items, note: String(parsed?.note ?? "").slice(0, 300) }), { headers: { ...cors, "Content-Type": "application/json" } });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Couldn't build that schedule — try rephrasing." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+      }
+    }
+
     // 🎯 Constraint diagnosis — the Overseer names the week's binding constraint
     // from live data. Returns structured JSON the client drops into the editor
     // for Ben to edit and commit; never an auto-write.

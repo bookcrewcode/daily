@@ -17,6 +17,7 @@ import UrgencyCard from "./UrgencyCard";
 import Scoreboard from "./Scoreboard";
 import BriefingCard from "./BriefingCard";
 import ConstraintCard from "./ConstraintCard";
+import ScheduleChat from "./ScheduleChat";
 import BossCard from "./BossCard";
 
 type WinKey = (typeof WIN_KEYS)[number];
@@ -175,6 +176,20 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
     return true;
   }
 
+  // Apply an AI-built schedule to TODAY's nights row. Write first, then reflect
+  // it locally — only report success once it actually landed.
+  async function applyTodaySchedule(items: ScheduleItem[]): Promise<boolean> {
+    const day = todayStr();
+    const { data: existing } = await supabase.from("nights").select("top3,notes").eq("user_id", uid).eq("day", day).maybeSingle();
+    const { error } = await supabase.from("nights").upsert(
+      { user_id: uid, day, items, top3: (existing?.top3 as string[]) ?? ["", "", ""], notes: existing?.notes ?? "" },
+      { onConflict: "user_id,day" },
+    );
+    if (error) return false;
+    setPlan((p) => ({ top3: p?.top3 ?? [], items }));
+    return true;
+  }
+
   function fireFloat(key: string) {
     setFloats((f) => ({ ...f, [key]: Date.now() }));
     setTimeout(() => setFloats((f) => { const { [key]: _drop, ...rest } = f; return rest; }), 950);
@@ -236,9 +251,15 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       <UrgencyCard todayRow={row} onGoTab={onGoTab} />
       <Scoreboard uid={uid} />
 
+      {/* Today's schedule is built fresh for THIS day — rebuild it by talking
+          whenever the day changes shape (woke up different, plans moved). */}
+      <div className="mt-3">
+        <ScheduleChat dayLabel="today" items={plan?.items ?? []} onApply={applyTodaySchedule} />
+      </div>
+
       {plan && (
         <Card tone="neon" className="mt-3">
-          <p className="text-xs uppercase tracking-widest text-[var(--neon)]/80 mb-2">📋 Today&apos;s plan — set last night</p>
+          <p className="text-xs uppercase tracking-widest text-[var(--neon)]/80 mb-2">📋 Today&apos;s plan</p>
           {plan.top3.length > 0 && (
             <div className="space-y-1.5 mb-2">
               {plan.top3.map((t, i) => {

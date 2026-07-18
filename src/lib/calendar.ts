@@ -10,7 +10,9 @@ import { supabase, SUPABASE_URL, SUPABASE_ANON, dateStr, type ScheduleItem } fro
 
 export const CALENDAR_FN = `${SUPABASE_URL}/functions/v1/calendar`;
 
-export type CalEvent = { title: string; start: string; end: string; allDay: boolean };
+// `repeating` = expanded from an RRULE (a recurring series). Surfaced so the UI
+// can hide standing weekly noise and keep each day's view specific to that day.
+export type CalEvent = { title: string; start: string; end: string; allDay: boolean; repeating?: boolean };
 
 export async function fetchCalendarEvents(icsUrl: string, day: Date): Promise<CalEvent[]> {
   const from = new Date(day); from.setHours(0, 0, 0, 0);

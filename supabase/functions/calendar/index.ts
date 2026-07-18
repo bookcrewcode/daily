@@ -27,7 +27,7 @@ async function getUser(token: string) {
   return r.ok ? await r.json() : null;
 }
 
-type Ev = { title: string; start: string; end: string; allDay: boolean };
+type Ev = { title: string; start: string; end: string; allDay: boolean; repeating?: boolean };
 
 function parseEvents(icsText: string, fromMs: number, toMs: number, day: string): Ev[] {
   const comp = new ICAL.Component(ICAL.parse(icsText));
@@ -39,7 +39,7 @@ function parseEvents(icsText: string, fromMs: number, toMs: number, day: string)
   }
 
   const out: Ev[] = [];
-  const push = (title: string, start: ICAL.Time, end: ICAL.Time | null) => {
+  const push = (title: string, start: ICAL.Time, end: ICAL.Time | null, repeating = false) => {
     if (start.isDate) {
       // All-day events are dates, not instants — match them against the
       // requested local calendar day, or they leak into neighboring days.
@@ -47,7 +47,7 @@ function parseEvents(icsText: string, fromMs: number, toMs: number, day: string)
       const e = end ? end.toString().slice(0, 10) : s; // iCal DTEND is exclusive
       const inRange = day ? (day >= s && (day < e || s === e)) : true;
       if (!inRange) return;
-      out.push({ title: title || "(untitled)", start: s, end: e, allDay: true });
+      out.push({ title: title || "(untitled)", start: s, end: e, allDay: true, repeating });
       return;
     }
     const s = start.toJSDate().getTime();
@@ -58,6 +58,7 @@ function parseEvents(icsText: string, fromMs: number, toMs: number, day: string)
       start: new Date(s).toISOString(),
       end: new Date(e).toISOString(),
       allDay: false,
+      repeating,
     });
   };
 
@@ -72,7 +73,7 @@ function parseEvents(icsText: string, fromMs: number, toMs: number, day: string)
         while ((next = iter.next()) && guard++ < 2000) {
           if (next.toJSDate().getTime() >= toMs) break;
           const occ = ev.getOccurrenceDetails(next);
-          push(ev.summary, occ.startDate, occ.endDate);
+          push(ev.summary, occ.startDate, occ.endDate, true); // expanded from an RRULE
         }
       } else {
         push(ev.summary, ev.startDate, ev.endDate);
