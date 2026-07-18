@@ -199,8 +199,9 @@ export async function pushSchedule(
     for (const b of blocks) {
       try {
         const ev = await createEvent(clientId, b.what, b.start, b.end);
-        if (ev?.id) ids.push(ev.id);
-        created++;
+        // only count it as created when we captured the id — otherwise we'd
+        // report full success for an event we can never clean up
+        if (ev?.id) { ids.push(ev.id); created++; } else { failed++; }
       } catch (e) {
         // never throw out: events already made are REAL and must stay tracked
         if (e instanceof NeedsAuth) { needsAuth = true; break; }
@@ -238,8 +239,7 @@ export async function pushAllDay(
     for (const sum of summaries) {
       try {
         const ev = await createAllDayEvent(clientId, sum, day);
-        if (ev?.id) ids.push(ev.id);
-        created++;
+        if (ev?.id) { ids.push(ev.id); created++; } else { failed++; }
       } catch (e) {
         if (e instanceof NeedsAuth) { needsAuth = true; break; }
         failed++;

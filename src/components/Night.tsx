@@ -148,12 +148,12 @@ export default function Night({ uid }: { uid: string }) {
       const res = await pushSchedule(clientId, blocks, prev);
       // recording the ids is what lets the NEXT push replace instead of duplicate
       const { error: idErr } = await supabase.from("nights")
-        .update({ gcal_event_ids: res.ids, ...(res.failed === 0 && !res.needsAuth ? { calendar_synced_at: new Date().toISOString() } : {}) })
+        .update({ gcal_event_ids: res.ids, ...(res.failed === 0 && !res.needsAuth && res.kept === 0 ? { calendar_synced_at: new Date().toISOString() } : {}) })
         .eq("user_id", uid).eq("day", day);
       if (idErr) {
         return { ok: false, msg: `${res.created} event${res.created === 1 ? "" : "s"} landed, but I couldn't record them here — check your calendar before pushing again or you'll get duplicates.` };
       }
-      if (res.failed === 0 && !res.needsAuth) setN((x) => ({ ...x, calendar_synced_at: new Date().toISOString() }));
+      if (res.failed === 0 && !res.needsAuth && res.kept === 0) setN((x) => ({ ...x, calendar_synced_at: new Date().toISOString() }));
       if (res.needsAuth) return { ok: false, msg: `Google needs you to reconnect — ${res.created} of ${blocks.length} made it. Reconnect and push again (it replaces, won't duplicate).` };
       if (res.failed > 0) return { ok: false, msg: `Only ${res.created} of ${blocks.length} landed — push again to retry (it replaces, won't duplicate).` };
       if (res.kept > 0) {
@@ -265,7 +265,9 @@ export default function Night({ uid }: { uid: string }) {
       const prevIds = Array.isArray(prevRow?.gcal_top3_event_ids) ? (prevRow!.gcal_top3_event_ids as string[]) : [];
       // delete-then-create, like the blocks push: re-pinning must REPLACE the
       // previous all-day events, never stack a second set on the real calendar
-      const pushed = await pushAllDay(clientId, filled.map((f, i) => `★ ${i + 1}. ${f}`), day, prevIds);
+      // freshest Top-3 text (nRef), not this render's closure
+      const live = nRef.current.top3.map((t) => t.trim()).filter(Boolean);
+      const pushed = await pushAllDay(clientId, live.map((f, i) => `★ ${i + 1}. ${f}`), day, prevIds);
       const { error: idErr } = await supabase.from("nights").update({ gcal_top3_event_ids: pushed.ids }).eq("user_id", uid).eq("day", day);
       if (idErr) {
         setTop3State("error");
@@ -278,15 +280,15 @@ export default function Night({ uid }: { uid: string }) {
         setTop3Note(`${created} pinned, but ${pushed.kept} old one(s) couldn't be removed — still tracked, so the next pin cleans them up.`);
       } else if (pushed.needsAuth) {
         setTop3State("error");
-        setTop3Note(`Google needs you to reconnect — ${created} of ${filled.length} made it. Reconnect and pin again (it replaces, won't duplicate).`);
-      } else if (created === filled.length) {
+        setTop3Note(`Google needs you to reconnect — ${created} of ${live.length} made it. Reconnect and pin again (it replaces, won't duplicate).`);
+      } else if (created === live.length) {
         burstConfetti("small");
         markSynced();
         setTop3State("done");
         setTimeout(() => setTop3State("idle"), 4000);
       } else if (created > 0) {
         setTop3State("error");
-        setTop3Note(`Only ${created} of ${filled.length} landed — pin again to retry (it replaces, won't duplicate).`);
+        setTop3Note(`Only ${created} of ${live.length} landed — pin again to retry (it replaces, won't duplicate).`);
       } else {
         setTop3State("error");
         setTop3Note("Nothing was pushed — check your connection and try again.");

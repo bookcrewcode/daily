@@ -85,6 +85,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   const [offline, setOffline] = useState(false); // last refresh failed — showing prior data
   const [saveErr, setSaveErr] = useState(false);  // last write didn't land
   const [gcalClientId, setGcalClientId] = useState("");
+  const pushLock = useRef(false); // parity with Night: serialize calendar writes
   const dayRef = useRef(todayStr());
 
   const load = useCallback(async () => {
@@ -209,9 +210,11 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   // re-push replaces them instead of stacking duplicates.
   async function pushTodayToCalendar(items: ScheduleItem[]): Promise<{ ok: boolean; msg: string }> {
     if (!gcalClientId) return { ok: false, msg: "Connect Google Calendar in the calendar card below first." };
+    if (pushLock.current) return { ok: false, msg: "Another calendar push is still running — give it a second." };
     const day = todayStr();
     const blocks = resolveBlocks(items, new Date());
     if (!blocks.length) return { ok: false, msg: "No timed blocks to push — add times like 07:00." };
+    pushLock.current = true;
     try {
       const token = (await acquireToken(gcalClientId, false)) ?? (await acquireToken(gcalClientId, true));
       if (!token) return { ok: false, msg: "Google didn't grant access — tap again to authorize." };
@@ -225,7 +228,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       // duplicate. If this write fails the events are already real on the
       // calendar, so never report a clean success — say exactly what happened.
       const { error: idErr } = await supabase.from("nights")
-        .update({ gcal_event_ids: res.ids, ...(res.failed === 0 && !res.needsAuth ? { calendar_synced_at: new Date().toISOString() } : {}) })
+        .update({ gcal_event_ids: res.ids, ...(res.failed === 0 && !res.needsAuth && res.kept === 0 ? { calendar_synced_at: new Date().toISOString() } : {}) })
         .eq("user_id", uid).eq("day", day);
       if (idErr) {
         return { ok: false, msg: `${res.created} event${res.created === 1 ? "" : "s"} landed on your calendar, but I couldn't record them here — check the calendar before pushing again or you'll get duplicates.` };
@@ -243,6 +246,8 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
     } catch (e) {
       if (e instanceof NeedsAuth) return { ok: false, msg: "Google needs you to reconnect — tap to authorize." };
       return { ok: false, msg: "Calendar push failed — your plan is saved. Try again." };
+    } finally {
+      pushLock.current = false;
     }
   }
 
