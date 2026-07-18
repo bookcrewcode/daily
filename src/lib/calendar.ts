@@ -85,6 +85,13 @@ export function downloadIcs(blocks: { what: string; start: Date; end: Date }[], 
       `DTSTART:${gstamp(b.start)}`,
       `DTEND:${gstamp(b.end)}`,
       `SUMMARY:${esc(b.what)}`,
+      // VALARM so the .ics path notifies too — a calendar block that doesn't
+      // buzz is just a note. 10 minutes before, same as the API push.
+      "BEGIN:VALARM",
+      "TRIGGER:-PT10M",
+      "ACTION:DISPLAY",
+      `DESCRIPTION:${esc(b.what)}`,
+      "END:VALARM",
       "END:VEVENT",
     ]),
     "END:VCALENDAR",

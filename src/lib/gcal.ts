@@ -110,13 +110,60 @@ export async function listDay(clientId: string, day: Date): Promise<GEvent[]> {
   return ((json.items ?? []) as GEvent[]).filter((e) => e.status !== "cancelled");
 }
 
+// Reminders are the whole point of pushing to Google Calendar — a block that
+// doesn't buzz your phone is just a note. useDefault:false means these override
+// whatever the calendar's defaults are, so a notification is guaranteed.
+const TIMED_REMINDERS = {
+  useDefault: false,
+  overrides: [
+    { method: "popup", minutes: 10 }, // heads-up to switch tasks
+    { method: "popup", minutes: 0 },  // it's now
+  ],
+};
+// All-day items fire the evening before (minutes are counted back from midnight,
+// so 480 = 4pm the previous day) — useful for a "★ Top 3" style reminder.
+const ALLDAY_REMINDERS = { useDefault: false, overrides: [{ method: "popup", minutes: 480 }] };
+
 export async function createEvent(clientId: string, summary: string, start: Date, end: Date): Promise<GEvent> {
   const r = await authedFetch(clientId, API, {
     method: "POST",
-    body: JSON.stringify({ summary, start: { dateTime: start.toISOString() }, end: { dateTime: end.toISOString() } }),
+    body: JSON.stringify({
+      summary,
+      start: { dateTime: start.toISOString() },
+      end: { dateTime: end.toISOString() },
+      reminders: TIMED_REMINDERS,
+    }),
   });
   if (!r.ok) throw new Error(`Couldn't create the event (HTTP ${r.status})`);
   return await r.json();
+}
+
+// Push a whole day's schedule IDEMPOTENTLY: delete the events this app created
+// for that day last time, then create the current set. Without this, every
+// re-push of a revised schedule would stack duplicates on the calendar.
+export async function pushSchedule(
+  clientId: string,
+  blocks: { what: string; start: Date; end: Date }[],
+  previousIds: string[],
+): Promise<{ ids: string[]; created: number; failed: number; removed: number }> {
+  let removed = 0;
+  for (const id of previousIds) {
+    try { await deleteEvent(clientId, id); removed++; }
+    catch (e) { if (e instanceof NeedsAuth) throw e; /* already gone / transient — don't block the re-push */ }
+  }
+  const ids: string[] = [];
+  let created = 0, failed = 0;
+  for (const b of blocks) {
+    try {
+      const ev = await createEvent(clientId, b.what, b.start, b.end);
+      if (ev?.id) ids.push(ev.id);
+      created++;
+    } catch (e) {
+      if (e instanceof NeedsAuth) throw e; // auth failure affects every block
+      failed++; // partial push is better than none — the caller reports honestly
+    }
+  }
+  return { ids, created, failed, removed };
 }
 
 // all-day event: Google wants {date} (inclusive start, EXCLUSIVE end = day+1)
@@ -126,7 +173,7 @@ export async function createAllDayEvent(clientId: string, summary: string, day: 
   const next = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const r = await authedFetch(clientId, API, {
     method: "POST",
-    body: JSON.stringify({ summary, start: { date: day }, end: { date: next } }),
+    body: JSON.stringify({ summary, start: { date: day }, end: { date: next }, reminders: ALLDAY_REMINDERS }),
   });
   if (!r.ok) throw new Error(`Couldn't create the event (HTTP ${r.status})`);
   return await r.json();

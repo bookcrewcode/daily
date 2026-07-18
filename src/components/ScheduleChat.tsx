@@ -22,12 +22,16 @@ const EXAMPLES = [
 ];
 
 export default function ScheduleChat({
-  dayLabel, items, fixed, onApply,
+  dayLabel, items, fixed, onApply, onPush,
 }: {
   dayLabel: string;
   items: ScheduleItem[];
   fixed?: { time: string; what: string }[];
   onApply: (items: ScheduleItem[]) => Promise<boolean>;
+  // pushes the applied schedule to Google Calendar WITH reminders. Owned by the
+  // parent because it needs the client ID, the real date, and the stored event
+  // ids (so a re-push replaces rather than duplicates).
+  onPush?: (items: ScheduleItem[]) => Promise<{ ok: boolean; msg: string }>;
 }) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
@@ -36,6 +40,9 @@ export default function ScheduleChat({
   const [err, setErr] = useState("");
   const [proposal, setProposal] = useState<ScheduleItem[] | null>(null);
   const [applying, setApplying] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [pushMsg, setPushMsg] = useState("");
+  const [applied, setApplied] = useState<ScheduleItem[] | null>(null); // last applied set, ready to push
   const history = useRef<Msg[]>([]);
 
   async function send(text?: string) {
@@ -87,9 +94,28 @@ export default function ScheduleChat({
     setApplying(false);
     if (!ok) { setErr("Couldn't save that schedule — it's still here, try again."); return; }
     sfx.coin();
+    const saved = proposal;
     setProposal(null);
+    setApplied(saved);
     setNote("Saved to your day. ✓");
     history.current = [];
+    // Saving the plan and putting it on the calendar are the same intent — push
+    // straight away when the calendar is connected, and report honestly.
+    if (onPush) await push(saved);
+  }
+
+  async function push(list: ScheduleItem[]) {
+    if (!onPush || pushing) return;
+    setPushing(true); setPushMsg(""); setErr("");
+    try {
+      const res = await onPush(list);
+      if (res.ok) { setPushMsg(res.msg); sfx.pop(); }
+      else setErr(res.msg);
+    } catch {
+      setErr("Couldn't reach Google Calendar — the plan is saved; try pushing again.");
+    } finally {
+      setPushing(false);
+    }
   }
 
   if (!open) {
@@ -138,14 +164,22 @@ export default function ScheduleChat({
               className="flex-1 rounded-lg bg-white/10 text-sm font-semibold py-2 active:scale-95">Discard</button>
             <button onClick={apply} disabled={applying}
               className="flex-1 rounded-lg bg-[var(--neon)] text-black text-sm font-bold py-2 active:scale-95 disabled:opacity-50">
-              {applying ? "saving…" : "Apply to my day"}
+              {applying ? "saving…" : pushing ? "adding to calendar…" : onPush ? "Apply + add to Calendar" : "Apply to my day"}
             </button>
           </div>
         </div>
       )}
 
       {note && <p className="text-xs opacity-70 mb-2">{note}</p>}
+      {pushMsg && <p className="text-xs text-[var(--neon)] mb-2">{pushMsg}</p>}
       {err && <p className="text-xs text-orange-400 mb-2">{err}</p>}
+      {/* re-push affordance: replaces the events it made before, never stacks */}
+      {onPush && applied && !proposal && !pushing && (
+        <button onClick={() => push(applied)}
+          className="w-full rounded-lg bg-white/10 text-xs font-semibold py-2 mb-2 active:scale-95">
+          📅 Push to Google Calendar again (replaces, with reminders)
+        </button>
+      )}
 
       <div className="flex gap-2">
         <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
@@ -156,7 +190,7 @@ export default function ScheduleChat({
       </div>
       <p className="text-[10px] opacity-40 mt-2">
         Nothing changes until you tap Apply.
-        {(fixed?.length ?? 0) > 0 ? " It schedules around your fixed calendar events." : " Check it against your calendar before applying."}
+        {onPush ? " Applying also puts it on your Google Calendar with 10-min reminders." : " Check it against your calendar before applying."}
       </p>
     </Card>
   );

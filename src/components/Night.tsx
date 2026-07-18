@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, dateStr, type Night as NightT, type ScheduleItem } from "@/lib/supabase";
 import { useVoiceInput } from "@/lib/useVoiceInput";
-import { acquireToken, createAllDayEvent } from "@/lib/gcal";
+import { acquireToken, createAllDayEvent, pushSchedule, NeedsAuth } from "@/lib/gcal";
 import { burstConfetti } from "@/lib/confetti";
 import { SectionTitle, Card } from "./ui";
 import { parseTime, fmtMinutes, resolveBlocks, gcalTemplateUrl, downloadIcs } from "@/lib/calendar";
@@ -11,7 +11,6 @@ import CalendarCard from "./CalendarCard";
 import ScheduleChat from "./ScheduleChat";
 import StageTomorrow from "./StageTomorrow";
 import WeatherStrip from "./WeatherStrip";
-import { pushBlocks } from "./CalendarEditor";
 
 function tomorrow() {
   const d = new Date(); d.setDate(d.getDate() + 1); return d;
@@ -126,6 +125,32 @@ export default function Night({ uid }: { uid: string }) {
     return true;
   }
 
+  // Push TOMORROW's chat-built schedule to Google Calendar with reminders,
+  // replacing whatever this app put there before (ids stored on the nights row).
+  async function pushTomorrowToCalendar(items: ScheduleItem[]): Promise<{ ok: boolean; msg: string }> {
+    if (!clientId) return { ok: false, msg: "Connect Google Calendar in the calendar card above first." };
+    const blocks = resolveBlocks(items, tomorrow());
+    if (!blocks.length) return { ok: false, msg: "No timed blocks to push — add times like 07:00." };
+    try {
+      const token = (await acquireToken(clientId, false)) ?? (await acquireToken(clientId, true));
+      if (!token) return { ok: false, msg: "Google didn't grant access — tap again to authorize." };
+      const { data: row, error: readErr } = await supabase.from("nights").select("gcal_event_ids").eq("user_id", uid).eq("day", day).maybeSingle();
+      if (readErr) return { ok: false, msg: "Couldn't check existing calendar events — try again." };
+      const prev = Array.isArray(row?.gcal_event_ids) ? (row!.gcal_event_ids as string[]) : [];
+      const res = await pushSchedule(clientId, blocks, prev);
+      await supabase.from("nights").update({ gcal_event_ids: res.ids, calendar_synced_at: new Date().toISOString() })
+        .eq("user_id", uid).eq("day", day);
+      setN((x) => ({ ...x, calendar_synced_at: new Date().toISOString() }));
+      if (res.failed > 0) {
+        return { ok: false, msg: `Only ${res.created} of ${blocks.length} landed — check your calendar before pushing again.` };
+      }
+      return { ok: true, msg: `📅 ${res.created} block${res.created === 1 ? "" : "s"} on tomorrow's calendar with 10-min reminders${res.removed ? ` (replaced ${res.removed})` : ""}.` };
+    } catch (e) {
+      if (e instanceof NeedsAuth) return { ok: false, msg: "Google needs you to reconnect — tap to authorize." };
+      return { ok: false, msg: "Calendar push failed — your plan is saved. Try again." };
+    }
+  }
+
   const setItem = (i: number, patch: Partial<ScheduleItem>) =>
     persist({ ...n, items: n.items.map((it, idx) => (idx === i ? { ...it, ...patch } : it)) });
   const addItem = () => persist({ ...n, items: [...n.items, { time: "", what: "" }] });
@@ -164,7 +189,11 @@ export default function Night({ uid }: { uid: string }) {
     try {
       const t = (await acquireToken(clientId, false)) ?? (await acquireToken(clientId, true));
       if (!t) { setPushState("error"); setPushNote("Google didn't grant access."); return; }
-      const created = await pushBlocks(clientId, blocks);
+      const { data: prevRow } = await supabase.from("nights").select("gcal_event_ids").eq("user_id", uid).eq("day", day).maybeSingle();
+      const prevIds = Array.isArray(prevRow?.gcal_event_ids) ? (prevRow!.gcal_event_ids as string[]) : [];
+      const pushed = await pushSchedule(clientId, blocks, prevIds);
+      await supabase.from("nights").update({ gcal_event_ids: pushed.ids }).eq("user_id", uid).eq("day", day);
+      const created = pushed.created;
       if (created === blocks.length) {
         burstConfetti("small");
         markSynced();
@@ -251,7 +280,7 @@ export default function Night({ uid }: { uid: string }) {
           );
         })}
         <button onClick={addItem} className="w-full rounded-xl border border-dashed border-white/20 py-3 opacity-70 active:scale-95">+ Add time block</button>
-        <ScheduleChat dayLabel="tomorrow" items={n.items} onApply={applySchedule} />
+        <ScheduleChat dayLabel="tomorrow" items={n.items} onApply={applySchedule} onPush={pushTomorrowToCalendar} />
       </div>
 
       {blocks.length > 0 && (

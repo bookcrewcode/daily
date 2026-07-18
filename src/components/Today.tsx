@@ -18,6 +18,8 @@ import Scoreboard from "./Scoreboard";
 import BriefingCard from "./BriefingCard";
 import ConstraintCard from "./ConstraintCard";
 import ScheduleChat from "./ScheduleChat";
+import { acquireToken, pushSchedule, NeedsAuth } from "@/lib/gcal";
+import { resolveBlocks } from "@/lib/calendar";
 import BossCard from "./BossCard";
 
 type WinKey = (typeof WIN_KEYS)[number];
@@ -82,6 +84,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   const [doneTop3, setDoneTop3] = useState<Set<number>>(new Set());
   const [offline, setOffline] = useState(false); // last refresh failed — showing prior data
   const [saveErr, setSaveErr] = useState(false);  // last write didn't land
+  const [gcalClientId, setGcalClientId] = useState("");
   const dayRef = useRef(todayStr());
 
   const load = useCallback(async () => {
@@ -124,6 +127,13 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
   }, [uid]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Google Calendar client id — enables pushing the chat-built schedule straight
+  // onto the real calendar (with reminders) instead of only into the app.
+  useEffect(() => {
+    supabase.from("user_settings").select("gcal_client_id").eq("user_id", uid).maybeSingle()
+      .then(({ data }) => setGcalClientId(data?.gcal_client_id ?? ""));
+  }, [uid]);
 
   // clock + MIDNIGHT ROLLOVER GUARD: a PWA left open overnight must not write
   // wins onto yesterday's row. Re-load when the calendar date changes or the
@@ -194,6 +204,35 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
     return true;
   }
 
+  // Push TODAY's schedule to Google Calendar with reminders. Idempotent: the
+  // ids of the events we created last time are stored on the nights row, so a
+  // re-push replaces them instead of stacking duplicates.
+  async function pushTodayToCalendar(items: ScheduleItem[]): Promise<{ ok: boolean; msg: string }> {
+    if (!gcalClientId) return { ok: false, msg: "Connect Google Calendar in the calendar card below first." };
+    const day = todayStr();
+    const blocks = resolveBlocks(items, new Date());
+    if (!blocks.length) return { ok: false, msg: "No timed blocks to push — add times like 07:00." };
+    try {
+      const token = (await acquireToken(gcalClientId, false)) ?? (await acquireToken(gcalClientId, true));
+      if (!token) return { ok: false, msg: "Google didn't grant access — tap again to authorize." };
+      const { data: row, error: readErr } = await supabase.from("nights").select("gcal_event_ids").eq("user_id", uid).eq("day", day).maybeSingle();
+      // a failed read would make us think there's nothing to clean up and
+      // duplicate the whole day — bail instead
+      if (readErr) return { ok: false, msg: "Couldn't check existing calendar events — try again." };
+      const prev = Array.isArray(row?.gcal_event_ids) ? (row!.gcal_event_ids as string[]) : [];
+      const res = await pushSchedule(gcalClientId, blocks, prev);
+      await supabase.from("nights").update({ gcal_event_ids: res.ids, calendar_synced_at: new Date().toISOString() })
+        .eq("user_id", uid).eq("day", day);
+      if (res.failed > 0) {
+        return { ok: false, msg: `Only ${res.created} of ${blocks.length} landed on your calendar — check it before pushing again.` };
+      }
+      return { ok: true, msg: `📅 ${res.created} block${res.created === 1 ? "" : "s"} on your calendar with 10-min reminders${res.removed ? ` (replaced ${res.removed})` : ""}.` };
+    } catch (e) {
+      if (e instanceof NeedsAuth) return { ok: false, msg: "Google needs you to reconnect — tap to authorize." };
+      return { ok: false, msg: "Calendar push failed — your plan is saved. Try again." };
+    }
+  }
+
   function fireFloat(key: string) {
     setFloats((f) => ({ ...f, [key]: Date.now() }));
     setTimeout(() => setFloats((f) => { const { [key]: _drop, ...rest } = f; return rest; }), 950);
@@ -258,7 +297,7 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
       {/* Today's schedule is built fresh for THIS day — rebuild it by talking
           whenever the day changes shape (woke up different, plans moved). */}
       <div className="mt-3">
-        <ScheduleChat dayLabel="today" items={plan?.items ?? []} onApply={applyTodaySchedule} />
+        <ScheduleChat dayLabel="today" items={plan?.items ?? []} onApply={applyTodaySchedule} onPush={pushTodayToCalendar} />
       </div>
 
       {plan && (
