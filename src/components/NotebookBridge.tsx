@@ -18,7 +18,6 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase, type LearningTopic } from "@/lib/supabase";
 import { sfx } from "@/lib/fx";
 import { Card } from "./ui";
-import type { Source } from "./Sources";
 
 // The rules the tutor runs on — exported so the notebook coaches the same way.
 const PROTOCOL = `## The 3C Protocol (how I want to be taught)
@@ -55,8 +54,8 @@ const PROTOCOL = `## The 3C Protocol (how I want to be taught)
 - Benchmark me against MY past answers, never "most people."
 - Never info-dump. If I ask for one, route me back through this protocol.`;
 
-export default function NotebookBridge({ uid, topic, sources }: {
-  uid: string; topic: LearningTopic; sources: Source[];
+export default function NotebookBridge({ uid, topic }: {
+  uid: string; topic: LearningTopic;
 }) {
   const [url, setUrl] = useState("");
   const [draft, setDraft] = useState("");
@@ -66,9 +65,11 @@ export default function NotebookBridge({ uid, topic, sources }: {
   const [err, setErr] = useState("");
 
   const load = useCallback(async () => {
-    const { data, error } = await supabase.from("user_settings").select("notebooklm_url").eq("user_id", uid).maybeSingle();
-    if (error) return; // keep whatever's on screen
-    setUrl(data?.notebooklm_url ?? "");
+    try {
+      const { data, error } = await supabase.from("user_settings").select("notebooklm_url").eq("user_id", uid).maybeSingle();
+      if (error) return; // keep whatever's on screen
+      setUrl(data?.notebooklm_url ?? "");
+    } catch { /* offline — keep whatever's on screen */ }
   }, [uid]);
   useEffect(() => { load(); }, [load]);
 
@@ -79,24 +80,44 @@ export default function NotebookBridge({ uid, topic, sources }: {
       return;
     }
     setBusy(true); setErr("");
-    const { error } = await supabase.from("user_settings").upsert({ user_id: uid, notebooklm_url: u }, { onConflict: "user_id" });
-    setBusy(false);
-    if (error) { setErr("Couldn't save the link — try again."); return; }
-    setUrl(u); setEditing(false); sfx.pop();
+    try {
+      const { error } = await supabase.from("user_settings").upsert({ user_id: uid, notebooklm_url: u }, { onConflict: "user_id" });
+      if (error) { setErr("Couldn't save the link — try again."); return; }
+      setUrl(u); setEditing(false); sfx.pop();
+    } catch {
+      setErr("Couldn't reach the server — the link wasn't saved.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   // Build the whole topic as ONE NotebookLM-ready source document.
   async function buildAndDownload() {
     if (busy) return;
     setBusy(true); setErr(""); setNote("");
-    // pull the study record fresh so the export is never stale
-    const [{ data: weak, error: wErr }, { data: retr, error: rErr }, { data: sess, error: sErr }] = await Promise.all([
-      supabase.from("learning_weak_spots").select("text,resolved").eq("topic_id", topic.id),
-      supabase.from("learning_retrieval").select("question,got_it,created_at").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(200),
-      supabase.from("learning_sessions").select("day,chunks,brain_dump").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(100),
-    ]);
-    setBusy(false);
-    if (wErr || rErr || sErr) { setErr("Couldn't read the full study record — try again."); return; }
+    // Pull EVERYTHING fresh — including the sources themselves. Reading them
+    // here rather than trusting a prop from a sibling means the export can't
+    // silently ship "(no sources added yet)" for a topic that has six of them
+    // just because the other component hadn't finished loading.
+    let weak, retr, sess, srcs;
+    try {
+      const [w, r, s, sr] = await Promise.all([
+        supabase.from("learning_weak_spots").select("text,resolved").eq("topic_id", topic.id),
+        supabase.from("learning_retrieval").select("question,got_it,created_at").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(200),
+        supabase.from("learning_sessions").select("day,chunks,brain_dump").eq("topic_id", topic.id).order("created_at", { ascending: false }).limit(100),
+        supabase.from("learning_sources").select("kind,title,url,content").eq("topic_id", topic.id).order("created_at", { ascending: false }),
+      ]);
+      if (w.error || r.error || s.error || sr.error) {
+        setErr("Couldn't read the full study record — nothing was downloaded. Try again.");
+        return;
+      }
+      weak = w.data; retr = r.data; sess = s.data; srcs = sr.data;
+    } catch {
+      setErr("Couldn't reach the server — nothing was downloaded. Try again.");
+      return;
+    } finally {
+      setBusy(false);
+    }
 
     const open = (weak ?? []).filter((w) => !w.resolved).map((w) => `- ${w.text}`).join("\n") || "- (none open)";
     const rl = retr ?? [];
@@ -107,8 +128,9 @@ export default function NotebookBridge({ uid, topic, sources }: {
       return `### ${s.day}\n${chunks || "  - (no chunks)"}${s.brain_dump ? `\n  Brain dump: ${s.brain_dump}` : ""}`;
     }).join("\n\n") || "(no sessions logged yet)";
 
-    const srcLines = sources.length
-      ? sources.map((s, i) => `### Source ${i + 1}: ${s.title}${s.url ? ` (${s.url})` : ""}\n\n${s.content || "(link only — no text captured)"}`).join("\n\n---\n\n")
+    const srcList = (srcs ?? []) as { kind: string; title: string; url: string; content: string }[];
+    const srcLines = srcList.length
+      ? srcList.map((s, i) => `### Source ${i + 1}: ${s.title}${s.url ? ` (${s.url})` : ""}\n\n${s.content || "(link only — no text captured)"}`).join("\n\n---\n\n")
       : "(no sources added yet)";
 
     const doc = `# ${topic.title} — my complete learning file
@@ -154,7 +176,9 @@ ${srcLines}
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
     sfx.coin();
-    setNote("Downloaded. Upload it as a source in NotebookLM — the notebook then knows your protocol, your tree, your weak spots, and your material.");
+    setNote(srcList.length
+      ? `Downloaded — ${srcList.length} source${srcList.length === 1 ? "" : "s"} included. Upload it in NotebookLM and the notebook knows your protocol, your tree, your weak spots, and your material.`
+      : "Downloaded — your protocol, tree, weak spots and sessions are in it. No sources yet, so there's no source material in the file; add some in 📚 Sources and rebuild.");
   }
 
   return (
@@ -190,7 +214,7 @@ ${srcLines}
         </button>
       ) : (
         <div className="flex gap-2 mt-2">
-          <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="https://notebooklm.google.com/notebook/…"
+          <input value={draft} onChange={(e) => setDraft(e.target.value)} disabled={busy} placeholder="https://notebooklm.google.com/notebook/…"
             className="flex-1 min-w-0 rounded-lg bg-black/40 px-3 py-2 outline-none text-xs" />
           <button onClick={saveUrl} disabled={busy} className="px-3 rounded-lg bg-[var(--neon)] text-black text-xs font-bold active:scale-95 disabled:opacity-50">Save</button>
         </div>

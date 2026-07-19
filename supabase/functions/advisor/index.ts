@@ -336,41 +336,68 @@ Reply ONLY valid JSON, no fences: {"memories": [{"content": "short fact in third
   }
 }
 
+// Topic ids are uuids. Anything interpolated into a PostgREST filter gets
+// checked against this first (same discipline as clientDay), so a crafted id
+// can't inject an extra query parameter and pull the wrong rows.
+const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+
 async function learningContext(token: string, topicId: string): Promise<string> {
+  if (!isUuid(topicId)) return "";
   const h = { apikey: ANON, Authorization: `Bearer ${token}` };
-  const q = async (p: string) => {
-    try { const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { headers: h }); return r.ok ? await r.json() : []; } catch { return []; }
+  // Track failures instead of swallowing them: a read that FAILED must never be
+  // presented to the model as "he has none of this", or the tutor will
+  // confidently tell him he has no sources while the screen says he has three.
+  const failed = new Set<string>();
+  const q = async (p: string, tag: string) => {
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { headers: h });
+      if (!r.ok) { failed.add(tag); return []; }
+      return await r.json();
+    } catch { failed.add(tag); return []; }
   };
   const [topics, weakSpots, retrieval, sources] = await Promise.all([
-    q(`learning_topics?id=eq.${topicId}&select=title,goal,why,trunk,branches,leaves`),
-    q(`learning_weak_spots?topic_id=eq.${topicId}&resolved=eq.false&select=text`),
-    q(`learning_retrieval?topic_id=eq.${topicId}&select=question,got_it&order=created_at.desc&limit=10`),
-    q(`learning_sources?topic_id=eq.${topicId}&select=title,kind,content&order=created_at.desc&limit=12`),
+    q(`learning_topics?id=eq.${topicId}&select=title,goal,why,trunk,branches,leaves`, "topic"),
+    q(`learning_weak_spots?topic_id=eq.${topicId}&resolved=eq.false&select=text`, "weak"),
+    q(`learning_retrieval?topic_id=eq.${topicId}&select=question,got_it&order=created_at.desc&limit=10`, "retrieval"),
+    q(`learning_sources?topic_id=eq.${topicId}&select=title,kind,content&order=created_at.desc&limit=12`, "sources"),
   ]);
   const t = (topics as Record<string, unknown>[])[0];
-  if (!t) return "";
+  if (!t) {
+    return failed.has("topic")
+      ? `\n\n⚠️ His topic details could not be loaded this turn (a read failed). Do NOT tell him he has no topic or no material — say the topic didn't load, and keep teaching from what he says in chat.`
+      : "";
+  }
   const branches = Array.isArray(t.branches) ? (t.branches as string[]).join(", ") : "";
-  const ws = (weakSpots as { text: string }[]).map((w) => w.text).join("; ") || "none open";
+  const ws = (weakSpots as { text: string }[]).map((w) => w.text).join("; ")
+    || (failed.has("weak") ? "COULD NOT BE READ this turn — don't claim he has none" : "none open");
   const rl = retrieval as { question: string; got_it: boolean }[];
   const acc = rl.length ? Math.round((rl.filter((r) => r.got_it).length / rl.length) * 100) : null;
-  const rlLine = rl.map((r) => `${r.got_it ? "✓" : "✗"} ${r.question}`).join("; ") || "none yet";
+  const rlLine = rl.map((r) => `${r.got_it ? "✓" : "✗"} ${r.question}`).join("; ")
+    || (failed.has("retrieval") ? "COULD NOT BE READ this turn — don't claim he's never been quizzed" : "none yet");
 
   // GROUNDING: Ben's own material. This is the NotebookLM half — the tutor
   // teaches from HIS sources, cites them, and says so when something isn't in
   // them, instead of answering from the open internet.
   const srcRows = (sources as { title: string; kind: string; content: string }[]).filter((x) => (x.content ?? "").trim());
-  // budget the prompt: newest first, ~6k chars each, ~40k total
+  // budget the prompt: newest first, ~6k chars each, ~40k total.
+  // MIN_SLICE stops a near-exhausted budget from emitting a source header
+  // wrapping a 1-char fragment — the model would complete the thought and cite
+  // it as if it came from his material.
+  const MIN_SLICE = 500;
   let budget = 40000;
   const srcBlocks: string[] = [];
   for (const src of srcRows) {
-    if (budget <= 0) break;
+    if (budget < MIN_SLICE) break;
     const slice = src.content.slice(0, Math.min(6000, budget));
     budget -= slice.length;
-    srcBlocks.push(`--- SOURCE: "${src.title}" (${src.kind}) ---\n${slice}`);
+    const cut = slice.length < src.content.length ? `\n[…source truncated for length — ask him for the rest if it matters…]` : "";
+    srcBlocks.push(`--- SOURCE: "${src.title}" (${src.kind}) ---\n${slice}${cut}`);
   }
   const sourceBlock = srcBlocks.length
     ? `\n\nHIS SOURCE MATERIAL — teach from THIS, not from general knowledge. Cite the source title when you use it (e.g. [${srcRows[0].title}]). If he asks something these sources don't cover, say so plainly, answer briefly from general knowledge, and mark it as outside his material — never blur the two. ${srcRows.length > srcBlocks.length ? `(${srcRows.length - srcBlocks.length} further source(s) omitted for length.)` : ""}\n\n${srcBlocks.join("\n\n")}`
-    : "\n\n(No sources added for this topic yet — if he'd learn faster from his own material, tell him to paste notes or a YouTube link into 📚 Sources.)";
+    : failed.has("sources")
+      ? "\n\n⚠️ His source material could not be read this turn (the read failed). Do NOT tell him he has no sources — tell him his material didn't load, answer from general knowledge, and say plainly that you're doing so."
+      : "\n\n(No sources added for this topic yet — if he'd learn faster from his own material, tell him to paste notes or a YouTube link into 📚 Sources.)";
 
   return `\n\nCURRENT TOPIC: "${t.title}"
 Goal: ${t.goal || "not set"} · Why: ${t.why || "not set"}
@@ -389,7 +416,11 @@ Deno.serve(async (req) => {
     if (!ANTHROPIC_API_KEY) return new Response(JSON.stringify({ error: "AI key not configured yet. Ask Claude to add ANTHROPIC_API_KEY." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 
     const body = await req.json();
-    const { advisor = "overseer", message = "", history = [], topicId = "", clientDay = "" } = body;
+    const { advisor = "overseer", message = "", history = [], topicId: rawTopicId = "", clientDay = "" } = body;
+    // Validate ONCE, here, so every branch downstream is safe — fixing this at
+    // each call site is how one gets missed. A non-uuid becomes "", and the
+    // branches that require a topic already reject "".
+    const topicId = isUuid(String(rawTopicId)) ? String(rawTopicId) : "";
 
     // Vocab word generator — separate fast path, returns strict JSON, no chat context needed.
     if (advisor === "vocab-gen") {
@@ -631,14 +662,31 @@ Reply ONLY valid JSON, no fences:
     // Anthropic API 400s on that, bricking the thread. Trim to first user turn.
     while (msgs.length && (msgs[0] as { role: string }).role !== "user") msgs.shift();
 
-    const ai = await fetch("https://api.anthropic.com/v1/messages", {
+    // The tutor's system prompt now carries up to 40k chars of his own source
+    // material and is identical across every turn of a session — cache it so he
+    // isn't re-billed for the same wall of text on every message. Small prompts
+    // skip caching: a cache write costs extra and a one-off call never recoups it.
+    const post = (sys: unknown) => fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: "claude-opus-4-8", max_tokens: 1500, system, messages: msgs }),
+      body: JSON.stringify({ model: "claude-opus-4-8", max_tokens: 1500, system: sys, messages: msgs }),
     });
-    const data = await ai.json();
+    // Threshold in CHARS, but the API's minimum cacheable prefix is in TOKENS —
+    // set it high enough (~5k tokens) to clear that minimum comfortably rather
+    // than paying a cache-write premium on prompts the API will decline to cache.
+    const cacheable = system.length > 20000;
+    let ai = await post(cacheable ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }] : system);
+    let data = await ai.json();
+    // never let an unsupported cache field take the chat down — fall back plain
+    if (!ai.ok && cacheable && JSON.stringify(data?.error ?? "").includes("cache_control")) {
+      ai = await post(system);
+      data = await ai.json();
+    }
     if (!ai.ok) return new Response(JSON.stringify({ error: data?.error?.message ?? "AI error" }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
-    const text = (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("\n");
+    let text = (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("\n");
+    // A reply cut off at max_tokens must not read as a finished thought — the
+    // tutor's 6-part format plus source citations runs long. Say so honestly.
+    if (data?.stop_reason === "max_tokens" && text) text += "\n\n…(cut off — say “continue” and I'll pick up right there.)";
 
     // remember what matters from this exchange — after the response ships
     const extraction = extractMemories(token, String(message), text, ANTHROPIC_API_KEY);
