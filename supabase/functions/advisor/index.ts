@@ -341,10 +341,11 @@ async function learningContext(token: string, topicId: string): Promise<string> 
   const q = async (p: string) => {
     try { const r = await fetch(`${SUPABASE_URL}/rest/v1/${p}`, { headers: h }); return r.ok ? await r.json() : []; } catch { return []; }
   };
-  const [topics, weakSpots, retrieval] = await Promise.all([
+  const [topics, weakSpots, retrieval, sources] = await Promise.all([
     q(`learning_topics?id=eq.${topicId}&select=title,goal,why,trunk,branches,leaves`),
     q(`learning_weak_spots?topic_id=eq.${topicId}&resolved=eq.false&select=text`),
     q(`learning_retrieval?topic_id=eq.${topicId}&select=question,got_it&order=created_at.desc&limit=10`),
+    q(`learning_sources?topic_id=eq.${topicId}&select=title,kind,content&order=created_at.desc&limit=12`),
   ]);
   const t = (topics as Record<string, unknown>[])[0];
   if (!t) return "";
@@ -354,11 +355,28 @@ async function learningContext(token: string, topicId: string): Promise<string> 
   const acc = rl.length ? Math.round((rl.filter((r) => r.got_it).length / rl.length) * 100) : null;
   const rlLine = rl.map((r) => `${r.got_it ? "✓" : "✗"} ${r.question}`).join("; ") || "none yet";
 
+  // GROUNDING: Ben's own material. This is the NotebookLM half — the tutor
+  // teaches from HIS sources, cites them, and says so when something isn't in
+  // them, instead of answering from the open internet.
+  const srcRows = (sources as { title: string; kind: string; content: string }[]).filter((x) => (x.content ?? "").trim());
+  // budget the prompt: newest first, ~6k chars each, ~40k total
+  let budget = 40000;
+  const srcBlocks: string[] = [];
+  for (const src of srcRows) {
+    if (budget <= 0) break;
+    const slice = src.content.slice(0, Math.min(6000, budget));
+    budget -= slice.length;
+    srcBlocks.push(`--- SOURCE: "${src.title}" (${src.kind}) ---\n${slice}`);
+  }
+  const sourceBlock = srcBlocks.length
+    ? `\n\nHIS SOURCE MATERIAL — teach from THIS, not from general knowledge. Cite the source title when you use it (e.g. [${srcRows[0].title}]). If he asks something these sources don't cover, say so plainly, answer briefly from general knowledge, and mark it as outside his material — never blur the two. ${srcRows.length > srcBlocks.length ? `(${srcRows.length - srcBlocks.length} further source(s) omitted for length.)` : ""}\n\n${srcBlocks.join("\n\n")}`
+    : "\n\n(No sources added for this topic yet — if he'd learn faster from his own material, tell him to paste notes or a YouTube link into 📚 Sources.)";
+
   return `\n\nCURRENT TOPIC: "${t.title}"
 Goal: ${t.goal || "not set"} · Why: ${t.why || "not set"}
 Tree — Trunk: ${t.trunk || "NOT YET FOUND — start here, trunk first"} · Branches: ${branches || "not named yet"} · Leaves: ${t.leaves || "none hung yet"}
 Open weak spots (loop these back in): ${ws}
-Recent retrieval (last 10): ${rlLine}${acc != null ? ` — ${acc}% accuracy (target 70–85%)` : ""}`;
+Recent retrieval (last 10): ${rlLine}${acc != null ? ` — ${acc}% accuracy (target 70–85%)` : ""}${sourceBlock}`;
 }
 
 Deno.serve(async (req) => {

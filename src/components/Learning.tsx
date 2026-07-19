@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr, ADVISOR_FN, SUPABASE_ANON, type LearningTopic, type LearningRetrieval, type LearningWeakSpot } from "@/lib/supabase";
 import { useGame } from "@/lib/useGameData";
 import { SectionTitle, Card, Pill } from "./ui";
+import Sources, { type Source } from "./Sources";
+import NotebookBridge from "./NotebookBridge";
 
 type ChatMsg = { role: string; content: string };
 
@@ -200,6 +202,7 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
   const [sessions, setSessions] = useState<{ id: string; day: string; chunks: { note: string }[]; brain_dump: string }[]>([]);
   const [openSession, setOpenSession] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [sources, setSources] = useState<Source[]>([]);
   const [treeErr, setTreeErr] = useState(false);
   const [retrievalErr, setRetrievalErr] = useState(false);
   const [weakErr, setWeakErr] = useState(false);
@@ -272,6 +275,9 @@ function TopicView({ uid, topic, onBack, onOpenAdvisor, onUpdated }: {
 
       <TutorChat uid={uid} topicId={topic.id} onFullScreen={onOpenAdvisor ? () => onOpenAdvisor("tutor", topic.id) : undefined} />
       <p className="text-[10px] opacity-40 mt-1.5">Same conversation everywhere — ⛶ full screen adds 📝 Recap &amp; save, which turns the session into chunks, weak spots, and retrieval log below.</p>
+
+      <Sources uid={uid} topicId={topic.id} onChanged={setSources} />
+      <NotebookBridge uid={uid} topic={topic} sources={sources} />
 
       <SectionTitle>🌳 The Tree (first principles)</SectionTitle>
       {!editingTree ? (
