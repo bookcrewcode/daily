@@ -306,8 +306,16 @@ async function callClaude(model: string, system: string, messages: unknown[], ma
   });
   const data = await r.json();
   if (!r.ok) throw new Error(data?.error?.message ?? "AI error");
+  // A response cut at max_tokens means the JSON is truncated and JSON.parse will
+  // throw — surface that as a distinct, actionable error instead of a generic
+  // "try again" the user would loop on forever with the same input.
+  if (data?.stop_reason === "max_tokens") throw new Error("TOOLONG");
   return (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
 }
+const TOOLONG_MSG = "That's a lot of material — I couldn't finish it in one pass. Split it into a smaller notebook (fewer or shorter sources) and try again.";
+// Translate the TOOLONG sentinel into a real message wherever a catch surfaces
+// e.message to the user, so the raw sentinel never leaks to the UI.
+const friendlyErr = (e: unknown, fallback: string) => e instanceof Error ? (e.message === "TOOLONG" ? TOOLONG_MSG : e.message) : fallback;
 
 // Append-only memory extraction (mem0 pattern): after each coaching exchange,
 // a cheap model pulls 0-2 durable facts into ai_memories. Runs after the
@@ -341,12 +349,44 @@ Reply ONLY valid JSON, no fences: {"memories": [{"content": "short fact in third
 // can't inject an extra query parameter and pull the wrong rows.
 const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
-async function learningContext(token: string, topicId: string): Promise<string> {
-  if (!isUuid(topicId)) return "";
+const stripFences = (s: string) => s.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, "");
+const clip = (v: unknown, n: number) => String(v ?? "").replace(/[`\r]/g, " ").slice(0, n);
+
+// Read a notebook's OWN material as a budgeted grounding block. Newest first,
+// ~6k chars/source, ~40k total. MIN_SLICE stops a near-exhausted budget from
+// emitting a header around a 1-char fragment the model would "complete" and
+// then cite as if it were his. Returns count + a failed flag so callers can
+// distinguish "he has no sources" from "the read broke".
+async function readNotebookSources(token: string, notebookId: string): Promise<{ block: string; count: number; failed: boolean }> {
+  if (!isUuid(notebookId)) return { block: "", count: 0, failed: false };
   const h = { apikey: ANON, Authorization: `Bearer ${token}` };
-  // Track failures instead of swallowing them: a read that FAILED must never be
-  // presented to the model as "he has none of this", or the tutor will
-  // confidently tell him he has no sources while the screen says he has three.
+  let failed = false;
+  let rows: { title: string; kind: string; content: string }[] = [];
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/notebook_sources?notebook_id=eq.${notebookId}&select=title,kind,content&order=created_at.desc&limit=20`, { headers: h });
+    if (!r.ok) failed = true; else rows = await r.json();
+  } catch { failed = true; }
+  const srcRows = rows.filter((x) => (x.content ?? "").trim());
+  const MIN_SLICE = 500;
+  let budget = 40000;
+  const blocks: string[] = [];
+  for (const src of srcRows) {
+    if (budget < MIN_SLICE) break;
+    const slice = src.content.slice(0, Math.min(6000, budget));
+    budget -= slice.length;
+    const cut = slice.length < src.content.length ? `\n[…source truncated for length…]` : "";
+    blocks.push(`--- SOURCE: "${src.title}" (${src.kind}) ---\n${slice}${cut}`);
+  }
+  const omitted = srcRows.length - blocks.length;
+  const block = blocks.length ? `${blocks.join("\n\n")}${omitted > 0 ? `\n\n(${omitted} more source(s) omitted for length.)` : ""}` : "";
+  return { block, count: blocks.length, failed };
+}
+
+// Tutor grounding for a notebook: its chapters, weak spots, rolling retrieval
+// accuracy, and its own source material.
+async function notebookContext(token: string, notebookId: string): Promise<string> {
+  if (!isUuid(notebookId)) return "";
+  const h = { apikey: ANON, Authorization: `Bearer ${token}` };
   const failed = new Set<string>();
   const q = async (p: string, tag: string) => {
     try {
@@ -355,55 +395,42 @@ async function learningContext(token: string, topicId: string): Promise<string> 
       return await r.json();
     } catch { failed.add(tag); return []; }
   };
-  const [topics, weakSpots, retrieval, sources] = await Promise.all([
-    q(`learning_topics?id=eq.${topicId}&select=title,goal,why,trunk,branches,leaves`, "topic"),
-    q(`learning_weak_spots?topic_id=eq.${topicId}&resolved=eq.false&select=text`, "weak"),
-    q(`learning_retrieval?topic_id=eq.${topicId}&select=question,got_it&order=created_at.desc&limit=10`, "retrieval"),
-    q(`learning_sources?topic_id=eq.${topicId}&select=title,kind,content&order=created_at.desc&limit=12`, "sources"),
+  const [nbs, chapters, weakSpots, retrieval, src] = await Promise.all([
+    q(`notebooks?id=eq.${notebookId}&select=title,subject,why,trunk`, "notebook"),
+    q(`notebook_chapters?notebook_id=eq.${notebookId}&select=idx,title,objective,status&order=idx.asc`, "chapters"),
+    q(`notebook_weak_spots?notebook_id=eq.${notebookId}&resolved=eq.false&select=text`, "weak"),
+    q(`notebook_retrieval?notebook_id=eq.${notebookId}&select=question,got_it&order=created_at.desc&limit=12`, "retrieval"),
+    readNotebookSources(token, notebookId),
   ]);
-  const t = (topics as Record<string, unknown>[])[0];
+  const t = (nbs as Record<string, unknown>[])[0];
   if (!t) {
-    return failed.has("topic")
-      ? `\n\n⚠️ His topic details could not be loaded this turn (a read failed). Do NOT tell him he has no topic or no material — say the topic didn't load, and keep teaching from what he says in chat.`
+    return failed.has("notebook")
+      ? `\n\n⚠️ His notebook details could not be loaded this turn (a read failed). Do NOT tell him the notebook is empty — say it didn't load, and keep teaching from what he says.`
       : "";
   }
-  const branches = Array.isArray(t.branches) ? (t.branches as string[]).join(", ") : "";
+  const chs = chapters as { title: string; status: string }[];
+  const chapterLine = chs.length
+    ? chs.map((c) => `${c.status === "done" ? "✓" : "•"} ${c.title}`).join(" · ")
+    : (failed.has("chapters") ? "COULD NOT BE READ this turn" : "no chapters generated yet");
   const ws = (weakSpots as { text: string }[]).map((w) => w.text).join("; ")
     || (failed.has("weak") ? "COULD NOT BE READ this turn — don't claim he has none" : "none open");
   const rl = retrieval as { question: string; got_it: boolean }[];
   const acc = rl.length ? Math.round((rl.filter((r) => r.got_it).length / rl.length) * 100) : null;
   const rlLine = rl.map((r) => `${r.got_it ? "✓" : "✗"} ${r.question}`).join("; ")
     || (failed.has("retrieval") ? "COULD NOT BE READ this turn — don't claim he's never been quizzed" : "none yet");
+  const s = src as { block: string; count: number; failed: boolean };
+  const sourceBlock = s.count
+    ? `\n\nHIS SOURCE MATERIAL — teach from THIS, not general knowledge. Cite the source title when you use it. If he asks something these don't cover, say so plainly, answer briefly, and mark it as outside his material — never blur the two.\n\n${s.block}`
+    : s.failed
+      ? "\n\n⚠️ His source material could not be read this turn (the read failed). Do NOT tell him he has no sources — tell him it didn't load, answer from general knowledge, and say plainly that you're doing so."
+      : "\n\n(No sources in this notebook yet — if he'd learn faster from his own material, tell him to add notes, a YouTube link, or a PDF in 📚 Sources.)";
 
-  // GROUNDING: Ben's own material. This is the NotebookLM half — the tutor
-  // teaches from HIS sources, cites them, and says so when something isn't in
-  // them, instead of answering from the open internet.
-  const srcRows = (sources as { title: string; kind: string; content: string }[]).filter((x) => (x.content ?? "").trim());
-  // budget the prompt: newest first, ~6k chars each, ~40k total.
-  // MIN_SLICE stops a near-exhausted budget from emitting a source header
-  // wrapping a 1-char fragment — the model would complete the thought and cite
-  // it as if it came from his material.
-  const MIN_SLICE = 500;
-  let budget = 40000;
-  const srcBlocks: string[] = [];
-  for (const src of srcRows) {
-    if (budget < MIN_SLICE) break;
-    const slice = src.content.slice(0, Math.min(6000, budget));
-    budget -= slice.length;
-    const cut = slice.length < src.content.length ? `\n[…source truncated for length — ask him for the rest if it matters…]` : "";
-    srcBlocks.push(`--- SOURCE: "${src.title}" (${src.kind}) ---\n${slice}${cut}`);
-  }
-  const sourceBlock = srcBlocks.length
-    ? `\n\nHIS SOURCE MATERIAL — teach from THIS, not from general knowledge. Cite the source title when you use it (e.g. [${srcRows[0].title}]). If he asks something these sources don't cover, say so plainly, answer briefly from general knowledge, and mark it as outside his material — never blur the two. ${srcRows.length > srcBlocks.length ? `(${srcRows.length - srcBlocks.length} further source(s) omitted for length.)` : ""}\n\n${srcBlocks.join("\n\n")}`
-    : failed.has("sources")
-      ? "\n\n⚠️ His source material could not be read this turn (the read failed). Do NOT tell him he has no sources — tell him his material didn't load, answer from general knowledge, and say plainly that you're doing so."
-      : "\n\n(No sources added for this topic yet — if he'd learn faster from his own material, tell him to paste notes or a YouTube link into 📚 Sources.)";
-
-  return `\n\nCURRENT TOPIC: "${t.title}"
-Goal: ${t.goal || "not set"} · Why: ${t.why || "not set"}
-Tree — Trunk: ${t.trunk || "NOT YET FOUND — start here, trunk first"} · Branches: ${branches || "not named yet"} · Leaves: ${t.leaves || "none hung yet"}
+  return `\n\nCURRENT NOTEBOOK: "${t.title}"
+Mastery looks like: ${t.subject || "not set"} · Why: ${t.why || "not set"}
+Trunk (one root truth): ${t.trunk || "NOT YET FOUND — start here, trunk first"}
+Chapters: ${chapterLine}
 Open weak spots (loop these back in): ${ws}
-Recent retrieval (last 10): ${rlLine}${acc != null ? ` — ${acc}% accuracy (target 70–85%)` : ""}${sourceBlock}`;
+Recent retrieval: ${rlLine}${acc != null ? ` — ${acc}% accuracy (target 70–85%)` : ""}${sourceBlock}`;
 }
 
 Deno.serve(async (req) => {
@@ -458,7 +485,7 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
         const text = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write today's briefing." }], 400, ANTHROPIC_API_KEY);
         return new Response(JSON.stringify({ text }), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch (e) {
-        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Couldn't write the briefing." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ error: friendlyErr(e, "Couldn't write the briefing.") }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
       }
     }
 
@@ -512,7 +539,7 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
         const text = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: `Write the ${period} affirmation.` }], 150, ANTHROPIC_API_KEY);
         return new Response(JSON.stringify({ text: text.trim() }), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch (e) {
-        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Couldn't write one — try again." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ error: friendlyErr(e, "Couldn't write one — try again.") }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
       }
     }
 
@@ -558,7 +585,7 @@ ${ctx}`;
           .slice(0, 24);
         return new Response(JSON.stringify({ items, note: String(parsed?.note ?? "").slice(0, 300) }), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch (e) {
-        return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Couldn't build that schedule — try rephrasing." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ error: friendlyErr(e, "Couldn't build that schedule — try rephrasing.") }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
       }
     }
 
@@ -651,9 +678,157 @@ Reply ONLY valid JSON, no fences:
       }
     }
 
+    // ─── 📓 Notebook generation modes ───────────────────────────────────────
+    // These build the leveled course from Ben's OWN material. topicId carries
+    // the notebook id (already uuid-sanitized above). All ground in his sources.
+    const ok = (obj: unknown) => new Response(JSON.stringify(obj), { headers: { ...cors, "Content-Type": "application/json" } });
+    const err = (m: string) => new Response(JSON.stringify({ error: m }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+
+    // Design the chapters (a leveled syllabus) from his material.
+    if (advisor === "syllabus") {
+      if (!topicId) return err("No notebook given.");
+      const { block, count, failed } = await readNotebookSources(token, topicId);
+      if (failed) return err("Couldn't read this notebook's sources — try again.");
+      if (!count) return err("Add at least one source first — I build the chapters from your own material.");
+      const title = clip(body.title, 160);
+      const subject = clip(body.subject, 300);
+      const sys = `You are designing a leveled course from Ben's OWN source material for his notebook "${title}"${subject ? ` (mastery = ${subject})` : ""}. He has ADHD and learns by the 3C protocol: trunk before leaves, the 20% that carries 80%, constant retrieval.
+
+Break his material into 4-8 CHAPTERS ordered easiest→hardest, TRUNK FIRST (chapter 1 = the single foundational truth everything else rests on). Each chapter is one coherent, learnable level. Ground everything in the material below — do NOT invent chapters his sources don't support.
+
+Reply ONLY valid JSON, no fences:
+{"trunk": "the single root truth of this whole subject, one sentence", "chapters": [{"title": "short chapter title", "objective": "what he'll be able to DO after it, one sentence", "summary": "2-3 sentences on what this chapter covers, plain language"}]}
+
+HIS MATERIAL:
+${block}`;
+      try {
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Design the chapters." }], 3500, ANTHROPIC_API_KEY);
+        const parsed = JSON.parse(stripFences(raw));
+        const chapters = (Array.isArray(parsed?.chapters) ? parsed.chapters : []).slice(0, 8)
+          .map((c: Record<string, unknown>) => ({ title: String(c?.title ?? "").slice(0, 160), objective: String(c?.objective ?? "").slice(0, 300), summary: String(c?.summary ?? "").slice(0, 800) }))
+          .filter((c: { title: string }) => c.title);
+        if (!chapters.length) return err("Couldn't design chapters from that — add more material and try again.");
+        return ok({ trunk: String(parsed?.trunk ?? "").slice(0, 300), chapters });
+      } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? TOOLONG_MSG : "Couldn't design the chapters right now — try again."); }
+    }
+
+    // Build ONE chapter: teaching chunks each with an instant MC check
+    // (constant quizzing while learning) + free-recall questions to clear it.
+    if (advisor === "chapter-pack") {
+      if (!topicId) return err("No notebook given.");
+      const chTitle = clip(body.chapterTitle, 200);
+      const chObjective = clip(body.chapterObjective, 400);
+      const { block, failed } = await readNotebookSources(token, topicId);
+      if (failed) return err("Couldn't read your sources — try again.");
+      const sys = `You are Ben's tutor building ONE chapter of a leveled course from his OWN material. Chapter: "${chTitle}"${chObjective ? ` — objective: ${chObjective}` : ""}. He has ADHD and learns by the 3C protocol: trunk first, the vital 20%, chunks of ≤4 ideas, CONSTANT retrieval.
+
+Teach this chapter as 3-5 short CHUNKS. Each chunk = a tight 2-4 sentence teaching passage (plain language, an analogy where it helps, anchored to what a beginner already knows), then ONE quick multiple-choice CHECK on that chunk (recognition, instant) to keep him active. After the chunks, write 3-4 FREE-RECALL questions (no choices) that test whether he truly gets the chapter — these are the gate to pass it.
+
+Ground everything in his material below. If the material is thin, teach what's there and say what's missing — never invent facts.
+
+Reply ONLY valid JSON, no fences:
+{"chunks": [{"teach": "the teaching passage", "check": {"q": "question", "choices": ["a","b","c","d"], "answer": 0, "explain": "one line why"}}], "recall": [{"q": "free-recall question", "expected": "the key points a correct answer must hit"}]}
+
+HIS MATERIAL:
+${block || "(no sources yet — teach the objective from general knowledge, and say plainly you're doing so)"}`;
+      try {
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Build this chapter." }], 3200, ANTHROPIC_API_KEY);
+        const parsed = JSON.parse(stripFences(raw));
+        const chunks = (Array.isArray(parsed?.chunks) ? parsed.chunks : []).slice(0, 6).map((c: Record<string, unknown>) => {
+          const ch = (c?.check ?? {}) as Record<string, unknown>;
+          const choices = (Array.isArray(ch.choices) ? ch.choices : []).map((x: unknown) => String(x).slice(0, 240)).slice(0, 6);
+          let ans = Number(ch.answer); if (!Number.isInteger(ans) || ans < 0 || ans >= choices.length) ans = 0;
+          return {
+            teach: String(c?.teach ?? "").slice(0, 1600),
+            check: choices.length >= 2 ? { q: String(ch.q ?? "").slice(0, 300), choices, answer: ans, explain: String(ch.explain ?? "").slice(0, 300) } : null,
+          };
+        }).filter((c: { teach: string }) => c.teach);
+        const recall = (Array.isArray(parsed?.recall) ? parsed.recall : []).slice(0, 6)
+          .map((r: Record<string, unknown>) => ({ q: String(r?.q ?? "").slice(0, 400), expected: String(r?.expected ?? "").slice(0, 800) }))
+          .filter((r: { q: string }) => r.q);
+        if (!chunks.length) return err("Couldn't build that chapter — try again.");
+        return ok({ chunks, recall });
+      } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? TOOLONG_MSG : "Couldn't build that chapter right now — try again."); }
+    }
+
+    // The major exam: whole-notebook free-recall test.
+    if (advisor === "exam") {
+      if (!topicId) return err("No notebook given.");
+      const { block, count, failed } = await readNotebookSources(token, topicId);
+      if (failed) return err("Couldn't read your sources — try again.");
+      if (!count) return err("Add sources first — the exam is built from your material.");
+      const n = Math.min(12, Math.max(5, Number(body.n) || 8));
+      const sys = `You are writing Ben's MAJOR EXAM for a notebook, from his OWN material. Exactly ${n} FREE-RECALL questions (no multiple choice), spanning the whole subject, ordered roughly easy→hard, testing real understanding and application rather than trivia. Ground every question in the material below.
+Reply ONLY valid JSON, no fences:
+{"questions": [{"q": "the question", "expected": "the key points a correct answer must hit"}]}
+
+HIS MATERIAL:
+${block}`;
+      try {
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write the exam." }], 3500, ANTHROPIC_API_KEY);
+        const parsed = JSON.parse(stripFences(raw));
+        const questions = (Array.isArray(parsed?.questions) ? parsed.questions : []).slice(0, 12)
+          .map((r: Record<string, unknown>) => ({ q: String(r?.q ?? "").slice(0, 400), expected: String(r?.expected ?? "").slice(0, 800) }))
+          .filter((r: { q: string }) => r.q);
+        if (!questions.length) return err("Couldn't write the exam — try again.");
+        return ok({ questions });
+      } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? TOOLONG_MSG : "Couldn't write the exam right now — try again."); }
+    }
+
+    // Grade free-recall answers generously but honestly, in one batch.
+    if (advisor === "grade") {
+      const items = (Array.isArray(body.items) ? body.items : []).slice(0, 12)
+        .map((it: Record<string, unknown>) => ({ q: clip(it?.q, 400), a: clip(it?.a, 2000), expected: clip(it?.expected, 800) }))
+        .filter((it: { q: string }) => it.q);
+      if (!items.length) return err("Nothing to grade.");
+      const { block } = await readNotebookSources(token, topicId);
+      const sys = `You are grading Ben's FREE-RECALL answers generously but honestly — this is active recall, so reward remembering the substance even if the wording is loose; never nitpick phrasing. For each item you get the question, the key points a right answer must hit, and Ben's answer.${block ? " Use his source material below as the source of truth." : ""}
+For each: score 0-100 (70+ means he got the substance), correct = score≥70, one SHORT line of feedback (what he nailed, what to fix), and "missed" = the single key point he most missed ("" if none).
+Reply ONLY valid JSON, no fences, SAME ORDER as the input:
+{"results": [{"score": 85, "correct": true, "feedback": "one line", "missed": ""}]}
+
+ITEMS:
+${JSON.stringify(items.map((it: { q: string; a: string; expected: string }, i: number) => ({ n: i + 1, question: it.q, key_points: it.expected, ben_answer: it.a })))}${block ? `\n\nHIS MATERIAL:\n${block}` : ""}`;
+      try {
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Grade these." }], 1600, ANTHROPIC_API_KEY);
+        const parsed = JSON.parse(stripFences(raw));
+        const results = (Array.isArray(parsed?.results) ? parsed.results : []).map((r: Record<string, unknown>) => {
+          let sc = Number(r?.score); if (!Number.isFinite(sc)) sc = 0; sc = Math.max(0, Math.min(100, Math.round(sc)));
+          return { score: sc, correct: sc >= 70, feedback: String(r?.feedback ?? "").slice(0, 400), missed: String(r?.missed ?? "").slice(0, 300) };
+        });
+        while (results.length < items.length) results.push({ score: 0, correct: false, feedback: "No grade returned — try again.", missed: "" });
+        return ok({ results: results.slice(0, items.length) });
+      } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? "Your answers were too long to grade in one pass — shorten them a little and resubmit." : "Couldn't grade that right now — try again."); }
+    }
+
+    // Two-host podcast (NotebookLM-style audio overview). Rendered on-device.
+    if (advisor === "podcast") {
+      if (!topicId) return err("No notebook given.");
+      const focus = clip(body.chapterTitle, 200);
+      const { block, count, failed } = await readNotebookSources(token, topicId);
+      if (failed) return err("Couldn't read your sources — try again.");
+      if (!count) return err("Add sources first — the podcast is built from your material.");
+      const sys = `Write a two-host audio-overview podcast (like NotebookLM's) teaching Ben's material${focus ? ` focused on: "${focus}"` : ""}. Two hosts: A (warm, curious, asks the questions a smart beginner would) and B (clear, explains well, uses analogies). Natural SPOKEN conversation — contractions, short turns, a little back-and-forth, no stage directions or sound cues. Teach the real substance from the material below, trunk first, the vital 20%. 18-34 turns total. Ground it in his material; never invent facts.
+Reply ONLY valid JSON, no fences:
+{"title": "short episode title", "segments": [{"speaker": "A", "text": "what they say"}]}
+
+HIS MATERIAL:
+${block}`;
+      try {
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write the episode." }], 4000, ANTHROPIC_API_KEY);
+        const parsed = JSON.parse(stripFences(raw));
+        const segments = (Array.isArray(parsed?.segments) ? parsed.segments : []).slice(0, 60)
+          .map((s: Record<string, unknown>) => ({ speaker: s?.speaker === "B" ? "B" : "A", text: String(s?.text ?? "").slice(0, 1200) }))
+          .filter((s: { text: string }) => s.text);
+        if (segments.length < 2) return err("Couldn't write the episode — try again.");
+        return ok({ title: String(parsed?.title ?? "Audio overview").slice(0, 160), segments });
+      } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? TOOLONG_MSG : "Couldn't write the episode right now — try again."); }
+    }
+    // ─── end notebook modes ─────────────────────────────────────────────────
+
     const persona = PERSONAS[advisor] ?? PERSONAS.overseer;
     const ctx = await context(token, clientDay || undefined);
-    const learnCtx = advisor === "tutor" && topicId ? await learningContext(token, topicId) : "";
+    const learnCtx = advisor === "tutor" && topicId ? await notebookContext(token, topicId) : "";
     const system = `${persona}\n\nBen has ADHD; keep it short, scannable, ADHD-friendly, execution over explanation. Use his live data below when relevant.\n\n${ctx}${learnCtx}`;
 
     const msgs = [...(Array.isArray(history) ? history : []), { role: "user", content: message }];

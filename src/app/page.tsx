@@ -15,7 +15,7 @@ import TradingBot from "@/components/TradingBot";
 import IncomeEngine from "@/components/IncomeEngine";
 import Vocab from "@/components/Vocab";
 import Tools from "@/components/Tools";
-import Learning from "@/components/Learning";
+import Notebooks from "@/components/Notebooks";
 import Affirmations from "@/components/Affirmations";
 import Board from "@/components/Board";
 import Plan from "@/components/Plan";
@@ -32,7 +32,7 @@ const PRIMARY: { key: Tab; emoji: string; label: string }[] = [
 const SECONDARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "goals", emoji: "🎯", label: "Goals" },
   { key: "vocab", emoji: "✍️", label: "Vocab" },
-  { key: "learning", emoji: "🌳", label: "Learning" },
+  { key: "learning", emoji: "📓", label: "Learn" },
   { key: "affirmations", emoji: "💫", label: "Affirm" },
   { key: "hustle", emoji: "💸", label: "Hustle" },
   { key: "money", emoji: "💰", label: "Money" },
@@ -140,7 +140,7 @@ function Shell({ uid }: { uid: string }) {
           {tab === "hustle" && <IncomeEngine />}
           {tab === "night" && <Night uid={uid} />}
           {tab === "tools" && <Tools />}
-          {tab === "learning" && <Learning uid={uid} onOpenAdvisor={openAdvisor} />}
+          {tab === "learning" && <Notebooks uid={uid} />}
           {tab === "affirmations" && <Affirmations uid={uid} />}
         </div>
 
