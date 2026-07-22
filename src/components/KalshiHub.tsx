@@ -19,9 +19,16 @@ type Scan = { total: number; by_category: Cat[]; top_markets: Market[]; whales: 
 type Msg = { role: "user" | "assistant"; content: string };
 type Position = { ticker: string; position: number; exposure: number | string | null };
 type Fill = { ticker: string; side: string; count: number | string; price: string; time: string };
+type StalenessPos = { asset: string; side: string; entry: number; contracts: number };
+type Staleness = {
+  online: boolean; mode?: string; halted?: boolean; halt_reason?: string;
+  pnl?: number; wins?: number; losses?: number; signals_seen?: number; open?: number;
+  stop_loss_usd?: number; spot_feed?: boolean; open_positions?: StalenessPos[];
+};
 type HubStatus = {
   updated_at: string; connected: boolean; paper_mode: boolean; stop_loss_usd: number;
   halted: boolean; balance: number | null; positions: Position[]; fills: Fill[];
+  staleness?: Staleness;
 };
 
 const fmt = (n: number) => "$" + Math.round(n).toLocaleString();
@@ -143,6 +150,53 @@ export default function KalshiHub() {
         <Stat label="Trades scanned"
           value={scan ? scan.total.toLocaleString() : "…"} accent="text-white/90" />
       </div>
+
+      {/* staleness pilot */}
+      {hub?.staleness && (
+        <Card title="Staleness pilot"
+          tag={hub.staleness.online
+            ? <span className={`text-[10px] font-semibold ${hub.staleness.mode?.startsWith("LIVE") ? "text-rose-400" : "text-sky-400"}`}>{hub.staleness.mode}</span>
+            : <span className="text-[10px] text-white/40">offline</span>}>
+          {!hub.staleness.online ? (
+            <p className="text-sm text-white/50">
+              Pilot not running. Start <code className="rounded bg-white/10 px-1">staleness_bot.py</code> to watch it live.
+            </p>
+          ) : (
+            <>
+              {hub.staleness.halted && (
+                <p className="mb-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-400">
+                  ⛔ Halted — {hub.staleness.halt_reason || "stop hit"}
+                </p>
+              )}
+              <div className="grid grid-cols-4 gap-2">
+                <div><p className="text-[10px] uppercase tracking-wider text-white/40">Paper P&amp;L</p>
+                  <p className={`text-lg font-bold tabular-nums ${(hub.staleness.pnl ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                    {(hub.staleness.pnl ?? 0) >= 0 ? "+" : ""}${(hub.staleness.pnl ?? 0).toFixed(2)}</p></div>
+                <div><p className="text-[10px] uppercase tracking-wider text-white/40">Signals</p>
+                  <p className="text-lg font-bold tabular-nums text-white/90">{hub.staleness.signals_seen ?? 0}</p></div>
+                <div><p className="text-[10px] uppercase tracking-wider text-white/40">W / L</p>
+                  <p className="text-lg font-bold tabular-nums text-white/90">{hub.staleness.wins ?? 0}/{hub.staleness.losses ?? 0}</p></div>
+                <div><p className="text-[10px] uppercase tracking-wider text-white/40">Open</p>
+                  <p className="text-lg font-bold tabular-nums text-white/90">{hub.staleness.open ?? 0}</p></div>
+              </div>
+              {(hub.staleness.open_positions?.length ?? 0) > 0 && (
+                <div className="mt-3 space-y-1">
+                  {hub.staleness.open_positions!.map((p, i) => (
+                    <div key={i} className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-1.5 text-sm">
+                      <span className="font-medium text-white/80">{p.asset} <span className={p.side === "yes" ? "text-emerald-400" : "text-rose-400"}>{p.side.toUpperCase()}</span></span>
+                      <span className="tabular-nums text-white/50">{p.contracts} @ {p.entry.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="mt-3 text-[11px] text-white/30">
+                {hub.staleness.mode?.startsWith("LIVE") ? "● live money · " : "◌ paper — watching for the edge · "}
+                spot feed {hub.staleness.spot_feed ? "ok" : "down"} · stop ${hub.staleness.stop_loss_usd}
+              </p>
+            </>
+          )}
+        </Card>
+      )}
 
       {/* account */}
       <Card title="Account"
