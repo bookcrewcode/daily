@@ -12,6 +12,7 @@ import Night from "@/components/Night";
 import Goals from "@/components/Goals";
 import Money from "@/components/Money";
 import TradingBot from "@/components/TradingBot";
+import KalshiHub from "@/components/KalshiHub";
 import IncomeEngine from "@/components/IncomeEngine";
 import Vocab from "@/components/Vocab";
 import Tools from "@/components/Tools";
@@ -22,7 +23,7 @@ import Plan from "@/components/Plan";
 import { useVoiceInput } from "@/lib/useVoiceInput";
 import { sfx, buzz } from "@/lib/fx";
 
-type Tab = "today" | "plan" | "goals" | "food" | "lifts" | "vocab" | "money" | "hustle" | "night" | "tools" | "learning" | "affirmations";
+type Tab = "today" | "plan" | "goals" | "food" | "lifts" | "vocab" | "money" | "markets" | "hustle" | "night" | "tools" | "learning" | "affirmations";
 const PRIMARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "today", emoji: "✅", label: "Today" },
   { key: "plan", emoji: "🧭", label: "Plan" },
@@ -36,6 +37,7 @@ const SECONDARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "affirmations", emoji: "💫", label: "Affirm" },
   { key: "hustle", emoji: "💸", label: "Hustle" },
   { key: "money", emoji: "💰", label: "Money" },
+  { key: "markets", emoji: "🎲", label: "Markets" },
   { key: "night", emoji: "🌙", label: "Night" },
   { key: "tools", emoji: "🛠️", label: "Tools" },
 ];
@@ -137,6 +139,7 @@ function Shell({ uid }: { uid: string }) {
           {tab === "lifts" && <Lifts uid={uid} />}
           {tab === "vocab" && <Vocab uid={uid} />}
           {tab === "money" && (<><Money uid={uid} /><TradingBot /></>)}
+          {tab === "markets" && <KalshiHub />}
           {tab === "hustle" && <IncomeEngine />}
           {tab === "night" && <Night uid={uid} />}
           {tab === "tools" && <Tools />}

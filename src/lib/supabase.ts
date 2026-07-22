@@ -8,6 +8,7 @@ const KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_pUix6c1
 export const SUPABASE_URL = URL;
 export const SUPABASE_ANON = KEY;
 export const ADVISOR_FN = `${URL}/functions/v1/advisor`;
+export const KALSHI_FN = `${URL}/functions/v1/kalshi`;
 
 export const supabase = createClient(
   URL,
