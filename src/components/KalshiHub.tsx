@@ -13,6 +13,12 @@ type Market = { ticker: string; usd: number; trades: number; category: string; l
 type Whale = { ticker: string; usd: number; category: string; link: string; time: string };
 type Scan = { total: number; by_category: Cat[]; top_markets: Market[]; whales: Whale[]; ts: number };
 type Msg = { role: "user" | "assistant"; content: string };
+type Position = { ticker: string; position: number; exposure: number | string | null };
+type Fill = { ticker: string; side: string; count: number | string; price: string; time: string };
+type HubStatus = {
+  updated_at: string; connected: boolean; paper_mode: boolean; stop_loss_usd: number;
+  halted: boolean; balance: number | null; positions: Position[]; fills: Fill[];
+};
 
 const fmt = (n: number) => "$" + Math.round(n).toLocaleString();
 const CAT_BAR: Record<string, string> = {
@@ -46,6 +52,8 @@ export default function KalshiHub() {
   const [msgs, setMsgs] = useState<Msg[]>([{ role: "assistant", content: GREETING }]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [hub, setHub] = useState<HubStatus | null>(null);
+  const [hubMissing, setHubMissing] = useState(false);
   const scanRef = useRef<Scan | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -57,6 +65,18 @@ export default function KalshiHub() {
     } catch { setErr(true); }
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 8000); return () => clearInterval(t); }, [load]);
+
+  // Account/positions are pushed by the local hub (hub.py) into kalshi_hub_status —
+  // read-only here, exactly like the Money tab's TradingBot card. The trading key
+  // never leaves the machine; this app only ever shows what the hub chooses to send.
+  const loadHub = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("kalshi_hub_status").select("payload").eq("id", 1).maybeSingle();
+    if (error || !data) { setHubMissing(true); return; }
+    setHubMissing(false);
+    setHub(data.payload as HubStatus);
+  }, []);
+  useEffect(() => { loadHub(); const t = setInterval(loadHub, 15000); return () => clearInterval(t); }, [loadHub]);
   useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [msgs]);
 
   async function send() {
@@ -84,6 +104,68 @@ export default function KalshiHub() {
           Research desk. Live liquidity map + honest copilot. Real trades stay on the bot&apos;s
           own machine — this is where you watch, learn, and plan.
         </p>
+      </div>
+
+      {/* ACCOUNT — pushed by the local hub (read-only, key stays on the machine) */}
+      <div className="rounded-2xl bg-white/5 border border-white/10 p-5">
+        <div className="flex items-center justify-between">
+          <p className="text-xs uppercase tracking-widest opacity-60">🏦 Account</p>
+          {hub && (
+            <div className="flex gap-1.5 text-[10px] font-bold uppercase tracking-wider">
+              <span className={`px-2 py-0.5 rounded-full ${hub.paper_mode ? "bg-sky-500/20 text-sky-300" : "bg-red-500/20 text-red-300"}`}>
+                {hub.paper_mode ? "paper" : "live"}
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-white/10 opacity-70">stop ${hub.stop_loss_usd}</span>
+            </div>
+          )}
+        </div>
+        {hubMissing || !hub ? (
+          <p className="text-sm opacity-60 mt-2">
+            Local hub offline. Run <code className="bg-white/10 px-1 rounded">hub.py</code> on your machine
+            to stream balance &amp; positions here — the scanner and copilot below work either way.
+          </p>
+        ) : (() => {
+          const stale = (Date.now() - new Date(hub.updated_at).getTime()) / 6e4 > 2;
+          return (
+            <>
+              {hub.halted && (
+                <p className="mt-2 text-sm font-bold text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-3 py-2">
+                  ⛔ Kill switch tripped — bot halted.
+                </p>
+              )}
+              <p className="text-3xl font-extrabold mt-2">{hub.balance != null ? "$" + hub.balance.toFixed(2) : "—"}</p>
+              {hub.positions.length > 0 ? (
+                <div className="mt-3 space-y-1.5">
+                  {hub.positions.map((p) => (
+                    <div key={p.ticker} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 text-sm">
+                      <span className="font-semibold truncate">{p.ticker}</span>
+                      <span className="opacity-70">{p.position}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm opacity-50 mt-2">Flat — no open positions.</p>
+              )}
+              {hub.fills?.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-[10px] uppercase tracking-widest opacity-40 mb-1">recent fills</p>
+                  <div className="space-y-0.5">
+                    {hub.fills.slice(0, 6).map((f, i) => (
+                      <div key={i} className="flex justify-between text-xs opacity-70">
+                        <span className="truncate">{f.ticker}</span>
+                        <span>{f.side} {f.count}{f.price ? ` @ $${f.price}` : ""}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <p className={`text-[11px] mt-3 ${stale ? "text-orange-400" : "opacity-40"}`}>
+                {stale ? "⚠️ stale — hub may be offline · " : "live · "}
+                updated {new Date(hub.updated_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+              </p>
+            </>
+          );
+        })()}
       </div>
 
       {/* LIQUIDITY MAP */}
