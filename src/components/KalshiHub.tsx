@@ -1,12 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { supabase, KALSHI_FN, SUPABASE_ANON } from "@/lib/supabase";
 
-// Kalshi "Markets" section. Everything live here comes from the `kalshi` edge
-// function (public trades -> liquidity map + a Claude copilot on the shared AI
-// key). No trading key is involved — real orders stay gated on the bot's own
-// machine, never the public app. This section is for research + monitoring.
+// Kalshi "Markets" section — a trading-terminal view inside the daily app.
+// Data comes from the `kalshi` edge function (public trades -> liquidity map +
+// a Claude copilot) and the local hub's pushed account snapshot. No trading key
+// is involved; real orders stay gated on the bot's own machine.
+//
+// Visual design adapted from Krypt Trader (github.com/scripflipped/Krypt-Trader,
+// MIT) — dark terminal cards, indigo→purple→pink accent, glow on key numbers.
+// Our data, our strategies; their look.
 
 type Cat = { category: string; usd: number };
 type Market = { ticker: string; usd: number; trades: number; category: string; link: string };
@@ -21,15 +25,14 @@ type HubStatus = {
 };
 
 const fmt = (n: number) => "$" + Math.round(n).toLocaleString();
-const CAT_BAR: Record<string, string> = {
-  Weather: "bg-emerald-400", Crypto: "bg-amber-400", Sports: "bg-violet-400",
-  Mentions: "bg-rose-400", Economics: "bg-sky-400", Politics: "bg-pink-400", Other: "bg-white/25",
-};
 const CAT_TAG: Record<string, string> = {
-  Weather: "bg-emerald-500/15 text-emerald-300", Crypto: "bg-amber-500/15 text-amber-300",
-  Sports: "bg-violet-500/15 text-violet-300", Mentions: "bg-rose-500/15 text-rose-300",
-  Economics: "bg-sky-500/15 text-sky-300", Politics: "bg-pink-500/15 text-pink-300",
-  Other: "bg-white/10 opacity-70",
+  Weather: "bg-emerald-500/15 text-emerald-300 border-emerald-500/20",
+  Crypto: "bg-amber-500/15 text-amber-300 border-amber-500/20",
+  Sports: "bg-violet-500/15 text-violet-300 border-violet-500/20",
+  Mentions: "bg-rose-500/15 text-rose-300 border-rose-500/20",
+  Economics: "bg-sky-500/15 text-sky-300 border-sky-500/20",
+  Politics: "bg-pink-500/15 text-pink-300 border-pink-500/20",
+  Other: "bg-white/10 text-white/50 border-white/10",
 };
 
 async function callKalshi(body: Record<string, unknown>) {
@@ -45,6 +48,27 @@ async function callKalshi(body: Record<string, unknown>) {
 
 const GREETING =
   "This is the Kalshi research desk. Ask me what's liquid right now, what the research actually found, or how to plan a play. I can explain and advise — I can't place real trades (that stays on your machine).";
+
+// ── design primitives (Krypt-style terminal cards) ──
+function Card({ title, tag, children }: { title: string; tag?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-[#0e0f17]/70 overflow-hidden shadow-[0_10px_40px_-16px_rgba(168,85,247,0.25)]">
+      <div className="flex items-center justify-between border-b border-white/10 bg-white/[0.03] px-4 py-2.5">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/60">{title}</p>
+        {tag}
+      </div>
+      <div className="p-4">{children}</div>
+    </div>
+  );
+}
+function Stat({ label, value, accent }: { label: string; value: ReactNode; accent?: string }) {
+  return (
+    <div className="rounded-xl border border-white/10 bg-white/[0.02] px-3.5 py-3">
+      <p className="text-[10px] uppercase tracking-[0.15em] text-white/40">{label}</p>
+      <p className={`mt-1 text-xl font-bold tabular-nums ${accent ?? "text-white"}`}>{value}</p>
+    </div>
+  );
+}
 
 export default function KalshiHub() {
   const [scan, setScan] = useState<Scan | null>(null);
@@ -66,9 +90,6 @@ export default function KalshiHub() {
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 8000); return () => clearInterval(t); }, [load]);
 
-  // Account/positions are pushed by the local hub (hub.py) into kalshi_hub_status —
-  // read-only here, exactly like the Money tab's TradingBot card. The trading key
-  // never leaves the machine; this app only ever shows what the hub chooses to send.
   const loadHub = useCallback(async () => {
     const { data, error } = await supabase
       .from("kalshi_hub_status").select("payload").eq("id", 1).maybeSingle();
@@ -95,167 +116,166 @@ export default function KalshiHub() {
   }
 
   const maxCat = Math.max(1, ...(scan?.by_category ?? []).map((c) => c.usd));
+  const hubStale = hub ? (Date.now() - new Date(hub.updated_at).getTime()) / 6e4 > 2 : false;
 
   return (
-    <div className="space-y-4">
-      <div>
-        <p className="text-xs uppercase tracking-widest opacity-60">🎲 Kalshi · Markets</p>
-        <p className="text-sm opacity-60 mt-1">
-          Research desk. Live liquidity map + honest copilot. Real trades stay on the bot&apos;s
-          own machine — this is where you watch, learn, and plan.
+    <div className="relative space-y-4">
+      {/* ambient glow backdrop */}
+      <div className="pointer-events-none absolute -top-8 left-0 right-0 h-40 bg-[radial-gradient(600px_circle_at_20%_0%,rgba(168,85,247,0.12),transparent_60%),radial-gradient(500px_circle_at_90%_0%,rgba(236,72,153,0.08),transparent_60%)]" />
+
+      {/* header */}
+      <div className="relative">
+        <h1 className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+          Kalshi Markets
+        </h1>
+        <p className="mt-0.5 text-xs text-white/50">
+          Research desk · live liquidity, whale flow &amp; an honest copilot. Trades stay gated on the bot&apos;s machine.
         </p>
       </div>
 
-      {/* ACCOUNT — pushed by the local hub (read-only, key stays on the machine) */}
-      <div className="rounded-2xl bg-white/5 border border-white/10 p-5">
-        <div className="flex items-center justify-between">
-          <p className="text-xs uppercase tracking-widest opacity-60">🏦 Account</p>
-          {hub && (
-            <div className="flex gap-1.5 text-[10px] font-bold uppercase tracking-wider">
-              <span className={`px-2 py-0.5 rounded-full ${hub.paper_mode ? "bg-sky-500/20 text-sky-300" : "bg-red-500/20 text-red-300"}`}>
-                {hub.paper_mode ? "paper" : "live"}
-              </span>
-              <span className="px-2 py-0.5 rounded-full bg-white/10 opacity-70">stop ${hub.stop_loss_usd}</span>
-            </div>
-          )}
-        </div>
+      {/* stat row */}
+      <div className="relative grid grid-cols-3 gap-3">
+        <Stat label="Balance"
+          value={hub?.balance != null ? "$" + hub.balance.toFixed(2) : "—"}
+          accent="text-emerald-400 drop-shadow-[0_0_10px_rgba(34,197,94,0.35)]" />
+        <Stat label="Mode"
+          value={<span className={hub && !hub.paper_mode ? "text-rose-400" : "text-sky-400"}>{hub ? (hub.paper_mode ? "PAPER" : "LIVE") : "—"}</span>} />
+        <Stat label="Trades scanned"
+          value={scan ? scan.total.toLocaleString() : "…"} accent="text-white/90" />
+      </div>
+
+      {/* account */}
+      <Card title="Account"
+        tag={hub && <span className="text-[10px] text-white/40">stop ${hub.stop_loss_usd}</span>}>
         {hubMissing || !hub ? (
-          <p className="text-sm opacity-60 mt-2">
-            Local hub offline. Run <code className="bg-white/10 px-1 rounded">hub.py</code> on your machine
-            to stream balance &amp; positions here — the scanner and copilot below work either way.
+          <p className="text-sm text-white/50">
+            Local hub offline. Run <code className="rounded bg-white/10 px-1">hub.py</code> to stream balance &amp; positions.
           </p>
-        ) : (() => {
-          const stale = (Date.now() - new Date(hub.updated_at).getTime()) / 6e4 > 2;
-          return (
-            <>
-              {hub.halted && (
-                <p className="mt-2 text-sm font-bold text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-3 py-2">
-                  ⛔ Kill switch tripped — bot halted.
-                </p>
-              )}
-              <p className="text-3xl font-extrabold mt-2">{hub.balance != null ? "$" + hub.balance.toFixed(2) : "—"}</p>
-              {hub.positions.length > 0 ? (
-                <div className="mt-3 space-y-1.5">
-                  {hub.positions.map((p) => (
-                    <div key={p.ticker} className="flex items-center justify-between rounded-xl bg-white/5 px-3 py-2 text-sm">
-                      <span className="font-semibold truncate">{p.ticker}</span>
-                      <span className="opacity-70">{p.position}</span>
+        ) : (
+          <>
+            {hub.halted && (
+              <p className="mb-2 rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm font-bold text-rose-400">
+                ⛔ Kill switch tripped — bot halted.
+              </p>
+            )}
+            {hub.positions.length > 0 ? (
+              <div className="space-y-1.5">
+                {hub.positions.map((p) => (
+                  <div key={p.ticker} className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2 text-sm">
+                    <span className="truncate font-medium text-white/80">{p.ticker}</span>
+                    <span className="text-white/50">{p.position}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-white/40">Flat — no open positions.</p>
+            )}
+            {hub.fills?.length > 0 && (
+              <div className="mt-3">
+                <p className="mb-1 text-[10px] uppercase tracking-[0.15em] text-white/30">recent fills</p>
+                <div className="space-y-0.5">
+                  {hub.fills.slice(0, 6).map((f, i) => (
+                    <div key={i} className="flex justify-between text-xs text-white/50">
+                      <span className="truncate">{f.ticker}</span>
+                      <span className="tabular-nums">{f.side} {f.count}{f.price ? ` @ $${f.price}` : ""}</span>
                     </div>
                   ))}
                 </div>
-              ) : (
-                <p className="text-sm opacity-50 mt-2">Flat — no open positions.</p>
-              )}
-              {hub.fills?.length > 0 && (
-                <div className="mt-3">
-                  <p className="text-[10px] uppercase tracking-widest opacity-40 mb-1">recent fills</p>
-                  <div className="space-y-0.5">
-                    {hub.fills.slice(0, 6).map((f, i) => (
-                      <div key={i} className="flex justify-between text-xs opacity-70">
-                        <span className="truncate">{f.ticker}</span>
-                        <span>{f.side} {f.count}{f.price ? ` @ $${f.price}` : ""}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <p className={`text-[11px] mt-3 ${stale ? "text-orange-400" : "opacity-40"}`}>
-                {stale ? "⚠️ stale — hub may be offline · " : "live · "}
-                updated {new Date(hub.updated_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
-              </p>
-            </>
-          );
-        })()}
-      </div>
+              </div>
+            )}
+            <p className={`mt-3 text-[11px] ${hubStale ? "text-amber-400" : "text-white/30"}`}>
+              {hubStale ? "⚠ stale — hub may be offline · " : "● live · "}
+              {new Date(hub.updated_at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+            </p>
+          </>
+        )}
+      </Card>
 
-      {/* LIQUIDITY MAP */}
-      <div className="rounded-2xl bg-white/5 border border-white/10 p-5">
-        <div className="flex items-center justify-between">
-          <p className="text-xs uppercase tracking-widest opacity-60">📊 Where the money is</p>
-          <span className={`text-[10px] ${err ? "text-orange-400" : "opacity-40"}`}>
-            {err ? "reconnecting…" : scan ? `${scan.total.toLocaleString()} trades scanned` : "loading…"}
-          </span>
-        </div>
+      {/* liquidity map */}
+      <Card title="Where the money is"
+        tag={<span className={`text-[10px] ${err ? "text-amber-400" : "text-white/40"}`}>{err ? "reconnecting…" : "last 90m turnover"}</span>}>
         {!scan ? (
-          <p className="text-sm opacity-50 mt-3">Scanning the live trade feed…</p>
+          <p className="text-sm text-white/40">Scanning the live trade feed…</p>
         ) : (
-          <div className="mt-3 space-y-2">
+          <div className="space-y-2.5">
             {scan.by_category.map((c) => (
               <div key={c.category}>
-                <div className="flex justify-between text-xs mb-0.5">
-                  <span className={`px-1.5 rounded ${CAT_TAG[c.category] ?? CAT_TAG.Other}`}>{c.category}</span>
-                  <b className="opacity-80">{fmt(c.usd)}</b>
+                <div className="mb-1 flex items-center justify-between text-xs">
+                  <span className={`rounded border px-1.5 py-0.5 text-[10px] ${CAT_TAG[c.category] ?? CAT_TAG.Other}`}>{c.category}</span>
+                  <b className="tabular-nums text-white/70">{fmt(c.usd)}</b>
                 </div>
-                <div className="h-1.5 rounded-full bg-black/30 overflow-hidden">
-                  <div className={`h-full ${CAT_BAR[c.category] ?? CAT_BAR.Other}`}
+                <div className="h-1.5 overflow-hidden rounded-full bg-black/40">
+                  <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500"
                     style={{ width: `${Math.max(2, (100 * c.usd) / maxCat)}%` }} />
                 </div>
               </div>
             ))}
           </div>
         )}
-      </div>
+      </Card>
 
-      {/* TOP MARKETS */}
+      {/* top markets */}
       {scan && scan.top_markets.length > 0 && (
-        <div className="rounded-2xl bg-white/5 border border-white/10 p-5">
-          <p className="text-xs uppercase tracking-widest opacity-60 mb-2">🔥 Most-traded markets</p>
-          <div className="space-y-1">
+        <Card title="Most-traded markets">
+          <div className="space-y-0.5">
             {scan.top_markets.slice(0, 10).map((m) => (
               <a key={m.ticker} href={m.link} target="_blank" rel="noreferrer"
-                className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-white/5 text-sm">
-                <span className={`text-[10px] px-1.5 rounded ${CAT_TAG[m.category] ?? CAT_TAG.Other}`}>{m.category.slice(0, 4)}</span>
-                <span className="flex-1 truncate opacity-80">{m.ticker}</span>
-                <span className="text-emerald-400 font-semibold tabular-nums">{fmt(m.usd)}</span>
+                className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm transition hover:bg-white/5">
+                <span className={`rounded border px-1.5 py-0.5 text-[10px] ${CAT_TAG[m.category] ?? CAT_TAG.Other}`}>{m.category.slice(0, 4)}</span>
+                <span className="flex-1 truncate text-white/70">{m.ticker}</span>
+                <span className="font-semibold tabular-nums text-emerald-400">{fmt(m.usd)}</span>
               </a>
             ))}
           </div>
-        </div>
+        </Card>
       )}
 
-      {/* WHALE FEED */}
+      {/* whales */}
       {scan && scan.whales.length > 0 && (
-        <div className="rounded-2xl bg-white/5 border border-white/10 p-5">
-          <p className="text-xs uppercase tracking-widest opacity-60 mb-2">🐋 Big trades (≥ $1k)</p>
-          <div className="space-y-1 max-h-52 overflow-auto">
+        <Card title="Whale flow" tag={<span className="text-[10px] text-white/40">≥ $1k</span>}>
+          <div className="max-h-56 space-y-0.5 overflow-auto">
             {scan.whales.slice(0, 18).map((w, i) => (
               <a key={`${w.ticker}-${w.time}-${i}`} href={w.link} target="_blank" rel="noreferrer"
-                className="flex items-center gap-2 text-sm hover:bg-white/5 rounded px-2 py-1">
-                <span className="text-emerald-400 font-semibold tabular-nums w-16">{fmt(w.usd)}</span>
-                <span className={`text-[10px] px-1.5 rounded ${CAT_TAG[w.category] ?? CAT_TAG.Other}`}>{w.category.slice(0, 4)}</span>
-                <span className="flex-1 truncate opacity-70">{w.ticker}</span>
+                className="flex items-center gap-2 rounded px-2 py-1 text-sm transition hover:bg-white/5">
+                <span className="w-16 font-semibold tabular-nums text-emerald-400">{fmt(w.usd)}</span>
+                <span className={`rounded border px-1.5 py-0.5 text-[10px] ${CAT_TAG[w.category] ?? CAT_TAG.Other}`}>{w.category.slice(0, 4)}</span>
+                <span className="flex-1 truncate text-white/60">{w.ticker}</span>
               </a>
             ))}
           </div>
-        </div>
+        </Card>
       )}
 
-      {/* COPILOT */}
-      <div className="rounded-2xl bg-white/5 border border-white/10 p-5">
-        <p className="text-xs uppercase tracking-widest opacity-60 mb-2">💬 Copilot</p>
-        <div ref={logRef} className="max-h-72 overflow-auto space-y-2 mb-3">
+      {/* copilot */}
+      <Card title="Copilot">
+        <div ref={logRef} className="mb-3 max-h-72 space-y-2 overflow-auto">
           {msgs.map((m, i) => (
             <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[85%] px-3 py-2 rounded-2xl text-sm whitespace-pre-wrap ${
-                m.role === "user" ? "bg-[var(--neon)]/20 text-[var(--neon)] rounded-br-sm"
-                  : "bg-white/5 border border-white/10 rounded-bl-sm"}`}>
+              <div className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm ${
+                m.role === "user"
+                  ? "rounded-br-sm bg-gradient-to-r from-indigo-500/25 to-purple-500/25 text-white"
+                  : "rounded-bl-sm border border-white/10 bg-white/[0.03] text-white/80"}`}>
                 {m.content}
               </div>
             </div>
           ))}
-          {busy && <div className="text-xs opacity-40 px-1">thinking…</div>}
+          {busy && <div className="px-1 text-xs text-white/40">thinking…</div>}
         </div>
         <div className="flex gap-2">
           <input value={input} onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && send()}
             placeholder="what's liquid? what did the research find? plan a play…"
-            className="flex-1 min-w-0 rounded-xl bg-white/5 border border-white/10 px-3 py-2.5 outline-none focus:border-[var(--neon)]/50 transition text-sm" />
+            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-sm outline-none transition focus:border-purple-400/50" />
           <button onClick={send} disabled={busy}
-            className="px-4 rounded-xl bg-[var(--neon)] text-black font-bold active:scale-95 disabled:opacity-50">
+            className="rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 px-4 font-bold text-white shadow-[0_0_20px_-4px_rgba(168,85,247,0.6)] transition active:scale-95 disabled:opacity-50">
             {busy ? "…" : "Ask"}
           </button>
         </div>
-      </div>
+      </Card>
+
+      <p className="pt-1 text-center text-[10px] text-white/25">
+        terminal design adapted from Krypt Trader (MIT) · data &amp; strategies our own
+      </p>
     </div>
   );
 }
