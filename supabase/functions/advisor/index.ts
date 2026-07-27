@@ -368,11 +368,17 @@ async function readNotebookSources(token: string, notebookId: string): Promise<{
   } catch { failed = true; }
   const srcRows = rows.filter((x) => (x.content ?? "").trim());
   const MIN_SLICE = 500;
-  let budget = 40000;
+  // Budget adapts to how many sources there are: ONE big document (a pasted
+  // book or a whole notebook file) should contribute most of itself; many
+  // sources share the pool. Opus has the context room and these are
+  // personal-scale docs, so we can be generous.
+  const TOTAL = 150000;
+  const per = Math.min(120000, Math.max(8000, Math.floor(TOTAL / Math.max(1, srcRows.length))));
+  let budget = TOTAL;
   const blocks: string[] = [];
   for (const src of srcRows) {
     if (budget < MIN_SLICE) break;
-    const slice = src.content.slice(0, Math.min(6000, budget));
+    const slice = src.content.slice(0, Math.min(per, budget));
     budget -= slice.length;
     const cut = slice.length < src.content.length ? `\n[…source truncated for length…]` : "";
     blocks.push(`--- SOURCE: "${src.title}" (${src.kind}) ---\n${slice}${cut}`);

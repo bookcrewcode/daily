@@ -43,6 +43,27 @@ async function getUser(token: string) {
   return await r.json();
 }
 
+// The headless local hub can't hold a user JWT, so its status push is gated by
+// a token whose SHA-256 hash is stored in Vault — the raw token never leaves
+// the hub's machine, and this function only ever knows the hash.
+async function sha256hex(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+let cachedHash = "";
+async function pushHash(): Promise<string> {
+  if (cachedHash) return cachedHash;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_secret`, {
+      method: "POST",
+      headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ secret_name: "kalshi_push_token_sha256" }),
+    });
+    if (r.ok) cachedHash = ((await r.json()) as string | null) ?? "";
+  } catch { /* unreadable -> push stays forbidden */ }
+  return cachedHash;
+}
+
 // --------------------------------------------------------------------------
 // Scanner — public Kalshi trades -> liquidity map (stateless snapshot).
 // --------------------------------------------------------------------------
@@ -159,12 +180,28 @@ edge/fees/risk, and how to paper-test it — never claim you executed anything.`
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
+    const body = await req.json().catch(() => ({}));
+    const action = body.action || "scan";
+
+    // Machine-to-machine: the local hub pushes its account snapshot here,
+    // authorized by the push token (hash-checked), NOT a user session.
+    if (action === "push") {
+      const provided = req.headers.get("x-push-token") || body.token || "";
+      const expected = await pushHash();
+      if (!expected || (await sha256hex(provided)) !== expected) return json({ error: "forbidden" }, 403);
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/kalshi_hub_status`, {
+        method: "POST",
+        headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`,
+                   "Content-Type": "application/json", Prefer: "resolution=merge-duplicates" },
+        body: JSON.stringify({ id: 1, payload: body.payload || {}, updated_at: new Date().toISOString() }),
+      });
+      return json({ ok: r.ok }, r.ok ? 200 : 502);
+    }
+
+    // User-facing: scan + chat require a valid Supabase session.
     const token = (req.headers.get("authorization") || "").replace("Bearer ", "");
     const user = token ? await getUser(token) : null;
     if (!user) return json({ error: "unauthorized" }, 401);
-
-    const body = await req.json().catch(() => ({}));
-    const action = body.action || "scan";
     if (action === "scan") return json(await scan());
     if (action === "chat") return json({ reply: await chat(body.message || "", body.history || [], body.scan || null) });
     return json({ error: "unknown action" }, 400);
