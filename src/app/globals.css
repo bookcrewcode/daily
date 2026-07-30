@@ -7,6 +7,12 @@
   --neon: #a78bfa;
   --neon-dim: rgba(167, 139, 250, 0.14);
   --gold: #fbbf24;
+  /* Study desk: a warm "paper" reading surface + softer ink for long-form.
+     Warmth is ambient material (candlelight on paper), NOT a second accent —
+     violet stays the one accent for anything interactive. */
+  --paper: rgba(255, 242, 222, 0.09);
+  --paper-border: rgba(255, 231, 190, 0.20);
+  --ink-soft: #dbdeeb;
 }
 
 body {
@@ -125,3 +131,50 @@ textarea {
   pointer-events: none;
   z-index: 100;
 }
+
+/* ── Study desk ─────────────────────────────────────────────────────
+   The Learning section reads like a book, not a dashboard: an editorial
+   serif, a comfortable measure, generous leading. This is where the app
+   slows down and gets quiet. */
+.study-prose {
+  font-family: var(--font-reading), Georgia, "Times New Roman", serif;
+  font-size: 1.08rem;
+  line-height: 1.72;
+  letter-spacing: 0.003em;
+  color: var(--ink-soft);
+}
+.study-prose p { margin: 0 0 0.85em; }
+.study-prose p:last-child { margin-bottom: 0; }
+.study-prose strong { color: var(--foreground); font-weight: 600; }
+.study-prose em { font-style: italic; color: #e7e9f3; }
+.study-prose h3 { font-family: var(--font-reading), serif; font-size: 1.15rem; letter-spacing: 0; margin: 0.2em 0 0.4em; }
+
+/* warm paper surface for reading — distinct from the cool dashboard cards */
+.paper {
+  background: var(--paper);
+  border: 1px solid var(--paper-border);
+}
+
+/* The mastery spine: a vertical thread the chapters hang off, that fills as
+   you clear levels — the Learning section's signature. */
+.spine-track { background: rgba(255, 255, 255, 0.09); }
+.spine-fill { background: linear-gradient(180deg, var(--neon), #818cf8); box-shadow: 0 0 10px rgba(167, 139, 250, 0.4); }
+
+/* card flip for flashcards — grid stacking so the container sizes to the
+   TALLER of the two faces (a long answer can't overflow past the front). */
+.flip-3d { display: grid; transform-style: preserve-3d; transition: transform 0.45s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.flip-3d.flipped { transform: rotateY(180deg); }
+.flip-face { grid-area: 1 / 1; backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+.flip-back { transform: rotateY(180deg); }
+
+/* keyboard focus — the app kills tap-highlight, so give keyboard users a ring */
+button:focus-visible, a:focus-visible, [role="button"]:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--neon);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+@keyframes riseIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.rise-in { animation: riseIn 0.28s cubic-bezier(0.2, 0.7, 0.2, 1); }

@@ -65,15 +65,72 @@ export function SectionTitle({ children, id }: { children: React.ReactNode; id?:
 
 // ── Shared visual primitives (design system) ─────────────────────────
 export function Card({ children, className = "", tone = "default", padded = true }: {
-  children: React.ReactNode; className?: string; tone?: "default" | "neon" | "warn"; padded?: boolean;
+  children: React.ReactNode; className?: string; tone?: "default" | "neon" | "warn" | "paper"; padded?: boolean;
 }) {
   const tones: Record<string, string> = {
     default: "bg-white/5 border-white/10 shadow-[0_2px_12px_rgba(0,0,0,0.25)]",
     neon: "bg-[var(--neon)]/10 border-[var(--neon)]/40 shadow-[0_2px_16px_rgba(167,139,250,0.08)]",
-    warn: "bg-orange-500/10 border-orange-500/40",
+    warn: "bg-orange-500/10 border-orange-500/40 shadow-[0_2px_12px_rgba(0,0,0,0.22)]",
+    paper: "paper shadow-[0_4px_24px_rgba(0,0,0,0.3)]",
   };
   return (
     <div className={`rounded-2xl border backdrop-blur-[2px] ${tones[tone]} ${padded ? "p-4" : ""} ${className}`}>{children}</div>
+  );
+}
+
+// Clean segmented control — one accent, muscle-memory friendly. For the
+// notebook's section switcher (Guide / Learn / Cards / Map / Chat).
+export function Segmented<T extends string>({ value, onChange, options }: {
+  value: T; onChange: (v: T) => void; options: { key: T; label: string; icon?: string }[];
+}) {
+  return (
+    // scrolls rather than overflowing when there are many tabs (6 at 375px)
+    <div className="flex gap-1 p-1 rounded-xl bg-white/5 border border-white/10 overflow-x-auto no-scrollbar">
+      {options.map((o) => (
+        <button key={o.key} onClick={() => onChange(o.key)}
+          className={`shrink-0 whitespace-nowrap px-3 py-2.5 rounded-lg text-xs font-semibold transition-colors duration-150 ${value === o.key ? "bg-[var(--neon)] text-black" : "opacity-55 hover:opacity-90"}`}>
+          {o.icon ? <span className="mr-1">{o.icon}</span> : null}{o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// Minimal, SAFE inline renderer — **bold**, *italic*, `code`. No innerHTML.
+function renderInline(text: string, keyBase: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+  let last = 0, i = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const tok = m[0];
+    if (tok.startsWith("**")) parts.push(<strong key={`${keyBase}-${i++}`}>{tok.slice(2, -2)}</strong>);
+    else if (tok.startsWith("`")) parts.push(<code key={`${keyBase}-${i++}`} className="px-1 rounded bg-white/10 text-[0.88em] font-mono">{tok.slice(1, -1)}</code>);
+    else parts.push(<em key={`${keyBase}-${i++}`}>{tok.slice(1, -1)}</em>);
+    last = m.index + tok.length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+// Editorial prose — teaching text reads like a book (serif, generous leading).
+export function Prose({ text, className = "" }: { text: string; className?: string }) {
+  const paras = (text ?? "").split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  return (
+    <div className={`study-prose ${className}`}>
+      {paras.map((p, i) => {
+        if (/^#{1,3}\s/.test(p)) return <h3 key={i}>{renderInline(p.replace(/^#{1,3}\s+/, ""), `h${i}`)}</h3>;
+        const lines = p.split(/\n/);
+        return (
+          <p key={i}>
+            {lines.map((line, j) => (
+              <span key={j}>{renderInline(line, `p${i}-${j}`)}{j < lines.length - 1 ? <br /> : null}</span>
+            ))}
+          </p>
+        );
+      })}
+    </div>
   );
 }
 

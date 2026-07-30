@@ -728,7 +728,7 @@ ${block}`;
       if (failed) return err("Couldn't read your sources — try again.");
       const sys = `You are Ben's tutor building ONE chapter of a leveled course from his OWN material. Chapter: "${chTitle}"${chObjective ? ` — objective: ${chObjective}` : ""}. He has ADHD and learns by the 3C protocol: trunk first, the vital 20%, chunks of ≤4 ideas, CONSTANT retrieval.
 
-Teach this chapter as 3-5 short CHUNKS. Each chunk = a tight 2-4 sentence teaching passage (plain language, an analogy where it helps, anchored to what a beginner already knows), then ONE quick multiple-choice CHECK on that chunk (recognition, instant) to keep him active. After the chunks, write 3-4 FREE-RECALL questions (no choices) that test whether he truly gets the chapter — these are the gate to pass it.
+Teach this chapter as 3-5 CHUNKS. Each chunk = a SUBSTANTIAL teaching passage (a solid paragraph or two): actually TEACH the idea — build the intuition, give a concrete example or a vivid analogy anchored to what a beginner already knows, and say why it matters. Never a one-line definition; make him understand, not just recognize. Then ONE quick multiple-choice CHECK on that chunk (recognition, instant) to keep him active. After the chunks, write 3-4 FREE-RECALL questions (no choices) that test whether he truly gets the chapter — these are the gate to pass it.
 
 Ground everything in his material below. If the material is thin, teach what's there and say what's missing — never invent facts.
 
@@ -738,14 +738,14 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block || "(no sources yet — teach the objective from general knowledge, and say plainly you're doing so)"}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Build this chapter." }], 3200, ANTHROPIC_API_KEY);
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Build this chapter." }], 4500, ANTHROPIC_API_KEY);
         const parsed = JSON.parse(stripFences(raw));
         const chunks = (Array.isArray(parsed?.chunks) ? parsed.chunks : []).slice(0, 6).map((c: Record<string, unknown>) => {
           const ch = (c?.check ?? {}) as Record<string, unknown>;
           const choices = (Array.isArray(ch.choices) ? ch.choices : []).map((x: unknown) => String(x).slice(0, 240)).slice(0, 6);
           let ans = Number(ch.answer); if (!Number.isInteger(ans) || ans < 0 || ans >= choices.length) ans = 0;
           return {
-            teach: String(c?.teach ?? "").slice(0, 1600),
+            teach: String(c?.teach ?? "").slice(0, 2600),
             check: choices.length >= 2 ? { q: String(ch.q ?? "").slice(0, 300), choices, answer: ans, explain: String(ch.explain ?? "").slice(0, 300) } : null,
           };
         }).filter((c: { teach: string }) => c.teach);
@@ -829,6 +829,104 @@ ${block}`;
         if (segments.length < 2) return err("Couldn't write the episode — try again.");
         return ok({ title: String(parsed?.title ?? "Audio overview").slice(0, 160), segments });
       } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? TOOLONG_MSG : "Couldn't write the episode right now — try again."); }
+    }
+    // A rich, readable STUDY GUIDE — the thing he actually learns from.
+    if (advisor === "study-guide") {
+      if (!topicId) return err("No notebook given.");
+      const { block, count, failed } = await readNotebookSources(token, topicId);
+      if (failed) return err("Couldn't read your sources — try again.");
+      if (!count) return err("Add sources first — the study guide is built from your material.");
+      const title = clip(body.title, 160);
+      const sys = `You are writing a genuinely useful STUDY GUIDE for Ben's notebook "${title}", from his OWN material. He has ADHD and learns by first principles (trunk before leaves), the vital 20%, and analogies anchored to what he already knows. Make something he'd actually read and learn from — clear, concrete, zero filler.
+Reply ONLY valid JSON, no fences:
+{"tldr": "3-4 sentences capturing the whole thing in plain language", "trunk": "the single foundational truth everything rests on, one sentence", "big_ideas": [{"title": "idea name", "point": "3-5 sentences that actually TEACH it, with a concrete example or analogy"}], "key_terms": [{"term": "term", "definition": "plain-language definition"}], "misconceptions": ["a common wrong belief → the correction, one line"], "so_what": "2-3 sentences on why it matters and how to use it"}
+Aim for 5-7 big_ideas, 6-12 key_terms, 2-4 misconceptions. Ground everything in his material.
+
+HIS MATERIAL:
+${block}`;
+      try {
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write the study guide." }], 5000, ANTHROPIC_API_KEY);
+        const p = JSON.parse(stripFences(raw));
+        const guide = {
+          tldr: String(p?.tldr ?? "").slice(0, 1400),
+          trunk: String(p?.trunk ?? "").slice(0, 400),
+          big_ideas: (Array.isArray(p?.big_ideas) ? p.big_ideas : []).slice(0, 10).map((x: Record<string, unknown>) => ({ title: String(x?.title ?? "").slice(0, 160), point: String(x?.point ?? "").slice(0, 1400) })).filter((x: { title: string; point: string }) => x.title && x.point),
+          key_terms: (Array.isArray(p?.key_terms) ? p.key_terms : []).slice(0, 24).map((x: Record<string, unknown>) => ({ term: String(x?.term ?? "").slice(0, 120), definition: String(x?.definition ?? "").slice(0, 600) })).filter((x: { term: string }) => x.term),
+          misconceptions: (Array.isArray(p?.misconceptions) ? p.misconceptions : []).slice(0, 8).map((x: unknown) => String(x).slice(0, 400)).filter(Boolean),
+          so_what: String(p?.so_what ?? "").slice(0, 900),
+        };
+        if (!guide.big_ideas.length) return err("Couldn't build the study guide — try again.");
+        return ok({ guide });
+      } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? TOOLONG_MSG : "Couldn't build the study guide right now — try again."); }
+    }
+
+    // Spaced-repetition FLASHCARDS from his material.
+    if (advisor === "flashcards") {
+      if (!topicId) return err("No notebook given.");
+      const { block, count, failed } = await readNotebookSources(token, topicId);
+      if (failed) return err("Couldn't read your sources — try again.");
+      if (!count) return err("Add sources first — flashcards are built from your material.");
+      const n = Math.min(30, Math.max(6, Number(body.n) || 16));
+      const focus = clip(body.chapterTitle, 200);
+      const sys = `Make ${n} high-quality spaced-repetition FLASHCARDS from Ben's OWN material${focus ? ` focused on "${focus}"` : ""}. Follow proven card-writing rules: ONE fact per card; the front phrased for ACTIVE RECALL (not yes/no); the back short and precise; no ambiguity. Favor "why/how"/application cards over pure definitions where the material supports it. Ground every card in his material.
+Reply ONLY valid JSON, no fences:
+{"cards": [{"front": "the question/prompt", "back": "the precise answer", "hint": "short hint or empty string"}]}
+
+HIS MATERIAL:
+${block}`;
+      try {
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write the flashcards." }], 4500, ANTHROPIC_API_KEY);
+        const p = JSON.parse(stripFences(raw));
+        const cards = (Array.isArray(p?.cards) ? p.cards : []).slice(0, 40).map((c: Record<string, unknown>) => ({ front: String(c?.front ?? "").slice(0, 600), back: String(c?.back ?? "").slice(0, 1000), hint: String(c?.hint ?? "").slice(0, 300) })).filter((c: { front: string; back: string }) => c.front && c.back);
+        if (!cards.length) return err("Couldn't make cards from that — try again.");
+        return ok({ cards });
+      } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? TOOLONG_MSG : "Couldn't make the flashcards right now — try again."); }
+    }
+
+    // A MIND MAP of the notebook's concepts.
+    if (advisor === "mindmap") {
+      if (!topicId) return err("No notebook given.");
+      const { block, count, failed } = await readNotebookSources(token, topicId);
+      if (failed) return err("Couldn't read your sources — try again.");
+      if (!count) return err("Add sources first — the mind map is built from your material.");
+      const title = clip(body.title, 160);
+      const sys = `Build a MIND MAP of Ben's notebook "${title}" from his OWN material — the concept structure: the trunk at the center, the main branches, and a few leaves under each. Keep every label short (2-5 words). 3-6 branches, each with 2-5 children. Ground it in his material.
+Reply ONLY valid JSON, no fences:
+{"root": "the central concept (short)", "branches": [{"label": "branch concept", "children": ["leaf", "leaf"]}]}
+
+HIS MATERIAL:
+${block}`;
+      try {
+        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Build the mind map." }], 2000, ANTHROPIC_API_KEY);
+        const p = JSON.parse(stripFences(raw));
+        const branches = (Array.isArray(p?.branches) ? p.branches : []).slice(0, 8).map((b: Record<string, unknown>) => ({ label: String(b?.label ?? "").slice(0, 120), children: (Array.isArray(b?.children) ? b.children : []).slice(0, 8).map((c: unknown) => String(c).slice(0, 120)).filter(Boolean) })).filter((b: { label: string }) => b.label);
+        if (!branches.length) return err("Couldn't build the mind map — try again.");
+        return ok({ root: String(p?.root ?? title).slice(0, 120), branches });
+      } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? TOOLONG_MSG : "Couldn't build the mind map right now — try again."); }
+    }
+
+    // In-chapter COACH — the learner steers ("explain more", "example", "simpler").
+    if (advisor === "coach") {
+      if (!topicId) return err("No notebook given.");
+      const ask = clip(body.ask, 400);
+      const context = clip(body.context, 4000);
+      const { block, failed } = await readNotebookSources(token, topicId);
+      // a FAILED read must not read as "he has no sources" (same discipline as
+      // the other modes) — tell the model plainly rather than letting it claim
+      // he has no material.
+      const material = failed
+        ? "(his source material could not be read this turn — do NOT tell him he has no sources; help from general knowledge and say briefly that his material didn't load)"
+        : block ? block.slice(0, 60000) : "(no sources added to this notebook yet)";
+      const sys = `You are Ben's tutor helping him through ONE specific point he's learning right now. He has ADHD — be concrete, warm, and brief (under 130 words), plain language, an example or analogy if it helps. He is currently on this teaching point:
+"""${context}"""
+Ground your help in his material below when relevant; if you go beyond it, say so in a few words. Answer his request directly, don't pad.
+
+HIS MATERIAL (for grounding):
+${material}`;
+      try {
+        const text = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: ask || "Explain this a bit more." }], 500, ANTHROPIC_API_KEY);
+        return ok({ text });
+      } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? "That point was too long to expand — ask about a smaller piece." : "Couldn't help with that right now — try again."); }
     }
     // ─── end notebook modes ─────────────────────────────────────────────────
 

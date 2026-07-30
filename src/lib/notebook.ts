@@ -36,6 +36,16 @@ export type NBChapter = {
 export type GradeResult = { score: number; correct: boolean; feedback: string; missed: string };
 export type PodSegment = { speaker: "A" | "B"; text: string };
 
+export type StudyGuide = {
+  tldr: string;
+  trunk: string;
+  big_ideas: { title: string; point: string }[];
+  key_terms: { term: string; definition: string }[];
+  misconceptions: string[];
+  so_what: string;
+};
+export type MindMap = { root: string; branches: { label: string; children: string[] }[] };
+
 export const PDF_FN = `${SUPABASE_URL}/functions/v1/pdf`;
 export const TRANSCRIPT_FN = `${SUPABASE_URL}/functions/v1/transcript`;
 

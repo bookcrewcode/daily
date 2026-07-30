@@ -1,10 +1,12 @@
 import type { Metadata, Viewport } from "next";
-import { Space_Grotesk, Inter } from "next/font/google";
+import { Space_Grotesk, Inter, Newsreader } from "next/font/google";
 import "./globals.css";
 
 // self-hosted at build time by next/font — no external requests at runtime
 const display = Space_Grotesk({ subsets: ["latin"], variable: "--font-display", weight: ["500", "600", "700"] });
 const body = Inter({ subsets: ["latin"], variable: "--font-body" });
+// editorial serif for study/teaching long-form — the Learning "study desk" voice
+const reading = Newsreader({ subsets: ["latin"], variable: "--font-reading", weight: ["400", "500", "600"], style: ["normal", "italic"] });
 
 export const metadata: Metadata = {
   title: "Daily",
@@ -38,7 +40,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`h-full antialiased ${display.variable} ${body.variable}`}>
+    <html lang="en" className={`h-full antialiased ${display.variable} ${body.variable} ${reading.variable}`}>
       <body className="min-h-full">{children}</body>
     </html>
   );
