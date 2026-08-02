@@ -312,6 +312,12 @@ async function callClaude(model: string, system: string, messages: unknown[], ma
   if (data?.stop_reason === "max_tokens") throw new Error("TOOLONG");
   return (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
 }
+// Model routing — cost discipline. Ben pays for this himself out of a small
+// capped personal workspace, so only the RARE, heavy generation calls get Opus;
+// the frequent ones (grading, coaching, cards, maps) run on Haiku, which is
+// ~10-20x cheaper and plenty good at those bounded, well-specified jobs.
+const HEAVY = "claude-opus-4-8";                 // deep generation, run rarely
+const LIGHT = "claude-haiku-4-5-20251001";       // frequent, bounded tasks
 const TOOLONG_MSG = "That's a lot of material — I couldn't finish it in one pass. Split it into a smaller notebook (fewer or shorter sources) and try again.";
 // Translate the TOOLONG sentinel into a real message wherever a catch surfaces
 // e.message to the user, so the raw sentinel never leaks to the UI.
@@ -446,7 +452,7 @@ Deno.serve(async (req) => {
     const user = await getUser(token);
     if (!user?.id) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const ANTHROPIC_API_KEY = await anthropicKey();
-    if (!ANTHROPIC_API_KEY) return new Response(JSON.stringify({ error: "AI key not configured yet. Ask Claude to add ANTHROPIC_API_KEY." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+    if (!ANTHROPIC_API_KEY) return new Response(JSON.stringify({ error: "No AI key set — the thinking parts are off. Add ANTHROPIC_API_KEY in Supabase → Project Settings → Edge Functions → Secrets (use a personal, spend-capped workspace key)." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 
     const body = await req.json();
     const { advisor = "overseer", message = "", history = [], topicId: rawTopicId = "", clientDay = "" } = body;
@@ -488,7 +494,7 @@ Write 4-6 SHORT lines, no headers, no preamble, no markdown syntax except emoji:
 5. Close with one line of fire — belief, not pressure.
 Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ctx}`;
       try {
-        const text = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write today's briefing." }], 400, ANTHROPIC_API_KEY);
+        const text = await callClaude(LIGHT, sys, [{ role: "user", content: "Write today's briefing." }], 400, ANTHROPIC_API_KEY);
         return new Response(JSON.stringify({ text }), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch (e) {
         return new Response(JSON.stringify({ error: friendlyErr(e, "Couldn't write the briefing.") }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
@@ -542,7 +548,7 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
       const past = (recent as { text: string }[]).map((r) => r.text).join(" | ");
       const sys = `Write ONE first-person ${period} affirmation for Ben (he has ADHD; identity-based habits are his engine). ${period === "morning" ? "Morning: set the frame for the day — present tense, active, specific." : "Night: lock in pride from today — reflective, warm, earned."} 1-3 sentences, under 40 words, no quotes, no markdown — his own voice, not a motivational poster. Ground it in his declared identities${ids ? `: ${ids}` : ""}. Do not repeat these recent ones: ${past || "none yet"}. Reply with ONLY the affirmation text.`;
       try {
-        const text = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: `Write the ${period} affirmation.` }], 150, ANTHROPIC_API_KEY);
+        const text = await callClaude(LIGHT, sys, [{ role: "user", content: `Write the ${period} affirmation.` }], 150, ANTHROPIC_API_KEY);
         return new Response(JSON.stringify({ text: text.trim() }), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch (e) {
         return new Response(JSON.stringify({ error: friendlyErr(e, "Couldn't write one — try again.") }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
@@ -626,7 +632,7 @@ Then give concrete design fixes:
 Reply ONLY valid JSON, no fences:
 {"law": "obvious|attractive|easy|satisfying", "anchor": "After I ...", "min_version": "...", "friction": "...", "why": "one sentence"}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Redesign this row." }], 400, ANTHROPIC_API_KEY);
+        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Redesign this row." }], 400, ANTHROPIC_API_KEY);
         const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
         return new Response(JSON.stringify({
           law: String(parsed?.law ?? "").slice(0, 20),
@@ -648,7 +654,7 @@ Reply ONLY valid JSON, no fences:
       const sys = `You are The Overseer applying Theory of Constraints to Ben's week. From his live data below, identify the SINGLE binding constraint — the one bottleneck that, if moved, most advances his $1M net worth or 190 lb goals. Everything else is maintenance. Prefer income when net worth is flat and revenue activity is low (you can't cut your way to $1M). Reply ONLY valid JSON, no fences:
 {"area": "income|body|mind|system", "bottleneck": "the one bottleneck in plain words, <12 words", "metric": "the ONE number to move", "baseline": integer (where it is now, best estimate or 0), "target": integer (a realistic 1-week target), "why": "one short sentence on why this is the constraint"}\n\n${ctx}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Name this week's constraint." }], 300, ANTHROPIC_API_KEY);
+        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Name this week's constraint." }], 300, ANTHROPIC_API_KEY);
         const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
         return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch {
@@ -708,7 +714,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Design the chapters." }], 3500, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Design the chapters." }], 3500, ANTHROPIC_API_KEY);
         const parsed = JSON.parse(stripFences(raw));
         const chapters = (Array.isArray(parsed?.chapters) ? parsed.chapters : []).slice(0, 8)
           .map((c: Record<string, unknown>) => ({ title: String(c?.title ?? "").slice(0, 160), objective: String(c?.objective ?? "").slice(0, 300), summary: String(c?.summary ?? "").slice(0, 800) }))
@@ -738,7 +744,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block || "(no sources yet — teach the objective from general knowledge, and say plainly you're doing so)"}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Build this chapter." }], 4500, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Build this chapter." }], 4500, ANTHROPIC_API_KEY);
         const parsed = JSON.parse(stripFences(raw));
         const chunks = (Array.isArray(parsed?.chunks) ? parsed.chunks : []).slice(0, 6).map((c: Record<string, unknown>) => {
           const ch = (c?.check ?? {}) as Record<string, unknown>;
@@ -771,7 +777,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write the exam." }], 3500, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Write the exam." }], 3500, ANTHROPIC_API_KEY);
         const parsed = JSON.parse(stripFences(raw));
         const questions = (Array.isArray(parsed?.questions) ? parsed.questions : []).slice(0, 12)
           .map((r: Record<string, unknown>) => ({ q: String(r?.q ?? "").slice(0, 400), expected: String(r?.expected ?? "").slice(0, 800) }))
@@ -796,7 +802,7 @@ Reply ONLY valid JSON, no fences, SAME ORDER as the input:
 ITEMS:
 ${JSON.stringify(items.map((it: { q: string; a: string; expected: string }, i: number) => ({ n: i + 1, question: it.q, key_points: it.expected, ben_answer: it.a })))}${block ? `\n\nHIS MATERIAL:\n${block}` : ""}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Grade these." }], 1600, ANTHROPIC_API_KEY);
+        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Grade these." }], 1600, ANTHROPIC_API_KEY);
         const parsed = JSON.parse(stripFences(raw));
         const results = (Array.isArray(parsed?.results) ? parsed.results : []).map((r: Record<string, unknown>) => {
           let sc = Number(r?.score); if (!Number.isFinite(sc)) sc = 0; sc = Math.max(0, Math.min(100, Math.round(sc)));
@@ -821,7 +827,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write the episode." }], 4000, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Write the episode." }], 4000, ANTHROPIC_API_KEY);
         const parsed = JSON.parse(stripFences(raw));
         const segments = (Array.isArray(parsed?.segments) ? parsed.segments : []).slice(0, 60)
           .map((s: Record<string, unknown>) => ({ speaker: s?.speaker === "B" ? "B" : "A", text: String(s?.text ?? "").slice(0, 1200) }))
@@ -845,7 +851,7 @@ Aim for 5-7 big_ideas, 6-12 key_terms, 2-4 misconceptions. Ground everything in 
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write the study guide." }], 5000, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Write the study guide." }], 5000, ANTHROPIC_API_KEY);
         const p = JSON.parse(stripFences(raw));
         const guide = {
           tldr: String(p?.tldr ?? "").slice(0, 1400),
@@ -875,7 +881,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Write the flashcards." }], 4500, ANTHROPIC_API_KEY);
+        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Write the flashcards." }], 4500, ANTHROPIC_API_KEY);
         const p = JSON.parse(stripFences(raw));
         const cards = (Array.isArray(p?.cards) ? p.cards : []).slice(0, 40).map((c: Record<string, unknown>) => ({ front: String(c?.front ?? "").slice(0, 600), back: String(c?.back ?? "").slice(0, 1000), hint: String(c?.hint ?? "").slice(0, 300) })).filter((c: { front: string; back: string }) => c.front && c.back);
         if (!cards.length) return err("Couldn't make cards from that — try again.");
@@ -897,7 +903,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: "Build the mind map." }], 2000, ANTHROPIC_API_KEY);
+        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Build the mind map." }], 2000, ANTHROPIC_API_KEY);
         const p = JSON.parse(stripFences(raw));
         const branches = (Array.isArray(p?.branches) ? p.branches : []).slice(0, 8).map((b: Record<string, unknown>) => ({ label: String(b?.label ?? "").slice(0, 120), children: (Array.isArray(b?.children) ? b.children : []).slice(0, 8).map((c: unknown) => String(c).slice(0, 120)).filter(Boolean) })).filter((b: { label: string }) => b.label);
         if (!branches.length) return err("Couldn't build the mind map — try again.");
@@ -924,7 +930,7 @@ Ground your help in his material below when relevant; if you go beyond it, say s
 HIS MATERIAL (for grounding):
 ${material}`;
       try {
-        const text = await callClaude("claude-opus-4-8", sys, [{ role: "user", content: ask || "Explain this a bit more." }], 500, ANTHROPIC_API_KEY);
+        const text = await callClaude(LIGHT, sys, [{ role: "user", content: ask || "Explain this a bit more." }], 500, ANTHROPIC_API_KEY);
         return ok({ text });
       } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? "That point was too long to expand — ask about a smaller piece." : "Couldn't help with that right now — try again."); }
     }

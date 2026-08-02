@@ -30,10 +30,12 @@ const PRIMARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "food", emoji: "🍎", label: "Food" },
   { key: "lifts", emoji: "🏋️", label: "Lifts" },
 ];
+// Learning is its own SPACE, not a tab buried under "More" — you enter a quiet
+// study room and leave the life-OS behind. Same login, same database, separate
+// screens.
 const SECONDARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "goals", emoji: "🎯", label: "Goals" },
   { key: "vocab", emoji: "✍️", label: "Vocab" },
-  { key: "learning", emoji: "📓", label: "Learn" },
   { key: "affirmations", emoji: "💫", label: "Affirm" },
   { key: "hustle", emoji: "💸", label: "Hustle" },
   { key: "money", emoji: "💰", label: "Money" },
@@ -41,7 +43,7 @@ const SECONDARY: { key: Tab; emoji: string; label: string }[] = [
   { key: "night", emoji: "🌙", label: "Night" },
   { key: "tools", emoji: "🛠️", label: "Tools" },
 ];
-const ALL = [...PRIMARY, ...SECONDARY];
+const ALL = [...PRIMARY, ...SECONDARY, { key: "learning" as Tab, emoji: "📓", label: "Learn" }];
 const isTab = (v: string | null): v is Tab => !!v && ALL.some((t) => t.key === v);
 
 export default function App() {
@@ -111,22 +113,34 @@ function Shell({ uid }: { uid: string }) {
   }
 
   const activeMeta = ALL.find((t) => t.key === tab)!;
+  // Learning is a separate SPACE: entering it leaves the life-OS chrome behind
+  // (no tab dock, no capture/coach FABs) so studying stays quiet.
+  const inLearning = tab === "learning";
 
   return (
     <div className="md:flex md:min-h-full">
       {/* Desktop sidebar */}
       <nav className="hidden md:flex md:flex-col md:w-56 md:shrink-0 md:border-r md:border-white/10 md:py-6 md:px-3 md:gap-1 md:sticky md:top-0 md:h-screen">
         <p className="px-3 pb-4 font-extrabold text-lg">✅ Daily</p>
-        {ALL.map((t) => (
+        {[...PRIMARY, ...SECONDARY].map((t) => (
           <button key={t.key} onClick={() => go(t.key)}
             className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition ${tab === t.key ? "bg-[var(--neon)]/15 text-[var(--neon)] glow-neon" : "opacity-60 hover:opacity-100 hover:bg-white/5"}`}>
             <span className="text-lg">{t.emoji}</span><span className="text-sm font-semibold">{t.label}</span>
           </button>
         ))}
-        <button onClick={() => openAdvisor("overseer")}
-          className="mt-4 flex items-center gap-3 px-3 py-2.5 rounded-xl text-left bg-[var(--neon)] text-black font-bold glow-neon active:scale-95">
-          <span className="text-lg">🎮</span><span className="text-sm">Coach</span>
+        {/* the other space */}
+        <div className="my-3 h-px bg-white/10" />
+        <button onClick={() => go("learning")}
+          className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition border ${inLearning ? "paper text-[var(--foreground)]" : "border-transparent opacity-60 hover:opacity-100 hover:bg-white/5"}`}>
+          <span className="text-lg">📓</span>
+          <span className="text-sm font-semibold">Learning</span>
         </button>
+        {!inLearning && (
+          <button onClick={() => openAdvisor("overseer")}
+            className="mt-4 flex items-center gap-3 px-3 py-2.5 rounded-xl text-left bg-[var(--neon)] text-black font-bold glow-neon active:scale-95">
+            <span className="text-lg">🎮</span><span className="text-sm">Coach</span>
+          </button>
+        )}
         <button onClick={() => supabase.auth.signOut()} className="mt-auto px-3 py-2 text-xs opacity-30 underline text-left">Sign out</button>
       </nav>
 
@@ -150,15 +164,30 @@ function Shell({ uid }: { uid: string }) {
         <button onClick={() => supabase.auth.signOut()} className="mt-8 mx-auto block text-xs opacity-30 underline md:hidden">Sign out</button>
 
         {/* floating buttons — capture (top) + coach. Capture is ALWAYS one tap
-            away: an un-captured thought is an open loop eating working memory. */}
-        <QuickCapture uid={uid} />
-        <button onClick={() => openAdvisor("overseer")}
-          className="fixed z-20 bottom-24 right-4 w-14 h-14 rounded-full bg-[var(--neon)] text-black text-2xl grid place-items-center glow-neon active:scale-90 md:hidden">
-          🎮
-        </button>
+            away: an un-captured thought is an open loop eating working memory.
+            BOTH are hidden in the Learning space — that room stays quiet. */}
+        {!inLearning && (
+          <>
+            <QuickCapture uid={uid} />
+            <button onClick={() => openAdvisor("overseer")}
+              className="fixed z-20 bottom-24 right-4 w-14 h-14 rounded-full bg-[var(--neon)] text-black text-2xl grid place-items-center glow-neon active:scale-90 md:hidden">
+              🎮
+            </button>
+          </>
+        )}
         {boardOpen && <Board onClose={() => setBoardOpen(false)} initialAdvisor={boardAdvisor} topicId={boardTopicId} />}
 
-        {/* Mobile bottom nav: floating dock */}
+        {/* Mobile: in the Learning space the tab dock is replaced by a single
+            quiet way out — no life-OS tabs while studying. */}
+        {inLearning ? (
+          <nav className="fixed left-3 right-3 z-10 rounded-[1.75rem] border paper backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.55)] md:hidden"
+            style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
+            <button onClick={() => go("today")} className="w-full flex items-center justify-center gap-2 py-3.5 active:scale-95">
+              <span className="text-base">←</span>
+              <span className="text-sm font-semibold">Leave the study room</span>
+            </button>
+          </nav>
+        ) : (
         <nav className="fixed left-3 right-3 z-10 rounded-[1.75rem] border border-white/10 bg-[var(--background)]/85 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.55)] md:hidden"
           style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
           <div className="max-w-md mx-auto grid grid-cols-5">
@@ -178,12 +207,24 @@ function Shell({ uid }: { uid: string }) {
             </button>
           </div>
         </nav>
+        )}
 
         {moreOpen && (
           <div className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm flex items-end md:hidden" onClick={() => setMoreOpen(false)}>
             <div onClick={(e) => e.stopPropagation()} className="w-full bg-[var(--background)] rounded-t-3xl border-t border-white/10 p-4 pb-8"
               style={{ animation: "fadeSlide 0.2s ease" }}>
               <div className="w-10 h-1 rounded-full bg-white/20 mx-auto mb-4" />
+              {/* The other space gets its own doorway, above the tab grid —
+                  it's a room you enter, not one more tab. */}
+              <button onClick={() => go("learning")}
+                className="w-full flex items-center gap-3 px-4 py-3.5 rounded-2xl paper border mb-3 active:scale-[0.99]">
+                <span className="text-2xl">📓</span>
+                <span className="text-left">
+                  <span className="block text-sm font-bold">Learning</span>
+                  <span className="block text-[11px] opacity-55">Notebooks, chapters, flashcards</span>
+                </span>
+                <span className="ml-auto opacity-40">→</span>
+              </button>
               <div className="grid grid-cols-3 gap-2">
                 {SECONDARY.map((t) => (
                   <button key={t.key} onClick={() => go(t.key)}
