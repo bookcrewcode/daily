@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr, SPLIT, type LiftSet } from "@/lib/supabase";
+import ExercisePicker from "./ExercisePicker";
 import { LIFT_SET_XP } from "@/lib/gamification";
 import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
@@ -33,6 +34,7 @@ export default function Lifts({ uid }: { uid: string }) {
   const [chartFor, setChartFor] = useState<string | null>(null);
   const [newDay, setNewDay] = useState("");
   const [newEx, setNewEx] = useState<Record<string, string>>({});
+  const [pickFor, setPickFor] = useState<string | null>(null);
   const prFired = useRef<Set<string>>(new Set());
   const [err, setErr] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
@@ -320,9 +322,13 @@ export default function Lifts({ uid }: { uid: string }) {
                     <button onClick={() => saveExercises(w, w.exercises.filter((_, j) => j !== i))} className="opacity-40 text-xs active:scale-90">✕</button>
                   </div>
                 ))}
-                <input value={newEx[w.id] ?? ""} onChange={(e) => setNewEx((m) => ({ ...m, [w.id]: e.target.value }))}
-                  onKeyDown={(e) => { if (e.key === "Enter" && (newEx[w.id] ?? "").trim()) { saveExercises(w, [...w.exercises, newEx[w.id].trim()]); setNewEx((m) => ({ ...m, [w.id]: "" })); } }}
-                  placeholder="add exercise + Enter" className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm outline-none" />
+                <div className="flex gap-2">
+                  <input value={newEx[w.id] ?? ""} onChange={(e) => setNewEx((m) => ({ ...m, [w.id]: e.target.value }))}
+                    onKeyDown={(e) => { if (e.key === "Enter" && (newEx[w.id] ?? "").trim()) { saveExercises(w, [...w.exercises, newEx[w.id].trim()]); setNewEx((m) => ({ ...m, [w.id]: "" })); } }}
+                    placeholder="type it + Enter" className="flex-1 min-w-0 rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm outline-none" />
+                  <button onClick={() => setPickFor(w.id)} title="Search the exercise library"
+                    className="shrink-0 px-3 rounded-lg bg-[var(--neon)]/20 border border-[var(--neon)]/40 text-sm font-semibold active:scale-95">🔎</button>
+                </div>
               </div>
             )}
           </div>
@@ -428,6 +434,23 @@ export default function Lifts({ uid }: { uid: string }) {
           </div>
         </div>
       )}
+
+      {pickFor && (() => {
+        const t = (templates ?? []).find((x) => x.id === pickFor);
+        if (!t) return null;
+        return (
+          <ExercisePicker
+            existing={t.exercises}
+            onClose={() => setPickFor(null)}
+            onPick={(name) => {
+              // read the freshest template so two quick picks can't clobber
+              const cur = (templates ?? []).find((x) => x.id === pickFor);
+              if (!cur || cur.exercises.includes(name)) return;
+              saveExercises(cur, [...cur.exercises, name]);
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
