@@ -7,6 +7,7 @@ import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
 import { xpToast, sfx, soundOn, setSoundOn } from "@/lib/fx";
 import { SectionTitle, Card } from "./ui";
+import AIKey from "./AIKey";
 
 const TRANSCRIPT_FN = `${SUPABASE_URL}/functions/v1/transcript`;
 
@@ -751,6 +752,9 @@ export default function Tools() {
     <div>
       <h1 className="text-2xl font-bold pt-3">🛠️ Tools</h1>
       <p className="opacity-50 text-sm mt-1">Utilities that don&apos;t need their own app.</p>
+
+      <SectionTitle>🔑 AI</SectionTitle>
+      <AIKey />
 
       <SectionTitle>⏱️ Focus timer</SectionTitle>
       <FocusTimer />

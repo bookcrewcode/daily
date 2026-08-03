@@ -8,23 +8,32 @@ const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const ENV_ANTHROPIC_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 
 // The Anthropic key lives encrypted in Supabase Vault, read via the
-// service-role-only get_secret() RPC. An ANTHROPIC_API_KEY env var, if
-// ever set, takes precedence. Cached for the life of the isolate.
+// service-role-only get_secret() RPC. The VAULT WINS over an ANTHROPIC_API_KEY
+// env var: the vault is what the in-app key screen writes, so replacing a dead
+// key there must take effect even if a stale env var is still configured.
+// Cached only briefly — a key saved in the app should work within a minute,
+// not "whenever this isolate happens to recycle". One tiny fetch per minute is
+// nothing next to an LLM call.
 let cachedKey = "";
+let cachedAt = 0;
+const KEY_TTL_MS = 60_000;
 async function anthropicKey(): Promise<string> {
-  if (ENV_ANTHROPIC_KEY) return ENV_ANTHROPIC_KEY;
-  if (cachedKey) return cachedKey;
+  if (cachedKey && Date.now() - cachedAt < KEY_TTL_MS) return cachedKey;
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_secret`, {
       method: "POST",
       headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ secret_name: "anthropic_api_key" }),
     });
-    if (r.ok) cachedKey = ((await r.json()) as string | null) ?? "";
+    if (r.ok) {
+      const v = ((await r.json()) as string | null) ?? "";
+      if (v) { cachedKey = v; cachedAt = Date.now(); return v; }
+    }
   } catch {
-    // fall through — caller reports "not configured"
+    // fall through to the env var below
   }
-  return cachedKey;
+  if (ENV_ANTHROPIC_KEY) return ENV_ANTHROPIC_KEY;
+  return cachedKey; // may be "" — caller reports "not configured"
 }
 
 const cors = {
