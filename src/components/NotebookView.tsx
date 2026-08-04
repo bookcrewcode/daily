@@ -13,6 +13,7 @@ import { Card, Segmented } from "./ui";
 import NotebookSources from "./NotebookSources";
 import NotebookChat from "./NotebookChat";
 import ChapterView from "./ChapterView";
+import Run from "./Run";
 import Podcast from "./Podcast";
 import MajorTest from "./MajorTest";
 import StudyGuide from "./StudyGuide";
@@ -40,6 +41,7 @@ export default function NotebookView({ uid, notebook, onBack }: { uid: string; n
   const [trunk, setTrunk] = useState(notebook.trunk);
   const [podcast, setPodcast] = useState(false);
   const [exam, setExam] = useState(false);
+  const [runCh, setRunCh] = useState<NBChapter | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -160,7 +162,7 @@ export default function NotebookView({ uid, notebook, onBack }: { uid: string; n
                       <span className={`absolute -left-[1.55rem] top-3.5 w-6 h-6 rounded-full grid place-items-center text-xs font-bold z-10 border-2 border-[var(--background)] ${doneCh ? "bg-[var(--neon)] text-black" : unlocked ? "bg-white/15" : "bg-white/[0.06] opacity-60"}`}>
                         {doneCh ? "✓" : unlocked ? i + 1 : "🔒"}
                       </span>
-                      <button disabled={!unlocked} onClick={() => unlocked && setOpenChapter(c.id)} className="w-full text-left disabled:opacity-40">
+                      <button disabled={!unlocked} onClick={() => unlocked && setRunCh(c)} className="w-full text-left disabled:opacity-40">
                         <Card tone="paper" padded={false} className={`p-3.5 ${doneCh ? "opacity-75" : ""}`}>
                           <div className="flex items-center gap-2">
                             <div className="min-w-0 flex-1">
@@ -181,6 +183,10 @@ export default function NotebookView({ uid, notebook, onBack }: { uid: string; n
         </div>
       )}
 
+      {runCh && (
+        <Run uid={uid} notebookId={notebook.id} chapter={runCh}
+          onClose={() => { setRunCh(null); load(); }} onCleared={load} />
+      )}
       {podcast && <Podcast uid={uid} notebookId={notebook.id} onClose={() => setPodcast(false)} />}
       {exam && <MajorTest uid={uid} notebookId={notebook.id} onClose={() => setExam(false)} />}
     </div>

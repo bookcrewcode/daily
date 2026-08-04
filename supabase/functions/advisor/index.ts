@@ -287,7 +287,7 @@ async function context(token: string, clientDay?: string): Promise<string> {
   const questClaimCount = (questClaims as { quest_key: string }[]).filter((r) => {
     const k = String(r.quest_key);
     return k !== "sweep" && k !== "weekly_review" && k !== "moneyrep" &&
-      !k.startsWith("chest_") && !k.startsWith("boss_") && !k.startsWith("gstep_") && !k.startsWith("month_");
+      !k.startsWith("chest_") && !k.startsWith("boss_") && !k.startsWith("gstep_") && !k.startsWith("month_") && !k.startsWith("nb_");
   }).length;
 
   // If the core days read failed, say so up front so the persona doesn't state a
@@ -770,6 +770,88 @@ ${block || "(no sources yet — teach the objective from general knowledge, and 
         if (!chunks.length) return err("Couldn't build that chapter — try again.");
         return ok({ chunks, recall });
       } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? TOOLONG_MSG : "Couldn't build that chapter right now — try again."); }
+    }
+
+    // 🎮 A RUN — a fast, varied, tappable learning session. This replaces the
+    // old "paragraph → one multiple choice → repeat", which was stale: no
+    // visuals, no variety, nothing to get lost in. A run mixes short teaching
+    // beats (each with a simple diagram we render natively) with SIX different
+    // interaction types, so the rhythm keeps changing and it plays like a game.
+    if (advisor === "lesson") {
+      if (!topicId) return err("No notebook given.");
+      const chTitle = clip(body.chapterTitle, 200);
+      const chObjective = clip(body.chapterObjective, 400);
+      const { block, failed } = await readNotebookSources(token, topicId);
+      if (failed) return err("Couldn't read your sources — try again.");
+      const sys = `You are building ONE fast, FUN learning run for Ben on "${chTitle}"${chObjective ? ` — objective: ${chObjective}` : ""}. He has ADHD: he needs variety, momentum, visuals, and constant doing — not paragraphs followed by a quiz.
+
+Produce 12-18 CARDS that alternate constantly between teaching and doing. Never put two "teach" cards in a row. Never use the same interaction type twice in a row. Open with a teach card, and make the FIRST interaction easy so he starts winning immediately.
+
+CARD TYPES — use ALL of them across the run:
+- {"kind":"teach","text":"2-4 sentences that actually teach ONE idea, concrete, with an analogy or example","diagram":{...optional}}
+- {"kind":"mcq","q":"...","choices":["a","b","c"],"answer":0,"explain":"one line"}
+- {"kind":"blank","sentence":"A habit needs a ___ before it needs ___.","bank":["cue","willpower","motivation"],"answer":["cue","willpower"],"explain":"one line"}   (use ___ for each blank, in order; bank holds the right answers PLUS convincing wrong ones)
+- {"kind":"order","prompt":"Put the habit loop in order","items":["cue","craving","response","reward"],"explain":"one line"}   (items MUST be in the CORRECT order — they get shuffled for him)
+- {"kind":"match","prompt":"Match each idea to what it means","pairs":[["term","meaning"],["term2","meaning2"]],"explain":"one line"}   (2-4 pairs, keep both sides SHORT)
+- {"kind":"scenario","situation":"You've skipped the gym 3 days running and feel like a fraud.","choices":["...","...","..."],"answer":1,"explain":"one line on why"}   (make it a real situation from HIS life: ADHD, gym, school, money, building a business)
+
+DIAGRAMS — put one on roughly half the teach cards. Keep labels under 4 words. Shape:
+{"kind":"flow"|"compare"|"cycle"|"stack","title":"short","nodes":[{"label":"short","note":"optional ≤6 words"}]}
+- flow: a sequence of steps (3-5 nodes)   - cycle: a self-reinforcing loop (3-4 nodes)
+- compare: exactly 2 nodes, this vs that   - stack: layers, foundation first (3-4 nodes)
+
+Ground everything in his material below. Keep every string tight — this is read on a phone, in motion.
+
+Reply ONLY valid JSON, no fences: {"cards":[ ... ]}
+
+HIS MATERIAL:
+${block ? block.slice(0, 120000) : "(no sources yet — teach the objective from general knowledge and say so on the first card)"}`;
+      try {
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Build the run." }], 6000, ANTHROPIC_API_KEY);
+        const p = JSON.parse(stripFences(raw));
+        const S = (v: unknown, n: number) => String(v ?? "").slice(0, n);
+        const arr = (v: unknown) => (Array.isArray(v) ? v : []);
+        const cards = arr(p?.cards).slice(0, 24).map((c: Record<string, unknown>) => {
+          const kind = S(c?.kind, 20);
+          if (kind === "teach") {
+            const d = c?.diagram as Record<string, unknown> | undefined;
+            const dk = S(d?.kind, 12);
+            const nodes = arr(d?.nodes).slice(0, 6).map((n: Record<string, unknown>) => ({ label: S(n?.label, 60), note: S(n?.note, 90) })).filter((n: { label: string }) => n.label);
+            const diagram = ["flow", "compare", "cycle", "stack"].includes(dk) && nodes.length >= 2
+              ? { kind: dk, title: S(d?.title, 80), nodes } : null;
+            return { kind, text: S(c?.text, 1200), diagram };
+          }
+          if (kind === "mcq" || kind === "scenario") {
+            const choices = arr(c?.choices).map((x: unknown) => S(x, 220)).slice(0, 5).filter(Boolean);
+            if (choices.length < 2) return null;
+            let a = Number(c?.answer); if (!Number.isInteger(a) || a < 0 || a >= choices.length) a = 0;
+            return { kind, q: S(c?.q, 300), situation: S(c?.situation, 500), choices, answer: a, explain: S(c?.explain, 300) };
+          }
+          if (kind === "blank") {
+            const answer = arr(c?.answer).map((x: unknown) => S(x, 60)).filter(Boolean);
+            const bank = arr(c?.bank).map((x: unknown) => S(x, 60)).filter(Boolean);
+            const sentence = S(c?.sentence, 400);
+            if (!answer.length || bank.length < answer.length || !sentence.includes("___")) return null;
+            // every correct answer must actually be offered
+            const full = [...new Set([...bank, ...answer])].slice(0, 10);
+            return { kind, sentence, bank: full, answer, explain: S(c?.explain, 300) };
+          }
+          if (kind === "order") {
+            const items = arr(c?.items).map((x: unknown) => S(x, 90)).filter(Boolean).slice(0, 6);
+            if (items.length < 3) return null;
+            return { kind, prompt: S(c?.prompt, 200), items, explain: S(c?.explain, 300) };
+          }
+          if (kind === "match") {
+            const pairs = arr(c?.pairs).map((x: unknown) => arr(x).map((y: unknown) => S(y, 90)))
+              .filter((pr: string[]) => pr.length === 2 && pr[0] && pr[1]).slice(0, 4);
+            if (pairs.length < 2) return null;
+            return { kind, prompt: S(c?.prompt, 200), pairs, explain: S(c?.explain, 300) };
+          }
+          return null;
+        }).filter(Boolean);
+        if (cards.length < 4) return err("Couldn't build a run from that — add a bit more material and try again.");
+        return ok({ cards });
+      } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? TOOLONG_MSG : "Couldn't build the run right now — try again."); }
     }
 
     // The major exam: whole-notebook free-recall test.
