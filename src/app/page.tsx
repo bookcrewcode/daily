@@ -17,6 +17,7 @@ import IncomeEngine from "@/components/IncomeEngine";
 import Vocab from "@/components/Vocab";
 import Tools from "@/components/Tools";
 import Notebooks from "@/components/Notebooks";
+import AIOffBanner from "@/components/AIOffBanner";
 import Affirmations from "@/components/Affirmations";
 import Board from "@/components/Board";
 import Plan from "@/components/Plan";
@@ -145,6 +146,7 @@ function Shell({ uid }: { uid: string }) {
       </nav>
 
       <main className="flex-1 max-w-md md:max-w-2xl mx-auto px-4 pb-32 md:pb-10 md:pt-8 min-h-full w-full">
+        {!inLearning && <AIOffBanner onGoFix={() => go("tools")} />}
         <div key={tab} className="tab-enter">
           {tab === "today" && <Today uid={uid} onOpenAdvisor={openAdvisor} onGoTab={(t) => go(t as Tab)} />}
           {tab === "plan" && <Plan uid={uid} onGoTab={(t) => go(t as Tab)} />}
@@ -157,7 +159,7 @@ function Shell({ uid }: { uid: string }) {
           {tab === "hustle" && <IncomeEngine />}
           {tab === "night" && <Night uid={uid} />}
           {tab === "tools" && <Tools />}
-          {tab === "learning" && <Notebooks uid={uid} />}
+          {tab === "learning" && <Notebooks uid={uid} onGoFix={() => go("tools")} />}
           {tab === "affirmations" && <Affirmations uid={uid} />}
         </div>
 

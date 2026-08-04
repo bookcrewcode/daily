@@ -10,10 +10,11 @@ import { type Notebook } from "@/lib/notebook";
 import { sfx } from "@/lib/fx";
 import { SectionTitle, Card } from "./ui";
 import NotebookView from "./NotebookView";
+import AIOffBanner from "./AIOffBanner";
 
 const EMOJI = ["📓", "📗", "📘", "📙", "🧠", "💻", "🧪", "🎸", "🗣️", "📈", "⚖️", "🩺"];
 
-export default function Notebooks({ uid }: { uid: string }) {
+export default function Notebooks({ uid, onGoFix }: { uid: string; onGoFix: () => void }) {
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [agg, setAgg] = useState<Record<string, { done: number; total: number }>>({});
   const [loaded, setLoaded] = useState(false);
@@ -49,6 +50,7 @@ export default function Notebooks({ uid }: { uid: string }) {
   return (
     <div>
       <h1 className="text-2xl font-bold pt-3">📓 Notebooks</h1>
+      <AIOffBanner onGoFix={onGoFix} />
       <p className="opacity-50 text-sm mt-1">Your NotebookLM — one notebook per subject. Add your sources, get a leveled course with quizzes, a podcast, and a tutor that teaches from YOUR material.</p>
 
       <SectionTitle>Your notebooks</SectionTitle>

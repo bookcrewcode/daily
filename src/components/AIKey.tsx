@@ -13,6 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import { supabase, todayStr } from "@/lib/supabase";
 import { advisorCall } from "@/lib/notebook";
 import { sfx } from "@/lib/fx";
+import { setAIStatus, refreshAIStatus } from "@/lib/aiStatus";
 import { Card } from "./ui";
 
 type Status = { is_set: boolean; updated_at: string | null; hint: string | null };
@@ -47,7 +48,9 @@ export default function AIKey() {
       setOpen(false);
       sfx.coin();
       setMsg("Saved. Testing it…");
+      setAIStatus("on");
       await load();
+      await refreshAIStatus();
       await test();
     } catch {
       setErr("Couldn't reach the server — nothing was saved.");
@@ -73,6 +76,7 @@ export default function AIKey() {
       setMsg("");
       return;
     }
+    setAIStatus("on");
     setMsg("✅ Working — the AI is live.");
   }
 
