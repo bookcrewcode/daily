@@ -822,29 +822,41 @@ ${block ? block.slice(0, 120000) : "(no sources yet — teach the objective from
             return { kind, text: S(c?.text, 1200), diagram };
           }
           if (kind === "mcq" || kind === "scenario") {
-            const choices = arr(c?.choices).map((x: unknown) => S(x, 220)).slice(0, 5).filter(Boolean);
+            // filter BEFORE slice: dropping an empty choice after slicing would
+            // shift later choices down and leave `answer` pointing at the wrong one
+            const choices = arr(c?.choices).map((x: unknown) => S(x, 220)).filter(Boolean).slice(0, 5);
             if (choices.length < 2) return null;
             let a = Number(c?.answer); if (!Number.isInteger(a) || a < 0 || a >= choices.length) a = 0;
             return { kind, q: S(c?.q, 300), situation: S(c?.situation, 500), choices, answer: a, explain: S(c?.explain, 300) };
           }
           if (kind === "blank") {
             const answer = arr(c?.answer).map((x: unknown) => S(x, 60)).filter(Boolean);
-            const bank = arr(c?.bank).map((x: unknown) => S(x, 60)).filter(Boolean);
+            const rawBank = arr(c?.bank).map((x: unknown) => S(x, 60)).filter(Boolean);
             const sentence = S(c?.sentence, 400);
-            if (!answer.length || bank.length < answer.length || !sentence.includes("___")) return null;
-            // every correct answer must actually be offered
-            const full = [...new Set([...bank, ...answer])].slice(0, 10);
-            return { kind, sentence, bank: full, answer, explain: S(c?.explain, 300) };
+            const gaps = sentence.split("___").length - 1;
+            if (!answer.length || gaps !== answer.length) return null;
+            // The bank must contain each answer with the SAME MULTIPLICITY it's
+            // needed — if "reps" fills two blanks, two "reps" tiles must exist,
+            // or the card can never be completed.
+            const bank = [...answer];
+            for (const w of rawBank) if (bank.length < 10 && !answer.includes(w)) bank.push(w);
+            if (bank.length < answer.length + 1) return null; // no distractors = not a question
+            return { kind, sentence, bank, answer, explain: S(c?.explain, 300) };
           }
           if (kind === "order") {
             const items = arr(c?.items).map((x: unknown) => S(x, 90)).filter(Boolean).slice(0, 6);
-            if (items.length < 3) return null;
+            // duplicate labels are indistinguishable to the user and would make
+            // the card unsolvable — drop the card rather than ship a dead end
+            if (items.length < 3 || new Set(items).size !== items.length) return null;
             return { kind, prompt: S(c?.prompt, 200), items, explain: S(c?.explain, 300) };
           }
           if (kind === "match") {
             const pairs = arr(c?.pairs).map((x: unknown) => arr(x).map((y: unknown) => S(y, 90)))
               .filter((pr: string[]) => pr.length === 2 && pr[0] && pr[1]).slice(0, 4);
             if (pairs.length < 2) return null;
+            // a repeated left label or right value makes the pairing ambiguous
+            if (new Set(pairs.map((p: string[]) => p[0])).size !== pairs.length) return null;
+            if (new Set(pairs.map((p: string[]) => p[1])).size !== pairs.length) return null;
             return { kind, prompt: S(c?.prompt, 200), pairs, explain: S(c?.explain, 300) };
           }
           return null;

@@ -2,17 +2,19 @@
 
 // 🎮 THE RUN — learning as a game, not a worksheet.
 //
-// The old chapter flow was stale: a paragraph, one multiple choice, repeat.
-// A run is 12-18 cards that never sit still — short teaching beats with real
-// diagrams, then six different ways to actually DO something: multiple choice,
-// fill the blanks, put things in order, match pairs, and real-life scenarios.
-// A combo meter builds as you get things right, XP ticks up live, and the whole
-// thing ends in a score screen with confetti. Everything is tappable — no typing
-// mid-run, because typing on a phone kills momentum.
+// Short teaching beats with real diagrams, then six ways to actually DO
+// something: multiple choice, fill-the-blanks, put-in-order, match pairs, and
+// real-life scenarios. Combo meter, live XP, sound, haptics, score screen.
+// Everything is tappable — typing on a phone kills momentum.
+//
+// Every "build it by tapping" interaction tracks INDICES, never label text.
+// Tracking by value looks fine until the content repeats a word, and then the
+// card silently becomes unsolvable with no way forward — the worst thing this
+// app could do to someone who's already frustrated with it.
 
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { supabase, todayStr } from "@/lib/supabase";
+import { supabase } from "@/lib/supabase";
 import { advisorCall } from "@/lib/notebook";
 import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
@@ -26,12 +28,13 @@ type Card =
   | { kind: "order"; prompt: string; items: string[]; explain: string }
   | { kind: "match"; prompt: string; pairs: [string, string][]; explain: string };
 
-const CHAPTER_XP = 40;   // one-time, per chapter cleared
-const STUDY_XP = 15;     // once a day, for showing up
+const CHAPTER_XP = 40;
+const STUDY_XP = 15;
+const PASS = 70;
 
-// deterministic shuffle so a card doesn't re-scramble on every render
-function shuffled<T>(arr: T[], seed: number): T[] {
-  const a = [...arr];
+// deterministic shuffle of INDICES, stable for a given seed
+function shuffledIdx(n: number, seed: number): number[] {
+  const a = Array.from({ length: n }, (_, k) => k);
   let s = seed || 1;
   for (let i = a.length - 1; i > 0; i--) {
     s = (s * 9301 + 49297) % 233280;
@@ -60,14 +63,23 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
   const [asked, setAsked] = useState(0);
   const [xp, setXp] = useState(0);
   const [done, setDone] = useState(false);
+  const [finishing, setFinishing] = useState(false);
 
-  // per-card working state
+  // final, settled results — computed once in finish() so the score screen and
+  // the database can never disagree about what happened
+  const [result, setResult] = useState<{ pct: number; bankedXp: number; note: string; saveFailed: boolean } | null>(null);
+
+  // per-card working state (all index-based)
   const [pick, setPick] = useState<number | null>(null);
-  const [slots, setSlots] = useState<string[]>([]);
-  const [seq, setSeq] = useState<string[]>([]);
-  const [leftSel, setLeftSel] = useState<string | null>(null);
-  const [made, setMade] = useState<Record<string, string>>({});
+  const [slots, setSlots] = useState<(number | null)[]>([]);   // blank: bank indices, fixed length, holes allowed
+  const [seq, setSeq] = useState<number[]>([]);                 // order: item indices
+  const [leftSel, setLeftSel] = useState<number | null>(null);  // match: left index
+  const [made, setMade] = useState<Record<number, number>>({}); // match: left index → right index
+  const scoring = useRef(false);
   const banked = useRef(false);
+  // best_score as the DB now knows it — props go stale across repeat runs in
+  // one sitting, and comparing against a stale value can DOWNGRADE a good score
+  const bestScoreRef = useRef(chapter.best_score || 0);
 
   const card = cards?.[i];
   const seed = i + 7;
@@ -81,24 +93,28 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
     setLoading(false);
     if (json.error || !json.cards?.length) { setErr(json.error || "Couldn't build the run — try again."); return; }
     setCards(json.cards);
-    setI(0); setAnswered(false); setCombo(0); setBest(0); setRight(0); setAsked(0); setXp(0); setDone(false);
-    resetCard();
+    setI(0); setCombo(0); setBest(0); setRight(0); setAsked(0); setXp(0);
+    setDone(false); setResult(null);
+    resetCard(json.cards[0]);
   }
 
-  function resetCard() {
+  function resetCard(c?: Card) {
     setAnswered(false); setCorrect(false);
-    setPick(null); setSlots([]); setSeq([]); setLeftSel(null); setMade({});
+    setPick(null); setSeq([]); setLeftSel(null); setMade({});
+    setSlots(c && c.kind === "blank" ? new Array(c.answer.length).fill(null) : []);
+    scoring.current = false;
   }
 
   function score(ok: boolean) {
+    if (scoring.current) return;   // guard: never double-count one card
+    scoring.current = true;
     setAnswered(true); setCorrect(ok);
     setAsked((n) => n + 1);
     if (ok) {
       const c = combo + 1;
       setCombo(c); setBest((b) => Math.max(b, c));
       setRight((n) => n + 1);
-      const gain = 5 + Math.min(10, (c - 1) * 2);   // combo pays, capped
-      setXp((x) => x + gain);
+      setXp((x) => x + 5 + Math.min(10, (c - 1) * 2));
       sfx.pop(); buzz(12);
       if (c === 3 || c === 5 || c === 8) burstConfetti("small");
     } else {
@@ -109,73 +125,100 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
 
   function next() {
     if (!cards) return;
-    if (i + 1 < cards.length) { setI(i + 1); resetCard(); }
+    if (i + 1 < cards.length) { const n = i + 1; setI(n); resetCard(cards[n]); }
     else finish();
   }
 
   async function finish() {
+    // Guard the payout tap hard: it awaits three network calls, so an impatient
+    // second tap must never reach a path that sets done without a result — that
+    // would blank the screen at the exact moment the score should appear.
+    if (banked.current || finishing) return;
+    banked.current = true;
+    setFinishing(true);
+    // ONE source of truth for the score — asked/right have settled because
+    // finishing is a separate tap after the last answer
+    const pct = asked ? Math.round((right / asked) * 100) : 0;
+    const passed = pct >= PASS && asked > 0;
+    let bankedXp = 0;
+    let note = "";
+    let saveFailed = false;
+
+    // 1) progress — the meaningful write. Check {error}; supabase-js resolves it.
+    try {
+      const patch = passed
+        ? { status: "done", best_score: Math.max(bestScoreRef.current, pct) }
+        : { best_score: Math.max(bestScoreRef.current, pct) };
+      const { error } = await supabase.from("notebook_chapters").update(patch).eq("id", chapter.id);
+      if (error) saveFailed = true;
+      else bestScoreRef.current = Math.max(bestScoreRef.current, pct);
+    } catch { saveFailed = true; }
+
+    // 2) XP — only claim what actually lands. The unique constraint means a
+    // chapter pays once ever, so a repeat run honestly earns nothing here.
+    if (passed) {
+      const amount = CHAPTER_XP + xp;
+      try {
+        const { error } = await supabase.from("quest_claims")
+          .insert({ user_id: uid, day: "2000-01-01", quest_key: `nb_ch_${chapter.id}`, xp: amount });
+        if (!error) { bankedXp += amount; xpToast(amount); }
+        // 23505 = already claimed (the honest, expected case on a repeat run).
+        // Anything else genuinely failed and must not be dressed up as success.
+        else if (error.code === "23505") note = "Already earned for this chapter — the reps still count.";
+        else note = "Couldn't bank the XP for this one — your progress saved though.";
+      } catch {
+        note = "Couldn't bank the XP for this one — your progress saved though.";
+      }
+    }
+    // 3) showing up at all: once a day
+    try {
+      const ok = await game.bankQuestXP("nb_study", STUDY_XP);
+      if (ok) bankedXp += STUDY_XP;
+    } catch { /* daily rep is best-effort */ }
+
+    game.refresh();
+    setResult({ pct, bankedXp, note, saveFailed });
     setDone(true);
+    setFinishing(false);
     burstConfetti("big");
     sfx.levelup();
-    if (banked.current) return;
-    banked.current = true;
-    const pct = asked ? Math.round((right / asked) * 100) : 100;
-    // progress first — it's the meaningful write
-    try {
-      const patch = pct >= 70
-        ? { status: "done", best_score: Math.max(chapter.best_score || 0, pct) }
-        : { best_score: Math.max(chapter.best_score || 0, pct) };
-      await supabase.from("notebook_chapters").update(patch).eq("id", chapter.id);
-    } catch { /* the score screen still shows; progress retries next run */ }
-    // XP: one-time per chapter (stable sentinel day so a retry can't double-pay)
-    if (pct >= 70) {
-      const { error } = await supabase.from("quest_claims")
-        .insert({ user_id: uid, day: "2000-01-01", quest_key: `nb_ch_${chapter.id}`, xp: CHAPTER_XP });
-      if (!error) { xpToast(CHAPTER_XP); game.refresh(); }
-    }
-    // showing up at all earns the daily study rep (unique constraint = once/day)
-    await game.bankQuestXP("nb_study", STUDY_XP).catch(() => false);
     onCleared();
   }
 
-  // ── card checkers ───────────────────────────────────────────────
+  // ── checkers (index-based) ──────────────────────────────────────
   function checkBlank(c: Extract<Card, { kind: "blank" }>) {
-    const ok = c.answer.length === slots.length && c.answer.every((a, k) => (slots[k] ?? "").toLowerCase() === a.toLowerCase());
-    score(ok);
+    score(slots.every((s, k) => s !== null && c.bank[s] === c.answer[k]));
   }
   function checkOrder(c: Extract<Card, { kind: "order" }>) {
-    score(seq.length === c.items.length && seq.every((s, k) => s === c.items[k]));
+    // items arrive in the CORRECT order, so a right answer is seq === [0,1,2,…]
+    score(seq.length === c.items.length && seq.every((idx, k) => idx === k));
   }
-  function tapMatch(c: Extract<Card, { kind: "match" }>, side: "l" | "r", val: string) {
-    if (answered) return;
-    if (side === "l") { setLeftSel(val); return; }
-    if (!leftSel) return;
-    const nextMade = { ...made, [leftSel]: val };
+  function tapMatch(c: Extract<Card, { kind: "match" }>, side: "l" | "r", idx: number) {
+    if (answered || scoring.current) return;
+    if (side === "l") { setLeftSel(idx); sfx.pop(); return; }
+    if (leftSel === null) return;
+    const nextMade = { ...made, [leftSel]: idx };
     setMade(nextMade); setLeftSel(null);
     if (Object.keys(nextMade).length === c.pairs.length) {
-      score(c.pairs.every(([l, r]) => nextMade[l] === r));
-    } else { sfx.pop(); }
+      score(c.pairs.every((_, li) => nextMade[li] === li));
+    } else sfx.pop();
   }
 
-  const pct = asked ? Math.round((right / asked) * 100) : 0;
-  const bodyIdx = useMemo(() => (cards ? Math.min(i + 1, cards.length) : 0), [i, cards]);
-
   if (typeof document === "undefined") return null;
+  const shown = cards ? Math.min(i + 1, cards.length) : 0;
 
   return createPortal(
     <div className="fixed inset-0 z-50 bg-[var(--background)] flex flex-col">
-      {/* header */}
       <div className="px-4 pt-4 pb-2 flex items-center gap-3">
         <button onClick={onClose} className="text-sm opacity-50 active:scale-90 shrink-0">✕</button>
         <div className="flex-1 h-2 rounded-full bg-white/10 overflow-hidden">
-          <div className="h-full bg-[var(--neon)] transition-all duration-300" style={{ width: cards ? `${(bodyIdx / cards.length) * 100}%` : "0%" }} />
+          <div className="h-full bg-[var(--neon)] transition-all duration-300" style={{ width: cards ? `${(shown / cards.length) * 100}%` : "0%" }} />
         </div>
         {combo >= 2 && <span className="text-xs font-bold text-orange-300 shrink-0 flame">🔥{combo}</span>}
         {xp > 0 && <span className="text-xs font-bold text-[var(--neon)] shrink-0 tabular-nums">+{xp}</span>}
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 pb-4">
-        {/* start screen */}
         {!cards && !done && (
           <div className="h-full grid place-items-center text-center">
             <div>
@@ -192,7 +235,6 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
           </div>
         )}
 
-        {/* the run */}
         {cards && !done && card && (
           <div key={i} className="rise-in pt-2">
             {card.kind === "teach" && (
@@ -213,11 +255,10 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
                 <p className="font-semibold text-[1.05rem] mb-3">{card.q || "What do you do?"}</p>
                 <div className="space-y-2">
                   {card.choices.map((ch, k) => {
-                    const show = answered;
-                    const isA = k === card.answer, isP = pick === k;
+                    const show = answered, isA = k === card.answer, isP = pick === k;
                     return (
                       <button key={k} disabled={answered}
-                        onClick={() => { setPick(k); score(k === card.answer); }}
+                        onClick={() => { if (scoring.current) return; setPick(k); score(k === card.answer); }}
                         className={`w-full text-left rounded-xl px-4 py-3 border transition ${
                           show && isA ? "bg-green-500/20 border-green-400/60"
                           : show && isP ? "bg-red-500/20 border-red-400/60"
@@ -232,39 +273,46 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
 
             {card.kind === "blank" && (() => {
               const parts = card.sentence.split("___");
-              const bank = shuffled(card.bank, seed);
+              const order = shuffledIdx(card.bank.length, seed);
+              const nextHole = slots.findIndex((s) => s === null);
               return (
                 <div>
                   <p className="text-[10px] uppercase tracking-widest opacity-45 mb-2">Fill the blanks</p>
                   <p className="study-prose text-[1.08rem] leading-loose">
-                    {parts.map((seg, k) => (
+                    {parts.map((segment, k) => (
                       <span key={k}>
-                        {seg}
-                        {k < parts.length - 1 && (
-                          <button disabled={answered} onClick={() => setSlots((s) => s.filter((_, z) => z !== k))}
-                            className={`inline-block min-w-[5rem] mx-1 px-2 py-0.5 rounded-lg border-b-2 text-center align-baseline ${
-                              answered
-                                ? (slots[k] ?? "").toLowerCase() === (card.answer[k] ?? "").toLowerCase() ? "border-green-400 text-green-300" : "border-red-400 text-red-300"
-                                : slots[k] ? "border-[var(--neon)] text-[var(--neon)]" : "border-white/25 opacity-40"}`}>
-                            {slots[k] ?? "____"}
-                          </button>
-                        )}
+                        {segment}
+                        {k < parts.length - 1 && (() => {
+                          const s = slots[k];
+                          const ok = answered && s !== null && card.bank[s] === card.answer[k];
+                          return (
+                            // clearing a blank empties THAT blank — it never shifts
+                            // the other answers around underneath the user
+                            <button disabled={answered} onClick={() => setSlots((cur) => cur.map((v, z) => (z === k ? null : v)))}
+                              className={`inline-block min-w-[5rem] mx-1 px-2 py-0.5 rounded-lg border-b-2 text-center align-baseline ${
+                                answered ? (ok ? "border-green-400 text-green-300" : "border-red-400 text-red-300")
+                                : s !== null ? "border-[var(--neon)] text-[var(--neon)]"
+                                : k === nextHole ? "border-[var(--neon)]/60 opacity-70" : "border-white/25 opacity-40"}`}>
+                              {s !== null ? card.bank[s] : "____"}
+                            </button>
+                          );
+                        })()}
                       </span>
                     ))}
                   </p>
                   <div className="flex flex-wrap gap-2 mt-4">
-                    {bank.map((w) => {
-                      const used = slots.includes(w);
+                    {order.map((bi) => {
+                      const used = slots.includes(bi);
                       return (
-                        <button key={w} disabled={answered || used || slots.length >= card.answer.length}
-                          onClick={() => setSlots((s) => [...s, w])}
+                        <button key={bi} disabled={answered || used || nextHole === -1}
+                          onClick={() => setSlots((cur) => { const n = [...cur]; const h = n.findIndex((v) => v === null); if (h >= 0) n[h] = bi; return n; })}
                           className={`px-3 py-2 rounded-xl border text-sm ${used ? "opacity-25 border-white/10" : "bg-white/[0.06] border-white/15 active:scale-95"}`}>
-                          {w}
+                          {card.bank[bi]}
                         </button>
                       );
                     })}
                   </div>
-                  {!answered && slots.length === card.answer.length && (
+                  {!answered && nextHole === -1 && (
                     <button onClick={() => checkBlank(card)} className="mt-4 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95">Check</button>
                   )}
                 </div>
@@ -272,24 +320,24 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
             })()}
 
             {card.kind === "order" && (() => {
-              const pool = shuffled(card.items, seed).filter((x) => !seq.includes(x));
+              const pool = shuffledIdx(card.items.length, seed).filter((idx) => !seq.includes(idx));
               return (
                 <div>
                   <p className="text-[10px] uppercase tracking-widest opacity-45 mb-1">Put it in order</p>
                   <p className="font-semibold text-[1.02rem] mb-3">{card.prompt}</p>
                   <div className="space-y-1.5 mb-3">
-                    {seq.map((s, k) => (
-                      <button key={s} disabled={answered} onClick={() => setSeq((q) => q.filter((x) => x !== s))}
+                    {seq.map((idx, k) => (
+                      <button key={`${idx}-${k}`} disabled={answered} onClick={() => setSeq((q) => q.filter((x) => x !== idx))}
                         className={`w-full text-left rounded-xl px-3 py-2.5 border flex items-center gap-2 ${
-                          answered ? (card.items[k] === s ? "bg-green-500/15 border-green-400/50" : "bg-red-500/15 border-red-400/50") : "bg-[var(--neon)]/10 border-[var(--neon)]/35"}`}>
-                        <span className="text-xs opacity-50 w-4">{k + 1}</span><span className="text-sm">{s}</span>
+                          answered ? (idx === k ? "bg-green-500/15 border-green-400/50" : "bg-red-500/15 border-red-400/50") : "bg-[var(--neon)]/10 border-[var(--neon)]/35"}`}>
+                        <span className="text-xs opacity-50 w-4">{k + 1}</span><span className="text-sm">{card.items[idx]}</span>
                       </button>
                     ))}
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    {pool.map((x) => (
-                      <button key={x} disabled={answered} onClick={() => setSeq((q) => [...q, x])}
-                        className="px-3 py-2 rounded-xl bg-white/[0.06] border border-white/15 text-sm active:scale-95">{x}</button>
+                    {pool.map((idx) => (
+                      <button key={idx} disabled={answered} onClick={() => setSeq((q) => [...q, idx])}
+                        className="px-3 py-2 rounded-xl bg-white/[0.06] border border-white/15 text-sm active:scale-95">{card.items[idx]}</button>
                     ))}
                   </div>
                   {!answered && seq.length === card.items.length && (
@@ -300,37 +348,35 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
             })()}
 
             {card.kind === "match" && (() => {
-              const rights = shuffled(card.pairs.map((p) => p[1]), seed);
+              const rightOrder = shuffledIdx(card.pairs.length, seed);
+              const usedRights = new Set(Object.values(made));
               return (
                 <div>
                   <p className="text-[10px] uppercase tracking-widest opacity-45 mb-1">Match them up</p>
                   <p className="font-semibold text-[1.02rem] mb-3">{card.prompt}</p>
                   <div className="grid grid-cols-2 gap-2">
                     <div className="space-y-2">
-                      {card.pairs.map(([l]) => {
-                        const done2 = made[l] !== undefined;
-                        const ok = answered && made[l] === card.pairs.find((p) => p[0] === l)?.[1];
+                      {card.pairs.map(([l], li) => {
+                        const paired = made[li] !== undefined;
+                        const ok = answered && made[li] === li;
                         return (
-                          <button key={l} disabled={answered || done2} onClick={() => tapMatch(card, "l", l)}
+                          <button key={li} disabled={answered || paired} onClick={() => tapMatch(card, "l", li)}
                             className={`w-full rounded-xl px-3 py-2.5 border text-sm text-left ${
                               answered ? (ok ? "bg-green-500/15 border-green-400/50" : "bg-red-500/15 border-red-400/50")
-                              : leftSel === l ? "bg-[var(--neon)] text-black border-transparent"
-                              : done2 ? "opacity-40 border-white/10" : "bg-white/[0.06] border-white/15 active:scale-95"}`}>
-                            {l}{done2 && <span className="opacity-60"> → {made[l]}</span>}
+                              : leftSel === li ? "bg-[var(--neon)] text-black border-transparent"
+                              : paired ? "opacity-40 border-white/10" : "bg-white/[0.06] border-white/15 active:scale-95"}`}>
+                            {l}{paired && <span className="opacity-60"> → {card.pairs[made[li]][1]}</span>}
                           </button>
                         );
                       })}
                     </div>
                     <div className="space-y-2">
-                      {rights.map((r) => {
-                        const used = Object.values(made).includes(r);
-                        return (
-                          <button key={r} disabled={answered || used || !leftSel} onClick={() => tapMatch(card, "r", r)}
-                            className={`w-full rounded-xl px-3 py-2.5 border text-sm text-left ${used ? "opacity-25 border-white/10" : "bg-white/[0.06] border-white/15 active:scale-95"}`}>
-                            {r}
-                          </button>
-                        );
-                      })}
+                      {rightOrder.map((ri) => (
+                        <button key={ri} disabled={answered || usedRights.has(ri) || leftSel === null} onClick={() => tapMatch(card, "r", ri)}
+                          className={`w-full rounded-xl px-3 py-2.5 border text-sm text-left ${usedRights.has(ri) ? "opacity-25 border-white/10" : "bg-white/[0.06] border-white/15 active:scale-95"}`}>
+                          {card.pairs[ri][1]}
+                        </button>
+                      ))}
                     </div>
                   </div>
                   {!answered && <p className="text-[11px] opacity-40 mt-3 text-center">tap one on the left, then its partner on the right</p>}
@@ -338,7 +384,6 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
               );
             })()}
 
-            {/* feedback + advance */}
             {answered && "explain" in card && card.explain && (
               <div className={`mt-4 rounded-xl px-3 py-2.5 border ${correct ? "bg-green-500/10 border-green-400/30" : "bg-orange-500/10 border-orange-400/30"}`}>
                 <p className="text-sm">{correct ? "✓ " : "→ "}{card.explain}</p>
@@ -347,21 +392,24 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
           </div>
         )}
 
-        {/* score screen */}
-        {done && (
+        {done && result && (
           <div className="h-full grid place-items-center text-center">
             <div>
-              <div className="text-6xl mb-2">{pct >= 70 ? "🏆" : "💪"}</div>
-              <p className="font-display text-5xl font-black">{pct}%</p>
+              <div className="text-6xl mb-2">{result.pct >= PASS ? "🏆" : "💪"}</div>
+              <p className="font-display text-5xl font-black">{result.pct}%</p>
               <p className="text-sm opacity-70 mt-1">{right} of {asked} right{best >= 3 ? ` · best combo 🔥${best}` : ""}</p>
-              <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-[var(--neon)]/15 border border-[var(--neon)]/40 px-4 py-2">
-                <span className="text-[var(--neon)] font-bold">+{xp + (pct >= 70 ? CHAPTER_XP : 0)} XP</span>
-              </div>
+              {result.bankedXp > 0 && (
+                <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-[var(--neon)]/15 border border-[var(--neon)]/40 px-4 py-2">
+                  <span className="text-[var(--neon)] font-bold">+{result.bankedXp} XP</span>
+                </div>
+              )}
+              {result.note && <p className="text-xs opacity-50 mt-3">{result.note}</p>}
+              {result.saveFailed && <p className="text-xs text-orange-400 mt-3 max-w-xs mx-auto">Couldn&apos;t save your progress — check your connection and run it again.</p>}
               <p className="study-prose text-[1rem] mt-4 max-w-xs mx-auto">
-                {pct >= 70 ? "Chapter cleared. That's a rep for the person who finishes what he starts." : "Not cleared yet — run it again. The misses are where the learning actually is."}
+                {result.pct >= PASS ? "Chapter cleared. That's a rep for the person who finishes what he starts." : "Not cleared yet — run it again. The misses are where the learning actually is."}
               </p>
               <div className="flex gap-2 mt-6 justify-center">
-                <button onClick={() => { banked.current = false; setCards(null); setDone(false); start(); }}
+                <button onClick={() => { banked.current = false; setFinishing(false); setCards(null); setDone(false); setResult(null); start(); }}
                   className="rounded-xl bg-white/10 px-5 py-3 text-sm font-semibold active:scale-95">Run it again</button>
                 <button onClick={onClose} className="rounded-xl bg-[var(--neon)] text-black px-5 py-3 text-sm font-bold active:scale-95">Done</button>
               </div>
@@ -370,11 +418,11 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
         )}
       </div>
 
-      {/* footer action */}
       {cards && !done && card && (card.kind === "teach" || answered) && (
         <div className="px-4 pb-6 pt-2">
-          <button onClick={next} className="w-full rounded-2xl bg-[var(--neon)] text-black font-bold py-3.5 text-[1.05rem] active:scale-95">
-            {i + 1 < cards.length ? "Continue →" : "Finish 🏁"}
+          <button onClick={next} disabled={finishing}
+            className="w-full rounded-2xl bg-[var(--neon)] text-black font-bold py-3.5 text-[1.05rem] active:scale-95 disabled:opacity-60">
+            {finishing ? "saving your run…" : i + 1 < cards.length ? "Continue →" : "Finish 🏁"}
           </button>
         </div>
       )}
