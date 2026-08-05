@@ -17,6 +17,7 @@ import IncomeEngine from "@/components/IncomeEngine";
 import Vocab from "@/components/Vocab";
 import Tools from "@/components/Tools";
 import Notebooks from "@/components/Notebooks";
+import Home from "@/components/Home";
 import AIOffBanner from "@/components/AIOffBanner";
 import Affirmations from "@/components/Affirmations";
 import Board from "@/components/Board";
@@ -24,24 +25,26 @@ import Plan from "@/components/Plan";
 import { useVoiceInput } from "@/lib/useVoiceInput";
 import { sfx, buzz } from "@/lib/fx";
 
-type Tab = "today" | "plan" | "goals" | "food" | "lifts" | "vocab" | "money" | "markets" | "hustle" | "night" | "tools" | "learning" | "affirmations";
+type Tab = "home" | "today" | "plan" | "goals" | "food" | "lifts" | "vocab" | "money" | "markets" | "hustle" | "night" | "tools" | "learning" | "affirmations";
+// FIVE doors, not twelve. The app opens on Home — one screen that tells you what
+// to do, lays out the day, surfaces what's due, and shows proof it's working.
+// Everything else lives behind a door that groups related things, so nothing is
+// lost but nothing is in your face either.
 const PRIMARY: { key: Tab; emoji: string; label: string }[] = [
-  { key: "today", emoji: "✅", label: "Today" },
-  { key: "plan", emoji: "🧭", label: "Plan" },
-  { key: "food", emoji: "🍎", label: "Food" },
-  { key: "lifts", emoji: "🏋️", label: "Lifts" },
+  { key: "home", emoji: "◉", label: "Home" },
+  { key: "today", emoji: "✅", label: "Day" },
+  { key: "lifts", emoji: "💪", label: "Body" },
+  { key: "money", emoji: "💰", label: "Money" },
 ];
-// Learning is its own SPACE, not a tab buried under "More" — you enter a quiet
-// study room and leave the life-OS behind. Same login, same database, separate
-// screens.
 const SECONDARY: { key: Tab; emoji: string; label: string }[] = [
+  { key: "plan", emoji: "🧭", label: "Plan" },
   { key: "goals", emoji: "🎯", label: "Goals" },
+  { key: "food", emoji: "🍎", label: "Food" },
+  { key: "night", emoji: "🌙", label: "Night" },
+  { key: "hustle", emoji: "💸", label: "Hustle" },
+  { key: "markets", emoji: "🎲", label: "Markets" },
   { key: "vocab", emoji: "✍️", label: "Vocab" },
   { key: "affirmations", emoji: "💫", label: "Affirm" },
-  { key: "hustle", emoji: "💸", label: "Hustle" },
-  { key: "money", emoji: "💰", label: "Money" },
-  { key: "markets", emoji: "🎲", label: "Markets" },
-  { key: "night", emoji: "🌙", label: "Night" },
   { key: "tools", emoji: "🛠️", label: "Tools" },
 ];
 const ALL = [...PRIMARY, ...SECONDARY, { key: "learning" as Tab, emoji: "📓", label: "Learn" }];
@@ -90,7 +93,7 @@ function GameOverlays() {
 }
 
 function Shell({ uid }: { uid: string }) {
-  const [tab, setTab] = useState<Tab>("today");
+  const [tab, setTab] = useState<Tab>("home");
   const [moreOpen, setMoreOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
   const [boardAdvisor, setBoardAdvisor] = useState<string | undefined>(undefined);
@@ -148,6 +151,7 @@ function Shell({ uid }: { uid: string }) {
       <main className="flex-1 max-w-md md:max-w-2xl mx-auto px-4 pb-32 md:pb-10 md:pt-8 min-h-full w-full">
         {!inLearning && <AIOffBanner onGoFix={() => go("tools")} />}
         <div key={tab} className="tab-enter">
+          {tab === "home" && <Home uid={uid} onGoTab={(t) => go(t as Tab)} />}
           {tab === "today" && <Today uid={uid} onOpenAdvisor={openAdvisor} onGoTab={(t) => go(t as Tab)} />}
           {tab === "plan" && <Plan uid={uid} onGoTab={(t) => go(t as Tab)} />}
           {tab === "goals" && <Goals uid={uid} />}
