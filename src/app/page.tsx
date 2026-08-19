@@ -17,7 +17,7 @@ import IncomeEngine from "@/components/IncomeEngine";
 import Vocab from "@/components/Vocab";
 import Tools from "@/components/Tools";
 import Notebooks from "@/components/Notebooks";
-import Home from "@/components/Home";
+import TheCard from "@/components/TheCard";
 import AIOffBanner from "@/components/AIOffBanner";
 import Affirmations from "@/components/Affirmations";
 import Board from "@/components/Board";
@@ -31,7 +31,7 @@ type Tab = "home" | "today" | "plan" | "goals" | "food" | "lifts" | "vocab" | "m
 // Everything else lives behind a door that groups related things, so nothing is
 // lost but nothing is in your face either.
 const PRIMARY: { key: Tab; emoji: string; label: string }[] = [
-  { key: "home", emoji: "◉", label: "Home" },
+  { key: "home", emoji: "🗂️", label: "Card" },
   { key: "today", emoji: "✅", label: "Day" },
   { key: "lifts", emoji: "💪", label: "Body" },
   { key: "money", emoji: "💰", label: "Money" },
@@ -151,7 +151,7 @@ function Shell({ uid }: { uid: string }) {
       <main className="flex-1 max-w-md md:max-w-2xl mx-auto px-4 pb-32 md:pb-10 md:pt-8 min-h-full w-full">
         {!inLearning && <AIOffBanner onGoFix={() => go("tools")} />}
         <div key={tab} className="tab-enter">
-          {tab === "home" && <Home uid={uid} onGoTab={(t) => go(t as Tab)} />}
+          {tab === "home" && <TheCard uid={uid} onGoTab={(t) => go(t as Tab)} />}
           {tab === "today" && <Today uid={uid} onOpenAdvisor={openAdvisor} onGoTab={(t) => go(t as Tab)} />}
           {tab === "plan" && <Plan uid={uid} onGoTab={(t) => go(t as Tab)} />}
           {tab === "goals" && <Goals uid={uid} />}
