@@ -70,7 +70,7 @@ export default function AIKey() {
     if (json.error) {
       const e = json.error;
       if (/no ai key/i.test(e)) setErr("No key is set yet.");
-      else if (/authentication|invalid x-api-key|401/i.test(e)) setErr("That key was rejected by Anthropic — it may be revoked or from the wrong workspace.");
+      else if (/authentication|invalid.*key|unauthorized|no auth|401/i.test(e)) setErr("That key was rejected by the provider — it may be revoked, out of credits, or from the wrong account.");
       else if (/credit|billing|quota|429/i.test(e)) setErr("The key works, but the workspace is out of credit or rate-limited.");
       else setErr(e);
       setMsg("");
@@ -108,7 +108,7 @@ export default function AIKey() {
             type="password" autoComplete="off" spellCheck={false}
             value={key} onChange={(e) => setKey(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") save(); }}
-            placeholder="sk-ant-…"
+            placeholder="sk-ant-… (Anthropic) or sk-or-… (OpenRouter)"
             className="w-full rounded-lg bg-black/40 px-3 py-2.5 outline-none text-sm font-mono" />
           <button onClick={save} disabled={busy || !key.trim()}
             className="mt-2 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-2.5 active:scale-95 disabled:opacity-40">
@@ -116,7 +116,8 @@ export default function AIKey() {
           </button>
           <p className="text-[10px] opacity-40 mt-2 leading-relaxed">
             Goes straight into your encrypted vault — it&apos;s never shown again, only the last 4 characters.
-            Create it at console.anthropic.com under a spend-capped workspace.
+            Anthropic keys: console.anthropic.com (spend-capped workspace). OpenRouter keys: openrouter.ai/settings/keys —
+            the account you already share with Gavin works, and the app then runs on cheap Gemini-tier models.
           </p>
         </div>
       )}

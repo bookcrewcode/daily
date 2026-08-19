@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, dateStr, todayStr, type Goal } from "@/lib/supabase";
 import { useVoiceInput } from "@/lib/useVoiceInput";
+import Semester from "./Semester";
 import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
 import { xpToast, sfx, buzz } from "@/lib/fx";
@@ -274,6 +275,8 @@ export default function Plan({ uid, onGoTab }: { uid: string; onGoTab?: (tab: st
         Everything out of your head, into the system. <span className={`text-[var(--neon)] transition-opacity ${saved ? "opacity-100" : "opacity-0"}`}>saved ✓</span>
       </p>
       {weekSaveError && <p className="text-xs text-orange-400 mt-1">Not saved — your changes stay on screen; keep editing to retry.</p>}
+
+      <Semester uid={uid} />
 
       {/* capture — the always-there box */}
       <Card tone="neon" className="mt-4">

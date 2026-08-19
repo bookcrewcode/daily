@@ -308,6 +308,19 @@ Active goals: ${gl || "none"}${weekLine}${constraintLine}${incomeLine}${engLines
 }
 
 async function callClaude(model: string, system: string, messages: unknown[], maxTokens: number, apiKey: string) {
+  if (isOpenRouter(apiKey)) {
+    // OpenAI wire format: system rides as the first message; truncation is
+    // finish_reason === "length" (mapped to the same TOOLONG sentinel).
+    const r = await fetch(OR_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: orModel(model), max_tokens: maxTokens, messages: [{ role: "system", content: system }, ...(messages as { role: string; content: unknown }[])] }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data?.error?.message ?? "AI error");
+    if (data?.choices?.[0]?.finish_reason === "length") throw new Error("TOOLONG");
+    return String(data?.choices?.[0]?.message?.content ?? "");
+  }
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
@@ -327,6 +340,18 @@ async function callClaude(model: string, system: string, messages: unknown[], ma
 // ~10-20x cheaper and plenty good at those bounded, well-specified jobs.
 const HEAVY = "claude-opus-4-8";                 // deep generation, run rarely
 const LIGHT = "claude-haiku-4-5-20251001";       // frequent, bounded tasks
+
+// ── Provider routing ────────────────────────────────────────────────────────
+// ONE key slot; the key's own prefix names the provider:
+//   sk-ant-…  → Anthropic direct
+//   sk-or-…   → OpenRouter (Ben + Gavin already hold credits there) — the
+//               cheap-models path. IDs verified against the live
+//               openrouter.ai/api/v1/models list on 2026-08-19.
+const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
+const isOpenRouter = (k: string) => k.startsWith("sk-or-");
+const OR_HEAVY = "google/gemini-3.7-flash";       // deep generation (~$0.38/M in, $1.88/M out)
+const OR_LIGHT = "google/gemini-2.5-flash-lite";  // frequent + vision (~$0.10/M in)
+const orModel = (m: string) => (m.includes("haiku") ? OR_LIGHT : OR_HEAVY);
 const TOOLONG_MSG = "That's a lot of material — I couldn't finish it in one pass. Split it into a smaller notebook (fewer or shorter sources) and try again.";
 // Translate the TOOLONG sentinel into a real message wherever a catch surfaces
 // e.message to the user, so the raw sentinel never leaks to the UI.
@@ -461,7 +486,7 @@ Deno.serve(async (req) => {
     const user = await getUser(token);
     if (!user?.id) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const ANTHROPIC_API_KEY = await anthropicKey();
-    if (!ANTHROPIC_API_KEY) return new Response(JSON.stringify({ error: "No AI key set — the thinking parts are off. Add ANTHROPIC_API_KEY in Supabase → Project Settings → Edge Functions → Secrets (use a personal, spend-capped workspace key)." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+    if (!ANTHROPIC_API_KEY) return new Response(JSON.stringify({ error: "No AI key set — the thinking parts are off. Open Tools → 🔑 AI in the app and paste an Anthropic (sk-ant-…) or OpenRouter (sk-or-…) key." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 
     const body = await req.json();
     const { advisor = "overseer", message = "", history = [], topicId: rawTopicId = "", clientDay = "" } = body;
@@ -475,19 +500,16 @@ Deno.serve(async (req) => {
       const known: string[] = Array.isArray(body.known) ? body.known : [];
       const sys = `Generate ONE advanced, genuinely useful English vocabulary word for a sharp adult expanding his working vocabulary. Not obscure/archaic for its own sake — a word a well-read, articulate person would actually use. Avoid these already-known words: ${known.join(", ") || "none yet"}.
 Reply with ONLY valid JSON, no markdown fences, no other text: {"word": "...", "definition": "plain, simple definition", "sentence": "one example sentence using it naturally", "mnemonic": "a short memory trick for the spelling or meaning"}`;
-      const ai = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-        body: JSON.stringify({ model: "claude-opus-4-8", max_tokens: 300, system: sys, messages: [{ role: "user", content: "Generate one word." }] }),
-      });
-      const data = await ai.json();
-      if (!ai.ok) return new Response(JSON.stringify({ error: data?.error?.message ?? "AI error" }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
-      const raw = (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
       try {
-        const parsed = JSON.parse(raw.trim());
-        return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
-      } catch {
-        return new Response(JSON.stringify({ error: "Couldn't parse a word from that — try again." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Generate one word." }], 300, ANTHROPIC_API_KEY);
+        try {
+          const parsed = JSON.parse(stripFences(raw));
+          return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
+        } catch {
+          return new Response(JSON.stringify({ error: "Couldn't parse a word from that — try again." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+        }
+      } catch (e) {
+        return new Response(JSON.stringify({ error: friendlyErr(e, "AI error") }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
       }
     }
 
@@ -520,20 +542,42 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
       const sys = `You estimate nutrition from a food photo for a personal tracker. Be practical: assume a normal serving of what's visible. Reply ONLY valid JSON, no fences:
 {"name": "short dish name", "calories": integer (total kcal, best estimate), "protein": integer (grams), "carbs": integer (grams), "fat": integer (grams), "confidence": "high|medium|low", "note": "one short line on what you assumed"}`;
       try {
-        const r = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-          body: JSON.stringify({
-            model: "claude-haiku-4-5-20251001", max_tokens: 250, system: sys,
-            messages: [{ role: "user", content: [
-              { type: "image", source: { type: "base64", media_type: mediaType, data: image } },
-              { type: "text", text: "Estimate this meal." },
-            ] }],
-          }),
-        });
-        const data = await r.json();
-        if (!r.ok) return new Response(JSON.stringify({ error: data?.error?.message ?? "Vision error" }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
-        const raw = (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
+        let raw = "";
+        if (isOpenRouter(ANTHROPIC_API_KEY)) {
+          // OpenRouter/OpenAI vision format: data-URL image_url blocks.
+          const r = await fetch(OR_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANTHROPIC_API_KEY}` },
+            body: JSON.stringify({
+              model: OR_LIGHT, max_tokens: 250,
+              messages: [
+                { role: "system", content: sys },
+                { role: "user", content: [
+                  { type: "image_url", image_url: { url: `data:${mediaType};base64,${image}` } },
+                  { type: "text", text: "Estimate this meal." },
+                ] },
+              ],
+            }),
+          });
+          const data = await r.json();
+          if (!r.ok) return new Response(JSON.stringify({ error: data?.error?.message ?? "Vision error" }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+          raw = String(data?.choices?.[0]?.message?.content ?? "");
+        } else {
+          const r = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+            body: JSON.stringify({
+              model: "claude-haiku-4-5-20251001", max_tokens: 250, system: sys,
+              messages: [{ role: "user", content: [
+                { type: "image", source: { type: "base64", media_type: mediaType, data: image } },
+                { type: "text", text: "Estimate this meal." },
+              ] }],
+            }),
+          });
+          const data = await r.json();
+          if (!r.ok) return new Response(JSON.stringify({ error: data?.error?.message ?? "Vision error" }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
+          raw = (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
+        }
         const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
         return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch {
@@ -1054,27 +1098,45 @@ ${material}`;
     // material and is identical across every turn of a session — cache it so he
     // isn't re-billed for the same wall of text on every message. Small prompts
     // skip caching: a cache write costs extra and a one-off call never recoups it.
-    const post = (sys: unknown) => fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: "claude-opus-4-8", max_tokens: 1500, system: sys, messages: msgs }),
-    });
-    // Threshold in CHARS, but the API's minimum cacheable prefix is in TOKENS —
-    // set it high enough (~5k tokens) to clear that minimum comfortably rather
-    // than paying a cache-write premium on prompts the API will decline to cache.
-    const cacheable = system.length > 20000;
-    let ai = await post(cacheable ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }] : system);
-    let data = await ai.json();
-    // never let an unsupported cache field take the chat down — fall back plain
-    if (!ai.ok && cacheable && JSON.stringify(data?.error ?? "").includes("cache_control")) {
-      ai = await post(system);
+    let ai: Response;
+    // response shape differs per provider; both are plain parsed JSON
+    // deno-lint-ignore no-explicit-any
+    let data: any;
+    if (isOpenRouter(ANTHROPIC_API_KEY)) {
+      // OpenRouter path — OpenAI wire format, system as the first message.
+      // No cache_control here: that's an Anthropic-specific field.
+      ai = await fetch(OR_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANTHROPIC_API_KEY}` },
+        body: JSON.stringify({ model: orModel(HEAVY), max_tokens: 1500, messages: [{ role: "system", content: system }, ...msgs] }),
+      });
       data = await ai.json();
+    } else {
+      const post = (sys: unknown) => fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+        body: JSON.stringify({ model: "claude-opus-4-8", max_tokens: 1500, system: sys, messages: msgs }),
+      });
+      // Threshold in CHARS, but the API's minimum cacheable prefix is in TOKENS —
+      // set it high enough (~5k tokens) to clear that minimum comfortably rather
+      // than paying a cache-write premium on prompts the API will decline to cache.
+      const cacheable = system.length > 20000;
+      ai = await post(cacheable ? [{ type: "text", text: system, cache_control: { type: "ephemeral" } }] : system);
+      data = await ai.json();
+      // never let an unsupported cache field take the chat down — fall back plain
+      if (!ai.ok && cacheable && JSON.stringify(data?.error ?? "").includes("cache_control")) {
+        ai = await post(system);
+        data = await ai.json();
+      }
     }
     if (!ai.ok) return new Response(JSON.stringify({ error: data?.error?.message ?? "AI error" }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
-    let text = (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("\n");
+    let text = isOpenRouter(ANTHROPIC_API_KEY)
+      ? String(data?.choices?.[0]?.message?.content ?? "")
+      : (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("\n");
     // A reply cut off at max_tokens must not read as a finished thought — the
     // tutor's 6-part format plus source citations runs long. Say so honestly.
-    if (data?.stop_reason === "max_tokens" && text) text += "\n\n…(cut off — say “continue” and I'll pick up right there.)";
+    const wasCutOff = isOpenRouter(ANTHROPIC_API_KEY) ? data?.choices?.[0]?.finish_reason === "length" : data?.stop_reason === "max_tokens";
+    if (wasCutOff && text) text += "\n\n…(cut off — say “continue” and I'll pick up right there.)";
 
     // remember what matters from this exchange — after the response ships
     const extraction = extractMemories(token, String(message), text, ANTHROPIC_API_KEY);

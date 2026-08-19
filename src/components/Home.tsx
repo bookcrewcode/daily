@@ -29,6 +29,8 @@ export default function Home({ uid, onGoTab }: { uid: string; onGoTab: (t: strin
   const [action, setAction] = useState<Action | null>(null);
   const [today, setToday] = useState<DayRow | null>(null);
   const [plan, setPlan] = useState<Ev[]>([]);
+  const [classes, setClasses] = useState<Ev[]>([]);
+  const [sem, setSem] = useState<{ title: string; start: string; end: string } | null>(null);
   const [top3, setTop3] = useState<string[]>([]);
   const [due, setDue] = useState(0);
   const [weights, setWeights] = useState<number[]>([]);
@@ -40,7 +42,7 @@ export default function Home({ uid, onGoTab }: { uid: string; onGoTab: (t: strin
   const load = useCallback(async () => {
     const day = todayStr();
     try {
-      const [d, n, cards, chs, ws, as, goals, rows, reps, cons] = await Promise.all([
+      const [d, n, cards, chs, ws, as, goals, rows, reps, cons, cb, us] = await Promise.all([
         supabase.from("days").select("*").eq("user_id", uid).eq("day", day).maybeSingle(),
         supabase.from("nights").select("items,top3").eq("user_id", uid).eq("day", day).maybeSingle(),
         supabase.from("notebook_cards").select("due,suspended").eq("user_id", uid),
@@ -51,12 +53,20 @@ export default function Home({ uid, onGoTab }: { uid: string; onGoTab: (t: strin
         supabase.from("engine_rows").select("id,name,rep,min_version").eq("user_id", uid).eq("archived", false),
         supabase.from("engine_reps").select("row_id").eq("user_id", uid).eq("day", day),
         supabase.from("weekly_constraints").select("bottleneck").eq("user_id", uid).order("week_start", { ascending: false }).limit(1),
+        supabase.from("class_blocks").select("label,location,start_t,end_t").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
+        supabase.from("user_settings").select("semester").eq("user_id", uid).maybeSingle(),
       ]);
 
       const dayRow = (d.data ?? null) as DayRow | null;
       setToday(dayRow);
       setPlan(((n.data?.items ?? []) as Ev[]).filter((x) => x?.what));
       setTop3(((n.data?.top3 ?? []) as string[]).filter(Boolean));
+
+      // the timetable knows today's classes — nothing to re-type each night
+      setClasses(((cb.data ?? []) as { label: string; location: string; start_t: string; end_t: string }[])
+        .map((c) => ({ time: c.start_t, what: `🎓 ${c.label}${c.location ? ` · ${c.location}` : ""}` })));
+      const rawSem = (us.data?.semester ?? null) as { title?: string; start?: string; end?: string } | null;
+      setSem(rawSem && rawSem.start && rawSem.end ? { title: rawSem.title || "Semester", start: rawSem.start, end: rawSem.end } : null);
 
       const dueCount = ((cards.data ?? []) as { due: string; suspended: boolean }[]).filter((c) => isDue(c)).length;
       setDue(dueCount);
@@ -112,8 +122,9 @@ export default function Home({ uid, onGoTab }: { uid: string; onGoTab: (t: strin
   const greeting = hour < 5 ? "Still up" : hour < 12 ? "Morning" : hour < 18 ? "Afternoon" : "Evening";
   const winsToday = today ? WIN_KEYS.filter((k) => (today as unknown as Record<string, boolean>)[k]).length : 0;
   const now = `${String(hour).padStart(2, "0")}:${String(new Date().getMinutes()).padStart(2, "0")}`;
-  const upcoming = plan.filter((p) => p.time && p.time >= now).slice(0, 3);
-  const shown = upcoming.length ? upcoming : plan.slice(-2);
+  const timeline = [...plan, ...classes].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
+  const upcoming = timeline.filter((p) => p.time && p.time >= now).slice(0, 4);
+  const shown = upcoming.length ? upcoming : timeline.slice(-2);
 
   const QUICK: { key: string; icon: string; label: string }[] = [
     { key: "ws_meds", icon: "💊", label: "Meds" },
@@ -121,6 +132,20 @@ export default function Home({ uid, onGoTab }: { uid: string; onGoTab: (t: strin
     { key: "ws_water", icon: "💧", label: "Water" },
     { key: "ws_lift", icon: "🏋️", label: "Lift" },
   ];
+
+  // pacing chip: the term is the deadline that matters (Dec 15)
+  let semChip = "";
+  if (sem) {
+    const ms = 86400000;
+    const t0 = new Date(todayStr() + "T00:00:00").getTime();
+    const s0 = new Date(sem.start + "T00:00:00").getTime();
+    const e0 = new Date(sem.end + "T00:00:00").getTime();
+    if (t0 >= s0 && t0 <= e0) {
+      const wk = Math.floor((t0 - s0) / (7 * ms)) + 1;
+      const tot = Math.max(wk, Math.ceil(((e0 - s0) / ms + 1) / 7));
+      semChip = ` · wk ${wk}/${tot} · ${Math.round((e0 - t0) / ms)}d left`;
+    } else if (t0 < s0) semChip = ` · semester in ${Math.round((s0 - t0) / ms)}d`;
+  }
 
   const toneRing = action?.tone === "urgent" ? "border-orange-400/50 bg-orange-500/[0.07]"
     : action?.tone === "calm" ? "border-white/10 bg-white/[0.03]"
@@ -132,7 +157,7 @@ export default function Home({ uid, onGoTab }: { uid: string; onGoTab: (t: strin
       <div className="flex items-end justify-between mb-3">
         <div>
           <h1 className="font-display text-2xl font-bold leading-none">{greeting}, Ben</h1>
-          <p className="text-[11px] opacity-45 mt-1">{winsToday}/{WIN_KEYS.length} wins today · level {game.level.level}</p>
+          <p className="text-[11px] opacity-45 mt-1">{winsToday}/{WIN_KEYS.length} wins today · level {game.level.level}{semChip}</p>
         </div>
         {game.streak.streak > 0 && (
           <div className="text-right">
