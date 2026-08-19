@@ -150,7 +150,7 @@ textarea {
 /* The mastery spine: a vertical thread the chapters hang off, that fills as
    you clear levels — the Learning section's signature. */
 .spine-track { background: rgba(255, 255, 255, 0.09); }
-.spine-fill { background: linear-gradient(180deg, var(--neon), #818cf8); box-shadow: 0 0 10px rgba(167, 139, 250, 0.4); }
+.spine-fill { background: var(--neon);  }
 
 /* card flip for flashcards — grid stacking so the container sizes to the
    TALLER of the two faces (a long answer can't overflow past the front). */

@@ -11,8 +11,8 @@ export function Ring({ score, total }: { score: number; total: number }) {
     <svg width="68" height="68" viewBox="0 0 68 68" className={full ? "glow-neon rounded-full" : ""}>
       <defs>
         <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#a78bfa" />
-          <stop offset="100%" stopColor="#818cf8" />
+          <stop offset="0%" stopColor="#7c87f0" />
+          <stop offset="100%" stopColor="#7c87f0" />
         </linearGradient>
       </defs>
       <circle cx="34" cy="34" r={r} fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="7" />
@@ -137,7 +137,7 @@ export function Prose({ text, className = "" }: { text: string; className?: stri
 export function ProgressBar({ pct, tone = "neon" }: { pct: number; tone?: "neon" | "gold" }) {
   const color = tone === "gold"
     ? "linear-gradient(90deg,#fbbf24,#f59e0b)"
-    : "linear-gradient(90deg,#a78bfa,#818cf8)";
+    : "var(--neon)";
   return (
     <div className="h-2.5 rounded-full bg-white/10 overflow-hidden">
       <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.min(Math.max(pct * 100, pct > 0 ? 2 : 0), 100)}%`, background: color }} />

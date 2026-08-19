@@ -135,7 +135,7 @@ export function weekDays(day: string): string[] {
 }
 export function weekBand(total: number): { name: string; hue: string } {
   if (total >= 55) return { name: "Compounding", hue: "#34d399" };
-  if (total >= 40) return { name: "Running", hue: "#a78bfa" };
+  if (total >= 40) return { name: "Running", hue: "#7c87f0" };
   if (total >= 25) return { name: "Surviving", hue: "#fbbf24" };
   return { name: "Down", hue: "#f87171" };
 }

@@ -128,7 +128,7 @@ export default function KalshiHub() {
   return (
     <div className="relative space-y-4">
       {/* ambient glow backdrop */}
-      <div className="pointer-events-none absolute -top-8 left-0 right-0 h-40 bg-[radial-gradient(600px_circle_at_20%_0%,rgba(168,85,247,0.12),transparent_60%),radial-gradient(500px_circle_at_90%_0%,rgba(236,72,153,0.08),transparent_60%)]" />
+      
 
       {/* header */}
       <div className="relative">
