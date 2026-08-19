@@ -5,16 +5,16 @@
 // grounded tutor, each saving its own context. This replaces the old topic Hub.
 
 import { useCallback, useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { supabase, todayStr } from "@/lib/supabase";
 import { type Notebook } from "@/lib/notebook";
+import { trunkOfDay } from "@/lib/theGame";
 import { sfx } from "@/lib/fx";
 import { SectionTitle, Card } from "./ui";
 import NotebookView from "./NotebookView";
-import AIOffBanner from "./AIOffBanner";
 
 const EMOJI = ["📓", "📗", "📘", "📙", "🧠", "💻", "🧪", "🎸", "🗣️", "📈", "⚖️", "🩺"];
 
-export default function Notebooks({ uid, onGoFix }: { uid: string; onGoFix: () => void }) {
+export default function Notebooks({ uid }: { uid: string; onGoFix?: () => void }) {
   const [notebooks, setNotebooks] = useState<Notebook[]>([]);
   const [agg, setAgg] = useState<Record<string, { done: number; total: number }>>({});
   const [loaded, setLoaded] = useState(false);
@@ -49,9 +49,12 @@ export default function Notebooks({ uid, onGoFix }: { uid: string; onGoFix: () =
 
   return (
     <div>
-      <h1 className="text-2xl font-bold pt-3">📓 Notebooks</h1>
-      <AIOffBanner onGoFix={onGoFix} />
-      <p className="opacity-50 text-sm mt-1">Your NotebookLM — one notebook per subject. Add your sources, get a leveled course with quizzes, a podcast, and a tutor that teaches from YOUR material.</p>
+      <h1 className="font-display text-2xl font-bold pt-3">Learn</h1>
+      <div className="mt-2 rounded-xl paper border px-3.5 py-2.5">
+        <p className="text-[10px] uppercase tracking-[0.2em] opacity-45">Today&apos;s trunk</p>
+        <p className="study-prose text-[1.02rem]">{trunkOfDay(todayStr())}</p>
+        <p className="text-[10px] opacity-40 mt-0.5">15 minutes · one leaf · one line in your own words — the line scores L on the card.</p>
+      </div>
 
       <SectionTitle>Your notebooks</SectionTitle>
       {!loaded ? (
@@ -67,11 +70,11 @@ export default function Notebooks({ uid, onGoFix }: { uid: string; onGoFix: () =
             const pct = a && a.total ? Math.round((a.done / a.total) * 100) : 0;
             return (
               <button key={n.id} onClick={() => setSelected(n.id)} className="w-full text-left">
-                <Card padded={false} className="p-3.5">
+                <Card padded={false} tone={trunkOfDay(todayStr()) === n.title ? "paper" : "default"} className="p-3.5">
                   <div className="flex items-center gap-3">
                     <span className="text-2xl shrink-0">{n.emoji || "📓"}</span>
                     <div className="min-w-0 flex-1">
-                      <p className="font-bold truncate">{n.title}</p>
+                      <p className="font-bold truncate">{n.title}{trunkOfDay(todayStr()) === n.title && <span className="ml-2 text-[9px] uppercase tracking-wider text-[var(--neon)] font-semibold">today</span>}</p>
                       {n.subject && <p className="text-xs opacity-50 truncate">{n.subject}</p>}
                       {a && a.total > 0 && (
                         <div className="flex items-center gap-2 mt-1.5">

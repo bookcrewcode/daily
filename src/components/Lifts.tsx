@@ -286,7 +286,7 @@ export default function Lifts({ uid }: { uid: string }) {
   return (
     <div>
       <div className="flex items-center justify-between pt-3">
-        <h1 className="text-2xl font-bold">🏋️ Lifts</h1>
+        <h1 className="text-2xl font-bold">Body</h1>
         <button onClick={() => setManaging((v) => !v)} className="text-xs opacity-40 underline">{managing ? "done" : "edit split"}</button>
       </div>
       <p className="opacity-50 text-sm mt-1">Beat last session. Tap an exercise name for its chart.</p>

@@ -1,6 +1,6 @@
 "use client";
 
-// 📅 Semester — the term the app paces itself against, plus the weekly class
+// Semester — the term the app paces itself against, plus the weekly class
 // timetable it knows by heart. Set classes ONCE; every day the front door and
 // the day view already know where he has to be — no more re-typing "class
 // 9-11" into a plan every night. This is the day-to-day logistics layer for
@@ -135,7 +135,7 @@ export default function Semester({ uid }: { uid: string }) {
     <Card className="mt-4">
       <div className="flex items-center justify-between">
         <div className="min-w-0">
-          <p className="text-xs uppercase tracking-widest opacity-60">📅 Semester</p>
+          <p className="text-xs uppercase tracking-widest opacity-60">Semester</p>
           <p className="text-[11px] opacity-50 mt-0.5 truncate">
             {sem ? `${sem.title} · ${pace}` : "Not set — the app can't pace the term yet"}
           </p>

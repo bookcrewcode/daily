@@ -80,7 +80,7 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
       setRepDays(((reps.data ?? []) as { day: string }[]).map((r) => r.day));
       setTodayReps((tr.data ?? []) as Rep[]);
       const cls = (cb.error ? [] : ((cb.data ?? []) as { label: string; location: string; start_t: string }[]))
-        .map((c) => ({ time: c.start_t, what: `🎓 ${c.label}${c.location ? ` · ${c.location}` : ""}` }));
+        .map((c) => ({ time: c.start_t, what: `${c.label}${c.location ? ` · ${c.location}` : ""}` }));
       const plan = (ni.error ? [] : ((ni.data?.items ?? []) as Ev[])).filter((x) => x?.what);
       setBlocks([...cls, ...plan].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")));
       setLoadErr(false); setLoaded(true);
@@ -293,8 +293,7 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
 
       {row.frozen ? (
         <div className="rounded-2xl border border-sky-400/40 bg-sky-500/10 p-4 text-center">
-          <p className="text-2xl">❄️</p>
-          <p className="font-semibold mt-1">Freeze day — declared last night.</p>
+          <p className="font-semibold">Freeze day — declared last night.</p>
           <p className="text-xs opacity-60 mt-1">Scores 0, streak survives. No audit, no guilt. Back tomorrow.</p>
         </div>
       ) : (
@@ -320,11 +319,11 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
                   </div>
                   <button onClick={() => patch({ r_launch: !row.r_launch }, "rl")} disabled={!!saving}
                     className={`px-3 py-2 rounded-lg text-xs font-bold active:scale-95 disabled:opacity-50 ${row.r_launch ? "bg-[var(--neon)] text-black" : "bg-white/10"}`}>
-                    ☀️ Launch
+                    Launch
                   </button>
                   <button onClick={() => patch({ r_shutdown: !row.r_shutdown }, "rs")} disabled={!!saving}
                     className={`px-3 py-2 rounded-lg text-xs font-bold active:scale-95 disabled:opacity-50 ${row.r_shutdown ? "bg-[var(--neon)] text-black" : "bg-white/10"}`}>
-                    🌙 Shutdown
+                    Shutdown
                   </button>
                 </div>
               </div>
@@ -423,19 +422,19 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
               <button onClick={() => patch({ bonus_uber: !row.bonus_uber }, "bu")} disabled={!!saving || (repsToday === 0 && !row.bonus_uber)}
                 title={repsToday === 0 ? "Reps before rides — log the day's first BC rep first" : ""}
                 className={`px-3 py-2 rounded-lg text-xs font-semibold active:scale-95 border disabled:opacity-35 ${row.bonus_uber ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-white/10"}`}>
-                🛵 Uber target
+                Uber
               </button>
               <button onClick={() => patch({ bonus_trading: !row.bonus_trading }, "bt")} disabled={!!saving}
                 className={`px-3 py-2 rounded-lg text-xs font-semibold active:scale-95 border ${row.bonus_trading ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-white/10"}`}>
-                📈 Rules 100%
+                Rules 100%
               </button>
               <button onClick={() => patch({ bonus_dev: !row.bonus_dev }, "bd")} disabled={!!saving}
                 className={`px-3 py-2 rounded-lg text-xs font-semibold active:scale-95 border ${row.bonus_dev ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-white/10"}`}>
-                🛠 Shipped
+                Shipped
               </button>
               <button onClick={() => patch({ bonus_chess: !row.bonus_chess }, "bx")} disabled={!!saving}
                 className={`px-3 py-2 rounded-lg text-xs font-semibold active:scale-95 border ${row.bonus_chess ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-white/10"}`}>
-                ♟ Rated game
+                Chess
               </button>
             </div>
             <p className="text-[10px] opacity-35 mt-2">Uber only counts after the day&apos;s first rep · trading point is discipline, not P&amp;L · &quot;worked on&quot; ≠ shipped.</p>
@@ -469,10 +468,10 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         {/* freeze declare — tonight, for tomorrow, max one a week */}
         {!tomorrowFrozen && !frozenUsedInTomorrowWeek && (
           <button onClick={() => patchDay(tomorrow, { frozen: true }, "fz")} disabled={!!saving}
-            className="text-[10px] opacity-40 underline mt-2 active:scale-95">❄️ declare tomorrow a freeze day (exam / sick / travel)</button>
+            className="text-[10px] opacity-40 underline mt-2 active:scale-95">Declare tomorrow a freeze day (exam · sick · travel)</button>
         )}
         {tomorrowFrozen && (
-          <p className="text-[10px] opacity-50 mt-2">❄️ Tomorrow is frozen — streak survives, scores 0.{" "}
+          <p className="text-[10px] opacity-50 mt-2">Tomorrow is frozen — streak survives, scores 0.{" "}
             <button onClick={() => patchDay(tomorrow, { frozen: false }, "fz")} disabled={!!saving} className="underline">undo</button>
           </p>
         )}

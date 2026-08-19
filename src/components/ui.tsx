@@ -68,13 +68,13 @@ export function Card({ children, className = "", tone = "default", padded = true
   children: React.ReactNode; className?: string; tone?: "default" | "neon" | "warn" | "paper"; padded?: boolean;
 }) {
   const tones: Record<string, string> = {
-    default: "bg-white/5 border-white/10 shadow-[0_2px_12px_rgba(0,0,0,0.25)]",
-    neon: "bg-[var(--neon)]/10 border-[var(--neon)]/40 shadow-[0_2px_16px_rgba(167,139,250,0.08)]",
-    warn: "bg-orange-500/10 border-orange-500/40 shadow-[0_2px_12px_rgba(0,0,0,0.22)]",
-    paper: "paper shadow-[0_4px_24px_rgba(0,0,0,0.3)]",
+    default: "bg-white/[0.035] border-white/[0.07]",
+    neon: "bg-[var(--neon)]/[0.08] border-[var(--neon)]/30",
+    warn: "bg-orange-500/[0.08] border-orange-500/30",
+    paper: "paper",
   };
   return (
-    <div className={`rounded-2xl border backdrop-blur-[2px] ${tones[tone]} ${padded ? "p-4" : ""} ${className}`}>{children}</div>
+    <div className={`rounded-xl border ${tones[tone]} ${padded ? "p-4" : ""} ${className}`}>{children}</div>
   );
 }
 
