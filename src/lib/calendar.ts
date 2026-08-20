@@ -31,15 +31,19 @@ export async function fetchCalendarEvents(icsUrl: string, day: Date): Promise<Ca
 
 // "9", "9:30", "9am", "2:15pm", "14:30" → minutes since midnight (or null).
 export function parseTime(raw: string): number | null {
-  const m = raw.trim().toLowerCase().match(/^(\d{1,2})(?::(\d{2}))?\s*(am?|pm?)?$/);
+  const t = raw.trim().toLowerCase();
+  const m = t.match(/^(\d{1,2})(?::(\d{2}))?\s*(am?|pm?)?$/);
   if (!m) return null;
   let h = Number(m[1]);
   const min = Number(m[2] ?? 0);
   if (h > 23 || min > 59) return null;
   if (m[3]?.startsWith("p") && h < 12) h += 12;
   if (m[3]?.startsWith("a") && h === 12) h = 0;
-  // bare small hours like "2" or "3:30" on a day planner almost always mean afternoon
-  if (!m[3] && h >= 1 && h <= 6) h += 12;
+  // bare small hours like "2" or "3:30" on a day planner almost always mean
+  // afternoon — but ONLY for free text. Zero-padded "06:00" comes from a
+  // 24-hour <input type="time"> and is unambiguous: 6 AM means 6 AM.
+  const unambiguous = /^\d{2}:\d{2}$/.test(t);
+  if (!m[3] && !unambiguous && h >= 1 && h <= 6) h += 12;
   return h * 60 + min;
 }
 

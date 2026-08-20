@@ -9,6 +9,13 @@
 //   Streak day = core ≥ 3. Freeze day scores 0 but the streak survives.
 //   Week bands: <25 Down · 25–39 Surviving · 40–54 Running · 55+ Compounding.
 
+// Split stamps — seconds-of-local-day when each core part locked in (and when
+// the card "closed", i.e. core hit 5). The speedrun layer: honest wall-clock
+// times, no fake timers. PB = the earliest historical stamp per part.
+export type SplitKey = "r" | "b" | "s" | "bc" | "l";
+export type Splits = Partial<Record<SplitKey | "closed", number>>;
+export const SPLIT_KEYS: SplitKey[] = ["r", "b", "s", "bc", "l"];
+
 export type GameDayRow = {
   day: string;               // YYYY-MM-DD
   r_launch: boolean;
@@ -21,6 +28,7 @@ export type GameDayRow = {
   bonus_chess: boolean;
   frozen: boolean;
   learn_line: string;
+  splits: Splits;
 };
 
 export const SEASON_START = "2026-08-18"; // day 0; streak day 1 = Aug 19
@@ -29,8 +37,89 @@ export const SEASON_DAYS = 119;
 export const REP_TARGET = 250;
 
 export function emptyDay(day: string): GameDayRow {
-  return { day, r_launch: false, r_shutdown: false, b: false, s: false, bonus_uber: false, bonus_trading: false, bonus_dev: false, bonus_chess: false, frozen: false, learn_line: "" };
+  return { day, r_launch: false, r_shutdown: false, b: false, s: false, bonus_uber: false, bonus_trading: false, bonus_dev: false, bonus_chess: false, frozen: false, learn_line: "", splits: {} };
 }
+
+// ── the speedrun clock ──────────────────────────────────────────────────────
+export const secOfDay = (d: Date = new Date()) => d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+
+// 21:37-style; seconds-of-day → readable clock time
+export function fmtClock(s: number): string {
+  const h = Math.floor(s / 3600) % 24, m = Math.floor((s % 3600) / 60);
+  return `${h}:${String(m).padStart(2, "0")}`;
+}
+// signed compact duration for deltas: −1:07 means 67 min EARLIER than PB.
+// Total minutes FIRST, then split — rounding the remainder alone yields ":60".
+export function fmtDelta(s: number): string {
+  const sign = s < 0 ? "−" : "+";
+  const t = Math.round(Math.abs(s) / 60);
+  const h = Math.floor(t / 60), m = t % 60;
+  return `${sign}${h}:${String(m).padStart(2, "0")}`;
+}
+export function fmtDur(s: number): string {
+  const a = Math.max(0, s);
+  const h = Math.floor(a / 3600), m = Math.floor((a % 3600) / 60);
+  return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+}
+
+// Personal bests: the EARLIEST stamp per part across the season so far.
+// Frozen days and the excluded day (today, still in progress) don't count —
+// and neither do out-of-season days (day 0 / pre-season tinkering must never
+// set a season record).
+export function partBests(days: GameDayRow[], excludeDay: string): Splits {
+  const best: Splits = {};
+  for (const d of days) {
+    const i = diffDays(SEASON_START, d.day);
+    if (d.day === excludeDay || d.frozen || i < 1 || i > SEASON_DAYS) continue;
+    const sp = d.splits ?? {};
+    for (const k of [...SPLIT_KEYS, "closed"] as (SplitKey | "closed")[]) {
+      const v = sp[k];
+      if (typeof v === "number" && v > 0 && (best[k] === undefined || v < best[k]!)) best[k] = v;
+    }
+  }
+  return best;
+}
+
+// ── season tiers (battle-pass track: 250 reps = season XP, 5 tiers) ─────────
+export const TIERS = [
+  { at: 50, name: "Ignition" },
+  { at: 100, name: "Momentum" },
+  { at: 150, name: "Pipeline" },
+  { at: 200, name: "Closer" },
+  { at: 250, name: "The Engine" },
+] as const;
+
+// Level-up dates on the calendar (streak thresholds → season map crowns).
+export const LEVEL_DATES = [
+  { days: 7, name: "Installed", date: "2026-08-25" },
+  { days: 21, name: "Habit", date: "2026-09-08" },
+  { days: 45, name: "Identity", date: "2026-10-02" },
+  { days: 90, name: "Automatic", date: "2026-11-16" },
+  { days: 119, name: "Season complete", date: "2026-12-15" },
+] as const;
+
+// Named weeks (Duolingo's own rationale: "Week 5" alone motivates nobody).
+// Keyed by the week's Monday.
+export const WEEK_LABELS: Record<string, string> = {
+  "2026-08-17": "Install the loop",
+  "2026-08-24": "Lock the rituals",
+  "2026-08-31": "Syllabus week — capture every date",
+  "2026-09-07": "21-day line · Habit",
+  "2026-09-14": "First full-load week",
+  "2026-09-21": "Front-load the reps",
+  "2026-09-28": "45-day line · Identity",
+  "2026-10-05": "Midterm runway",
+  "2026-10-12": "Midterms — hold the core",
+  "2026-10-19": "Rebuild pace",
+  "2026-10-26": "Compound week",
+  "2026-11-02": "No-drift week",
+  "2026-11-09": "Pre-Thanksgiving push",
+  "2026-11-16": "90-day line · Automatic",
+  "2026-11-23": "Thanksgiving — protect the core",
+  "2026-11-30": "Finals runway",
+  "2026-12-07": "Finals",
+  "2026-12-14": "Close the season",
+};
 
 const MS = 86400000;
 const at = (d: string) => new Date(d + "T00:00:00").getTime();

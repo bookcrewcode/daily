@@ -1,9 +1,11 @@
 "use client";
 
 // Tiny dependency-free canvas confetti. One burst ≈ 2s, self-cleaning.
-const COLORS = ["#a78bfa", "#fbbf24", "#60a5fa", "#f472b6", "#a78bfa", "#edf2ef"];
+// Palette-locked to indigo / white / gold — confetti policy: exactly three
+// triggers app-wide (gold split micro, day-complete small, level-up big).
+const COLORS = ["#7c87f0", "#ffffff", "#d9a842", "#a5adf5", "#e9ebf1"];
 
-export function burstConfetti(power: "small" | "big" = "big") {
+export function burstConfetti(power: "micro" | "small" | "big" = "big") {
   if (typeof document === "undefined") return;
   let canvas = document.getElementById("confetti-canvas") as HTMLCanvasElement | null;
   if (!canvas) {
@@ -19,7 +21,7 @@ export function burstConfetti(power: "small" | "big" = "big") {
   ctx.scale(dpr, dpr);
 
   const W = window.innerWidth;
-  const n = power === "big" ? 140 : 60;
+  const n = power === "big" ? 140 : power === "small" ? 60 : 12;
   const parts = Array.from({ length: n }, () => ({
     x: W / 2 + (Math.random() - 0.5) * W * 0.5,
     y: window.innerHeight * 0.35,
@@ -55,5 +57,5 @@ export function burstConfetti(power: "small" | "big" = "big") {
   }
   requestAnimationFrame(frame);
 
-  if ("vibrate" in navigator) navigator.vibrate(power === "big" ? [30, 40, 60] : 20);
+  if ("vibrate" in navigator) navigator.vibrate(power === "big" ? [30, 40, 60] : power === "small" ? 20 : 10);
 }

@@ -1,31 +1,93 @@
 @import "tailwindcss";
 
+/* ── Tokens — v3 "instrument" system ─────────────────────────────────
+   Surface ladder from Raycast/Linear: depth = lighter surface + stronger
+   hairline, never a drop shadow. Semantic status trio from WHOOP: green
+   done/ahead · amber partial/at-risk · red missed/behind. Indigo is brand,
+   structure and progress ONLY — it never signals status. Gold = records. */
 :root {
-  --background: #0b0d11;
-  --surface: rgba(255, 255, 255, 0.035);
-  --foreground: #e9ebf1;
-  --neon: #7c87f0;            /* the one accent — disciplined indigo */
+  --canvas: #07080a;
+  --card: #0f1114;
+  --raised: #151920;
+  --top: #1a1f27;
+  --border-1: rgba(255, 255, 255, 0.06);
+  --border-2: rgba(255, 255, 255, 0.10);
+  --border-3: rgba(255, 255, 255, 0.16);
+
+  /* legacy aliases — the old rooms keep rendering without a rewrite */
+  --background: var(--canvas);
+  --surface: var(--card);
+
+  --foreground: #f7f8f8;
+  --text-2: #d0d6e0;
+  --text-3: #8a8f98;
+  --text-4: #62666d;
+
+  --neon: #7c87f0;
   --neon-dim: rgba(124, 135, 240, 0.13);
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --bad: #f87171;
   --gold: #d9a842;
+
   --paper: rgba(255, 242, 222, 0.07);
   --paper-border: rgba(255, 231, 190, 0.16);
   --ink-soft: #d6d9e4;
+
+  --font-body: var(--font-geist-sans);
+  --font-display: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
 }
 
+html { background: var(--canvas); }
+
 body {
-  background: var(--background);
+  background: transparent;
   color: var(--foreground);
   font-family: var(--font-body), -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior-y: contain;
 }
 
-/* display type: headings + hero numbers get character */
+/* 2.5% grain over the canvas — kills the dead-flat template look without
+   reading as texture. Sits under all content. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* display type: Linear-tight headings */
 h1, h2, h3 {
   font-family: var(--font-display), var(--font-body), system-ui, sans-serif;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
 }
 .font-display { font-family: var(--font-display), system-ui, sans-serif; }
+
+/* every number in the app rides the mono — the single move that makes a
+   dashboard read as an instrument */
+.mono {
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.eyebrow {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-3);
+}
+
+/* the ONE ambient glow in the whole app — behind the Card's hero ring */
+.glow-hero {
+  position: absolute;
+  inset: -50% -20%;
+  pointer-events: none;
+  background: radial-gradient(120% 80% at 50% 0%, rgba(124, 135, 240, 0.14), transparent 60%);
+}
 
 * {
   -webkit-user-select: none;
@@ -83,6 +145,20 @@ textarea {
   80% { transform: rotate(6deg); }
 }
 .chest-shake { display: inline-block; animation: chestShake 0.6s ease; }
+
+/* slow pulse for the TODAY node on the season map + live timeline dot */
+@keyframes softPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.soft-pulse { animation: softPulse 2.2s ease-in-out infinite; }
+
+/* gold "record" flash — a split beat its personal best */
+@keyframes goldFlash {
+  0% { color: var(--gold); text-shadow: 0 0 14px rgba(217, 168, 66, 0.7); }
+  100% { color: var(--gold); text-shadow: none; }
+}
+.gold-flash { animation: goldFlash 1.2s ease forwards; }
 
 /* gold "perfect streak" flame (shield-free run) */
 .flame-gold {

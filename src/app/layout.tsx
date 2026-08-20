@@ -1,11 +1,12 @@
 import type { Metadata, Viewport } from "next";
-import { Space_Grotesk, Inter, Newsreader } from "next/font/google";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
+import { Newsreader } from "next/font/google";
 import "./globals.css";
 
-// self-hosted at build time by next/font — no external requests at runtime
-const display = Space_Grotesk({ subsets: ["latin"], variable: "--font-display", weight: ["500", "600", "700"] });
-const body = Inter({ subsets: ["latin"], variable: "--font-body" });
-// editorial serif for study/teaching long-form — the Learning "study desk" voice
+// Geist + Geist Mono (Vercel's instrument pair) — self-hosted at build time by
+// next/font, zero runtime requests. Mono carries every number in the app.
+// Newsreader stays as the Learning "study desk" editorial serif.
 const reading = Newsreader({ subsets: ["latin"], variable: "--font-reading", weight: ["400", "500", "600"], style: ["normal", "italic"] });
 
 export const metadata: Metadata = {
@@ -26,7 +27,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0a0a14",
+  themeColor: "#07080a",
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
@@ -40,7 +41,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`h-full antialiased ${display.variable} ${body.variable} ${reading.variable}`}>
+    <html lang="en" className={`h-full antialiased ${GeistSans.variable} ${GeistMono.variable} ${reading.variable}`}>
       <body className="min-h-full">{children}</body>
     </html>
   );

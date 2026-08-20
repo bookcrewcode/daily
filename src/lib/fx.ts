@@ -64,9 +64,9 @@ export function xpToast(xp: number, label?: string) {
   el.textContent = `+${xp} XP${label ? ` · ${label}` : ""}`;
   const offset = (toastCount++ % 3) * 34;
   el.style.cssText = `position:fixed;top:${64 + offset}px;left:50%;transform:translateX(-50%);z-index:90;
-    background:rgba(11,15,14,0.92);border:1px solid rgba(167,139,250,0.5);color:#a78bfa;
-    font-weight:800;font-size:13px;padding:6px 14px;border-radius:999px;pointer-events:none;
-    box-shadow:0 0 18px rgba(167,139,250,0.25);animation:xpToastUp 1.4s ease forwards;`;
+    background:rgba(15,17,20,0.94);border:1px solid rgba(124,135,240,0.45);color:#7c87f0;
+    font-weight:700;font-size:12px;font-variant-numeric:tabular-nums;padding:6px 14px;border-radius:999px;pointer-events:none;
+    animation:xpToastUp 1.4s ease forwards;`;
   document.body.appendChild(el);
   setTimeout(() => { el.remove(); toastCount = Math.max(0, toastCount - 1); }, 1450);
 }

@@ -1,8 +1,105 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import NumberFlow from "@number-flow/react";
 import { burstConfetti } from "@/lib/confetti";
 import { REWARDS } from "@/lib/gamification";
+
+// Every changing number rolls like an odometer — the machine registers effort.
+export function Num({ value, className = "" }: { value: number; className?: string }) {
+  return (
+    <NumberFlow value={value} className={`mono ${className}`}
+      transformTiming={{ duration: 450, easing: "cubic-bezier(0.2, 0.7, 0.2, 1)" }} />
+  );
+}
+
+export function Eyebrow({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <p className={`eyebrow ${className}`}>{children}</p>;
+}
+
+// Segmented status ring (WHOOP/Apple grammar): n equal arcs closing clockwise,
+// each colored by its own state. The Card's hero and the season map's TODAY node.
+export function SegRing({ size = 112, stroke = 8, done, color = "var(--neon)", children }: {
+  size?: number; stroke?: number; done: boolean[]; color?: string; children?: React.ReactNode;
+}) {
+  const n = Math.max(1, done.length);
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const gap = n > 1 ? Math.max(3, c * 0.012) : 0;
+  const seg = c / n - gap;
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        {done.map((ok, i) => (
+          <circle key={i} cx={size / 2} cy={size / 2} r={r} fill="none"
+            stroke={ok ? color : "rgba(255,255,255,0.07)"}
+            strokeWidth={stroke} strokeLinecap="round"
+            strokeDasharray={`${seg} ${c - seg}`}
+            strokeDashoffset={-(i * (seg + gap))}
+            style={{ transition: "stroke 0.35s ease" }} />
+        ))}
+      </svg>
+      <div className="absolute inset-0 grid place-items-center">{children}</div>
+    </div>
+  );
+}
+
+// Single-value progress ring — rep counter, fuel gauge.
+export function ProgressCircle({ pct, size = 64, stroke = 6, color = "var(--neon)", children }: {
+  pct: number; size?: number; stroke?: number; color?: string; children?: React.ReactNode;
+}) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const p = Math.min(1, Math.max(0, pct));
+  return (
+    <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={stroke} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={stroke} strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c * (1 - p)}
+          style={{ transition: "stroke-dashoffset 0.5s cubic-bezier(0.2,0.7,0.2,1), stroke 0.3s ease" }} />
+      </svg>
+      <div className="absolute inset-0 grid place-items-center">{children}</div>
+    </div>
+  );
+}
+
+// Numeric stepper (Origin UI density): tap ± for discrete writes, type for exact.
+// Commit-on-blur like NumCard so a typed "225" never races as 2 → 22 → 225.
+export function Stepper({ value, onCommit, step = 5, min = 0, placeholder, className = "" }: {
+  value: number | null; onCommit: (v: number | null) => void; step?: number; min?: number;
+  placeholder?: string; className?: string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (value == null ? "" : String(value));
+  const commit = () => {
+    if (draft === null) return;
+    const t = draft.trim();
+    setDraft(null);
+    if (t === "") { if (value !== null) onCommit(null); return; }
+    const v = Number(t);
+    if (!Number.isNaN(v) && v !== value) onCommit(Math.max(min, v));
+  };
+  const bump = (d: number) => {
+    // an unblurred typed draft is the user's freshest intent — step from IT,
+    // never from the stale committed value (iOS Safari doesn't blur inputs
+    // when a button is tapped, so commit-on-blur alone can't be relied on)
+    const typed = draft !== null && draft.trim() !== "" && !Number.isNaN(Number(draft)) ? Number(draft) : null;
+    setDraft(null);
+    onCommit(Math.max(min, (typed ?? value ?? 0) + d));
+  };
+  return (
+    <div className={`flex items-center rounded-lg bg-black/30 border border-[var(--border-1)] ${className}`}>
+      <button onClick={() => bump(-step)} className="px-2.5 py-2 text-sm opacity-50 active:scale-90" tabIndex={-1}>−</button>
+      <input type="number" inputMode="decimal" value={shown} placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        className="w-full min-w-0 bg-transparent text-center outline-none text-sm font-semibold mono" />
+      <button onClick={() => bump(step)} className="px-2.5 py-2 text-sm opacity-50 active:scale-90" tabIndex={-1}>＋</button>
+    </div>
+  );
+}
 
 export function Ring({ score, total }: { score: number; total: number }) {
   const r = 26, c = 2 * Math.PI * r, pct = total ? score / total : 0;
@@ -65,10 +162,11 @@ export function SectionTitle({ children, id }: { children: React.ReactNode; id?:
 
 // ── Shared visual primitives (design system) ─────────────────────────
 export function Card({ children, className = "", tone = "default", padded = true }: {
-  children: React.ReactNode; className?: string; tone?: "default" | "neon" | "warn" | "paper"; padded?: boolean;
+  children: React.ReactNode; className?: string; tone?: "default" | "raised" | "neon" | "warn" | "paper"; padded?: boolean;
 }) {
   const tones: Record<string, string> = {
-    default: "bg-white/[0.035] border-white/[0.07]",
+    default: "bg-[var(--card)] border-[var(--border-1)]",
+    raised: "bg-[var(--raised)] border-[var(--border-2)]",
     neon: "bg-[var(--neon)]/[0.08] border-[var(--neon)]/30",
     warn: "bg-orange-500/[0.08] border-orange-500/30",
     paper: "paper",

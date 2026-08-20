@@ -14,7 +14,7 @@ import { supabase } from "@/lib/supabase";
 import { GameProvider, useGame } from "@/lib/useGameData";
 import TheCard from "@/components/TheCard";
 import PlanSpace from "@/components/PlanSpace";
-import Lifts from "@/components/Lifts";
+import Body from "@/components/Body";
 import Notebooks from "@/components/Notebooks";
 import AIOffBanner from "@/components/AIOffBanner";
 import AIKey from "@/components/AIKey";
@@ -139,7 +139,7 @@ function Shell({ uid }: { uid: string }) {
         <div key={tab} className="tab-enter">
           {tab === "home" && <TheCard uid={uid} onGoTab={(t) => go(t as Tab)} />}
           {tab === "plan" && <PlanSpace uid={uid} />}
-          {tab === "body" && <Lifts uid={uid} />}
+          {tab === "body" && <Body uid={uid} />}
           {tab === "learning" && <Notebooks uid={uid} onGoFix={() => setSettingsOpen(true)} />}
 
           {tab === "today" && <Today uid={uid} onOpenAdvisor={() => setBoardOpen(true)} onGoTab={(t) => go(t as Tab)} />}
@@ -159,17 +159,17 @@ function Shell({ uid }: { uid: string }) {
         {boardOpen && <Board onClose={() => setBoardOpen(false)} />}
 
         {/* mobile dock — four words and a settings dot. That's the whole nav. */}
-        <nav className="fixed left-3 right-3 z-10 rounded-2xl border border-white/[0.07] bg-[#101216]/95 md:hidden"
+        <nav className="fixed left-3 right-3 z-10 rounded-2xl border border-[var(--border-2)] bg-[var(--raised)]/95 backdrop-blur-sm md:hidden"
           style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
           <div className="max-w-md mx-auto grid grid-cols-5">
             {SPACES.map((s) => (
               <button key={s.key} onClick={() => go(s.key)}
-                className={`relative py-3.5 text-[12px] font-semibold transition ${tab === s.key ? "text-[var(--neon)]" : inSpace ? "opacity-45" : "opacity-45"}`}>
-                {tab === s.key && <span className="absolute top-1.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-[var(--neon)]" />}
+                className={`relative py-3.5 mono text-[10px] font-semibold uppercase tracking-[0.14em] transition ${tab === s.key ? "text-[var(--neon)]" : "opacity-45"}`}>
+                {tab === s.key && <span className="absolute top-0 left-1/4 right-1/4 h-[2px] rounded-full bg-[var(--neon)]" />}
                 {s.label}
               </button>
             ))}
-            <button onClick={() => setSettingsOpen(true)} className={`py-3.5 text-[12px] font-semibold ${legacyMeta || settingsOpen ? "text-[var(--neon)]" : "opacity-45"}`}>
+            <button onClick={() => setSettingsOpen(true)} className={`py-3.5 mono text-[10px] font-semibold tracking-[0.14em] ${legacyMeta || settingsOpen ? "text-[var(--neon)]" : "opacity-45"}`}>
               •••
             </button>
           </div>
