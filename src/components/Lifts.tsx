@@ -418,7 +418,7 @@ export default function Lifts({ uid }: { uid: string }) {
             {chartData.length >= 2 ? (
               <>
                 <p className="text-xs opacity-50 mb-2">best set per session · last {chartData.length} sessions · all-time best <b className="text-[var(--neon)]">{Math.max(...chartData.map(([, w]) => w))} lb</b></p>
-                <Sparkline series={[{ values: chartData.map(([, w]) => w), color: "#a78bfa", width: 2 }]} height={72} />
+                <Sparkline series={[{ values: chartData.map(([, w]) => w), color: "#7c87f0", width: 2 }]} height={72} />
                 <div className="flex justify-between text-[10px] opacity-40 mt-1">
                   <span>{chartData[0][0]}</span><span>{chartData[chartData.length - 1][0]}</span>
                 </div>

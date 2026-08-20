@@ -235,7 +235,7 @@ export default function Home({ uid, onGoTab }: { uid: string; onGoTab: (t: strin
                 <p className="font-display text-lg font-bold leading-none">{weights[weights.length - 1]}<span className="text-[10px] opacity-40 ml-0.5">lb</span></p>
                 <p className="text-[9px] uppercase tracking-widest opacity-40 mt-0.5">body</p>
               </div>
-              <div className="flex-1 min-w-0"><Sparkline series={[{ values: weights, color: "#a78bfa" }]} goal={190} height={34} /></div>
+              <div className="flex-1 min-w-0"><Sparkline series={[{ values: weights, color: "#7c87f0" }]} goal={190} height={34} /></div>
             </div>
           )}
           {mastery.total > 0 && (
