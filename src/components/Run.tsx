@@ -20,6 +20,8 @@ import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
 import { sfx, buzz, xpToast } from "@/lib/fx";
 import Diagram, { type DiagramSpec } from "./Diagram";
+import ChapterClip from "./ChapterClip";
+import ClipFeed from "./ClipFeed";
 
 type Card =
   | { kind: "teach"; text: string; diagram: DiagramSpec | null }
@@ -52,6 +54,7 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
   const game = useGame();
   const [cards, setCards] = useState<Card[] | null>(null);
   const [i, setI] = useState(0);
+  const [feedOpen, setFeedOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
@@ -241,6 +244,11 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
               <div>
                 <p className="study-prose text-[1.06rem]">{card.text}</p>
                 {card.diagram && <Diagram spec={card.diagram} />}
+                {/* the clip for THIS beat — keyed by (chapter, card index), so
+                    moving through the run moves through the clips */}
+                <ChapterClip uid={uid} notebookId={notebookId} chapterId={chapter.id}
+                  beat={i} concept={(card.text ?? "").slice(0, 300)}
+                  onOpenFeed={() => setFeedOpen(true)} />
               </div>
             )}
 
@@ -426,6 +434,7 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
           </button>
         </div>
       )}
+      {feedOpen && <ClipFeed uid={uid} chapterId={chapter.id} onClose={() => setFeedOpen(false)} />}
     </div>,
     document.body,
   );
