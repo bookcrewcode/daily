@@ -15,8 +15,24 @@
 // row in the DB with what it has, so a retry resumes instead of restarting
 // (stage 2 skips scenes that already have a stored image — no double billing).
 
-import { supabase } from "./supabase";
-import { advisorCall } from "./notebook";
+import { supabase, SUPABASE_ANON, CLIPS_FN } from "./supabase";
+
+// One call into the clips edge function. Mirrors advisorCall's contract: the
+// resolved value is either the payload or { error }, and a network rejection
+// becomes a synthetic { error } so no caller needs its own try/catch to be safe.
+async function clipCall<T = Record<string, unknown>>(body: Record<string, unknown>): Promise<T & { error?: string }> {
+  try {
+    const { data: session } = await supabase.auth.getSession();
+    const res = await fetch(CLIPS_FN, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${session.session?.access_token}` },
+      body: JSON.stringify(body),
+    });
+    return (await res.json()) as T & { error?: string };
+  } catch {
+    return { error: "Couldn't reach the server — check your connection and try again." } as T & { error?: string };
+  }
+}
 
 export type ClipScene = {
   narration: string;
@@ -69,8 +85,8 @@ export async function generateClip(
   onStep: (p: GenProgress) => void,
 ): Promise<{ clip?: Clip; error?: string }> {
   onStep({ stage: "script", done: 0, total: 1, note: "Writing the script from your sources…" });
-  const scripted = await advisorCall<{ clip: Clip }>({
-    advisor: "clip-script",
+  const scripted = await clipCall<{ clip: Clip }>({
+    stage: "script",
     notebookId: args.notebookId,
     chapterId: args.chapterId ?? null,
     concept: args.concept ?? "",
@@ -83,7 +99,7 @@ export async function generateClip(
 
   for (let i = 0; i < total; i++) {
     onStep({ stage: "images", done: i, total, note: `Rendering scene ${i + 1} of ${total}…` });
-    const shot = await advisorCall<{ clip?: Clip; path?: string }>({ advisor: "clip-image", clipId: clip.id, scene: i });
+    const shot = await clipCall<{ clip?: Clip; path?: string }>({ stage: "image", clipId: clip.id, scene: i });
     if (shot.error) {
       // keep whatever landed — the row survives and a retry resumes here
       return { clip, error: `Scene ${i + 1} failed: ${shot.error}` };
@@ -92,7 +108,7 @@ export async function generateClip(
   }
 
   onStep({ stage: "voice", done: total, total, note: "Recording the narration…" });
-  const voiced = await advisorCall<{ clip: Clip }>({ advisor: "clip-voice", clipId: clip.id, voice: args.voice ?? "alloy" });
+  const voiced = await clipCall<{ clip: Clip }>({ stage: "voice", clipId: clip.id, voice: args.voice ?? "alloy" });
   if (voiced.error || !voiced.clip) return { clip, error: voiced.error ?? "Couldn't record the narration." };
 
   clip = normalize(voiced.clip);
@@ -107,13 +123,13 @@ export async function finishClip(clip: Clip, onStep: (p: GenProgress) => void, v
   for (let i = 0; i < total; i++) {
     if (cur.scenes[i]?.image_path) continue;
     onStep({ stage: "images", done: i, total, note: `Rendering scene ${i + 1} of ${total}…` });
-    const shot = await advisorCall<{ clip?: Clip }>({ advisor: "clip-image", clipId: cur.id, scene: i });
+    const shot = await clipCall<{ clip?: Clip }>({ stage: "image", clipId: cur.id, scene: i });
     if (shot.error) return { clip: cur, error: shot.error };
     if (shot.clip) cur = normalize(shot.clip);
   }
   if (!cur.audio_path) {
     onStep({ stage: "voice", done: total, total, note: "Recording the narration…" });
-    const voiced = await advisorCall<{ clip?: Clip }>({ advisor: "clip-voice", clipId: cur.id, voice });
+    const voiced = await clipCall<{ clip?: Clip }>({ stage: "voice", clipId: cur.id, voice });
     if (voiced.error) return { clip: cur, error: voiced.error };
     if (voiced.clip) cur = normalize(voiced.clip);
   }
