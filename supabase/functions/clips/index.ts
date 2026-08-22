@@ -111,15 +111,26 @@ async function readSources(token: string, notebookId: string): Promise<{ block: 
 
 async function callText(model: string, system: string, user: string, maxTokens: number, key: string): Promise<string> {
   if (isOpenRouter(key)) {
+    // reasoning OFF: this is a short structured-JSON job, and OpenRouter requires
+    // max_tokens to exceed the reasoning budget — a thinking model would
+    // otherwise burn the whole allowance before writing a single word and come
+    // back finish_reason "length" with empty content.
     const r = await fetch(`${OR_BASE}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, max_tokens: maxTokens, messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
+      body: JSON.stringify({
+        model, max_tokens: maxTokens,
+        reasoning: { effort: "none", exclude: true },
+        messages: [{ role: "system", content: system }, { role: "user", content: user }],
+      }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data?.error?.message ?? "AI error");
-    if (data?.choices?.[0]?.finish_reason === "length") throw new Error("TOOLONG");
-    return String(data?.choices?.[0]?.message?.content ?? "");
+    const text = String(data?.choices?.[0]?.message?.content ?? "");
+    // Only a truncation that actually cost us the payload is fatal. A model that
+    // stopped at the cap but still returned parseable content is fine.
+    if (data?.choices?.[0]?.finish_reason === "length" && !text.trim()) throw new Error("TOOLONG");
+    return text;
   }
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -184,6 +195,7 @@ Deno.serve(async (req) => {
       if (!notebookId) return err("Which notebook?");
       const chapterId = isUuid(String(body.chapterId ?? "")) ? String(body.chapterId) : null;
       const concept = String(body.concept ?? "").slice(0, 400);
+      const beat = Number.isFinite(Number(body.beat)) && Number(body.beat) >= 0 ? Math.min(99, Math.floor(Number(body.beat))) : null;
       const secs = Math.min(60, Math.max(15, Number(body.seconds) || 40));
       const { block, count, failed } = await readSources(token, notebookId);
       if (failed) return err("Couldn't read your sources just now — try again in a moment.");
@@ -212,7 +224,16 @@ ${block.slice(0, 60000)}`;
         ? `Make the clip about: ${concept}`
         : "Pick the single most interesting idea in this material and make the clip about it.";
       try {
-        const raw = await callText(MODELS.smart, sys, ask, 2000, key);
+        // 6000, not 2000: a reasoning model needs headroom above its thinking
+        // budget. If it still comes back empty, retry once with more room
+        // rather than telling him to shorten a clip that was never too long.
+        let raw = "";
+        try {
+          raw = await callText(MODELS.smart, sys, ask, 6000, key);
+        } catch (first) {
+          if (first instanceof Error && first.message === "TOOLONG") raw = await callText(MODELS.smart, sys, ask, 12000, key);
+          else throw first;
+        }
         const parsed = JSON.parse(stripFences(raw)) as {
           title?: string; hook?: string;
           scenes?: { narration?: string; caption?: string; image_prompt?: string }[];
@@ -234,14 +255,16 @@ ${block.slice(0, 60000)}`;
             user_id: user.id, notebook_id: notebookId, chapter_id: chapterId,
             concept, title: String(parsed.title ?? concept ?? "Clip").slice(0, 120),
             hook: String(parsed.hook ?? "").slice(0, 300),
-            scenes: clean, seconds: secs, status: "scripted",
+            scenes: clean, seconds: secs, status: "scripted", beat,
           }),
         });
         if (!ins.ok) return err("Wrote the script but couldn't save it — try again.");
         return ok({ clip: ((await ins.json()) as Record<string, unknown>[])[0] });
       } catch (e) {
         const m = e instanceof Error ? e.message : "";
-        return err(m === "TOOLONG" ? "That script ran long — try a shorter clip." : (m || "Couldn't write that clip — try again."));
+        return err(m === "TOOLONG"
+          ? `${MODELS.smart} returned nothing usable twice — switch the Smart model in Settings and try again.`
+          : (m || "Couldn't write that clip — try again."));
       }
     }
 

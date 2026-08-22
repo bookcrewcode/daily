@@ -19,14 +19,12 @@ import MajorTest from "./MajorTest";
 import StudyGuide from "./StudyGuide";
 import Cards from "./Cards";
 import MindMap from "./MindMap";
-import Clips from "./Clips";
 
-type Section = "sources" | "guide" | "learn" | "clips" | "cards" | "map" | "chat";
+type Section = "sources" | "guide" | "learn" | "cards" | "map" | "chat";
 const SECTIONS: { key: Section; label: string; icon: string }[] = [
   { key: "sources", label: "Sources", icon: "📚" },
   { key: "guide", label: "Guide", icon: "📖" },
   { key: "learn", label: "Learn", icon: "📗" },
-  { key: "clips", label: "Clips", icon: "🎬" },
   { key: "cards", label: "Cards", icon: "🃏" },
   { key: "map", label: "Map", icon: "🕸️" },
   { key: "chat", label: "Chat", icon: "🎓" },
@@ -126,7 +124,6 @@ export default function NotebookView({ uid, notebook, onBack }: { uid: string; n
 
       {section === "sources" && <NotebookSources uid={uid} notebookId={notebook.id} />}
       {section === "guide" && <StudyGuide uid={uid} notebookId={notebook.id} title={notebook.title} />}
-      {section === "clips" && <Clips uid={uid} notebookId={notebook.id} />}
       {section === "cards" && <Cards uid={uid} notebookId={notebook.id} />}
       {section === "map" && <MindMap uid={uid} notebookId={notebook.id} title={notebook.title} />}
       {section === "chat" && <NotebookChat uid={uid} notebookId={notebook.id} />}

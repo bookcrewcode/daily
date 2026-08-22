@@ -51,6 +51,7 @@ export type Clip = {
   hook: string;
   scenes: ClipScene[];
   audio_path: string | null;
+  beat: number | null;
   seconds: number;
   status: "scripted" | "imaging" | "imaged" | "voicing" | "ready" | "failed";
   err: string | null;
@@ -81,7 +82,7 @@ export async function signClip(clip: Clip): Promise<{ images: (string | null)[];
 
 // Full pipeline. onStep fires between stages so the caller can narrate honestly.
 export async function generateClip(
-  args: { notebookId: string; chapterId?: string | null; concept?: string; seconds?: number; voice?: string },
+  args: { notebookId: string; chapterId?: string | null; concept?: string; seconds?: number; voice?: string; beat?: number },
   onStep: (p: GenProgress) => void,
 ): Promise<{ clip?: Clip; error?: string }> {
   onStep({ stage: "script", done: 0, total: 1, note: "Writing the script from your sources…" });
@@ -91,6 +92,7 @@ export async function generateClip(
     chapterId: args.chapterId ?? null,
     concept: args.concept ?? "",
     seconds: args.seconds ?? 40,
+    beat: args.beat ?? null,
   });
   if (scripted.error || !scripted.clip) return { error: scripted.error ?? "Couldn't write the script." };
 
