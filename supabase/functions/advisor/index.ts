@@ -307,14 +307,14 @@ Last 14 days: ${wk || "no data"}
 Active goals: ${gl || "none"}${weekLine}${constraintLine}${incomeLine}${engLines ? `\nTHE ENGINE — his life rows (each daily rep is a vote for an identity; coach in reps-not-outcomes language, celebrate votes cast, diagnose stalls via the four dials: see it / feel it fast / own it / enjoy it):\n${engLines}` : ""}${capLines ? `\nUnprocessed captures in his inbox (open loops on his mind): \n${capLines}` : ""}${memLines ? `\n\nTHINGS YOU REMEMBER ABOUT BEN — dated facts from past conversations (treat as background truth, weigh newer over older, and reference them naturally like a coach who knows him):\n${memLines}` : ""}`;
 }
 
-async function callClaude(model: string, system: string, messages: unknown[], maxTokens: number, apiKey: string) {
+async function callClaude(model: string, system: string, messages: unknown[], maxTokens: number, apiKey: string, mods: Models = DEFAULT_MODELS) {
   if (isOpenRouter(apiKey)) {
     // OpenAI wire format: system rides as the first message; truncation is
     // finish_reason === "length" (mapped to the same TOOLONG sentinel).
     const r = await fetch(OR_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model: orModel(model), max_tokens: maxTokens, messages: [{ role: "system", content: system }, ...(messages as { role: string; content: unknown }[])] }),
+      body: JSON.stringify({ model: orModel(model, mods), max_tokens: maxTokens, messages: [{ role: "system", content: system }, ...(messages as { role: string; content: unknown }[])] }),
     });
     const data = await r.json();
     if (!r.ok) throw new Error(data?.error?.message ?? "AI error");
@@ -349,9 +349,39 @@ const LIGHT = "claude-haiku-4-5-20251001";       // frequent, bounded tasks
 //               openrouter.ai/api/v1/models list on 2026-08-19.
 const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
 const isOpenRouter = (k: string) => k.startsWith("sk-or-");
-const OR_HEAVY = "google/gemini-3.7-flash";       // deep generation (~$0.38/M in, $1.88/M out)
-const OR_LIGHT = "google/gemini-2.5-flash-lite";  // frequent + vision (~$0.10/M in)
-const orModel = (m: string) => (m.includes("haiku") ? OR_LIGHT : OR_HEAVY);
+// Ben picks these in the app (Settings -> Models); these are only the
+// fallbacks when he hasn't chosen. IDs verified against the live
+// openrouter.ai/api/v1/models list on 2026-08-20.
+const OR_HEAVY = "google/gemini-3.7-flash";       // smart tier (~$0.38/M in, $1.88/M out)
+const OR_LIGHT = "google/gemini-2.5-flash-lite";  // fast tier, vision (~$0.10/M in)
+export type Models = { fast: string; smart: string; image: string; voice: string };
+const OR_IMAGE = "google/gemini-2.5-flash-image";   // stills for clips
+const OR_VOICE = "deepgram/aura-2";                 // narration voice
+const DEFAULT_MODELS: Models = { fast: OR_LIGHT, smart: OR_HEAVY, image: OR_IMAGE, voice: OR_VOICE };
+// A model id is only ever "provider/name" — anything else is rejected so a
+// junk settings row can never become an unbounded string in an API call.
+const okModelId = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._:-]+$/.test(v) && v.length <= 100;
+// The user's tier choices, read once per request. A bad/missing row silently
+// falls back — a settings problem must never take the AI layer offline.
+async function userModels(token: string): Promise<Models> {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_settings?select=ai_models`, {
+      headers: { apikey: ANON, Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) return DEFAULT_MODELS;
+    const rows = await r.json();
+    const m = rows?.[0]?.ai_models ?? {};
+    return {
+      fast: okModelId(m.fast) ? m.fast : DEFAULT_MODELS.fast,
+      smart: okModelId(m.smart) ? m.smart : DEFAULT_MODELS.smart,
+      image: okModelId(m.image) ? m.image : DEFAULT_MODELS.image,
+      voice: okModelId(m.voice) ? m.voice : DEFAULT_MODELS.voice,
+    };
+  } catch { return DEFAULT_MODELS; }
+}
+// HEAVY/LIGHT are TIER TOKENS, not ids: on the Anthropic path they are the real
+// model names; on OpenRouter they resolve to whichever model Ben chose.
+const orModel = (m: string, mods: Models = DEFAULT_MODELS) => (m.includes("haiku") ? mods.fast : mods.smart);
 const TOOLONG_MSG = "That's a lot of material — I couldn't finish it in one pass. Split it into a smaller notebook (fewer or shorter sources) and try again.";
 // Translate the TOOLONG sentinel into a real message wherever a catch surfaces
 // e.message to the user, so the raw sentinel never leaks to the UI.
@@ -360,7 +390,7 @@ const friendlyErr = (e: unknown, fallback: string) => e instanceof Error ? (e.me
 // Append-only memory extraction (mem0 pattern): after each coaching exchange,
 // a cheap model pulls 0-2 durable facts into ai_memories. Runs after the
 // response is sent (waitUntil), so chat latency is unaffected.
-async function extractMemories(token: string, userMsg: string, reply: string, apiKey: string) {
+async function extractMemories(token: string, userMsg: string, reply: string, apiKey: string, mods: Models = DEFAULT_MODELS) {
   try {
     const h = { apikey: ANON, Authorization: `Bearer ${token}` };
     const r = await fetch(`${SUPABASE_URL}/rest/v1/ai_memories?select=content&order=created_at.desc&limit=40`, { headers: h });
@@ -368,7 +398,7 @@ async function extractMemories(token: string, userMsg: string, reply: string, ap
     const sys = `You maintain the long-term memory of a personal coaching app for Ben. From the exchange, extract 0-2 DURABLE facts worth remembering in future conversations — life context, commitments he made, goals, struggles, people, preferences. Only things that still matter in a week+. Nothing session-specific, nothing already known.
 Already known (do NOT repeat): ${known.join(" | ") || "nothing yet"}
 Reply ONLY valid JSON, no fences: {"memories": [{"content": "short fact in third person about Ben", "category": "identity|goal|commitment|struggle|relationship|preference|general"}]}`;
-    const raw = await callClaude("claude-haiku-4-5-20251001", sys, [{ role: "user", content: `Ben: ${userMsg.slice(0, 1500)}\n\nCoach: ${reply.slice(0, 1500)}` }], 300, apiKey);
+    const raw = await callClaude("claude-haiku-4-5-20251001", sys, [{ role: "user", content: `Ben: ${userMsg.slice(0, 1500)}\n\nCoach: ${reply.slice(0, 1500)}` }], 300, apiKey, mods);
     const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
     const mems = (Array.isArray(parsed?.memories) ? parsed.memories : []).slice(0, 2);
     for (const m of mems) {
@@ -488,6 +518,10 @@ Deno.serve(async (req) => {
     const ANTHROPIC_API_KEY = await anthropicKey();
     if (!ANTHROPIC_API_KEY) return new Response(JSON.stringify({ error: "No AI key set — the thinking parts are off. Open Tools → 🔑 AI in the app and paste an Anthropic (sk-ant-…) or OpenRouter (sk-or-…) key." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 
+    // Ben's chosen tiers (Settings -> Models). Resolved once per request so a
+    // concurrent call can never read another request's choice.
+    const MODELS = await userModels(token);
+
     const body = await req.json();
     const { advisor = "overseer", message = "", history = [], topicId: rawTopicId = "", clientDay = "" } = body;
     // Validate ONCE, here, so every branch downstream is safe — fixing this at
@@ -501,7 +535,7 @@ Deno.serve(async (req) => {
       const sys = `Generate ONE advanced, genuinely useful English vocabulary word for a sharp adult expanding his working vocabulary. Not obscure/archaic for its own sake — a word a well-read, articulate person would actually use. Avoid these already-known words: ${known.join(", ") || "none yet"}.
 Reply with ONLY valid JSON, no markdown fences, no other text: {"word": "...", "definition": "plain, simple definition", "sentence": "one example sentence using it naturally", "mnemonic": "a short memory trick for the spelling or meaning"}`;
       try {
-        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Generate one word." }], 300, ANTHROPIC_API_KEY);
+        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Generate one word." }], 300, ANTHROPIC_API_KEY, MODELS);
         try {
           const parsed = JSON.parse(stripFences(raw));
           return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
@@ -525,7 +559,7 @@ Write 4-6 SHORT lines, no headers, no preamble, no markdown syntax except emoji:
 5. Close with one line of fire — belief, not pressure.
 Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ctx}`;
       try {
-        const text = await callClaude(LIGHT, sys, [{ role: "user", content: "Write today's briefing." }], 400, ANTHROPIC_API_KEY);
+        const text = await callClaude(LIGHT, sys, [{ role: "user", content: "Write today's briefing." }], 400, ANTHROPIC_API_KEY, MODELS);
         return new Response(JSON.stringify({ text }), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch (e) {
         return new Response(JSON.stringify({ error: friendlyErr(e, "Couldn't write the briefing.") }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
@@ -549,7 +583,7 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANTHROPIC_API_KEY}` },
             body: JSON.stringify({
-              model: OR_LIGHT, max_tokens: 250,
+              model: MODELS.fast, max_tokens: 250,
               messages: [
                 { role: "system", content: sys },
                 { role: "user", content: [
@@ -601,7 +635,7 @@ Use his live data below. Be specific with numbers. Total under 90 words.\n\n${ct
       const past = (recent as { text: string }[]).map((r) => r.text).join(" | ");
       const sys = `Write ONE first-person ${period} affirmation for Ben (he has ADHD; identity-based habits are his engine). ${period === "morning" ? "Morning: set the frame for the day — present tense, active, specific." : "Night: lock in pride from today — reflective, warm, earned."} 1-3 sentences, under 40 words, no quotes, no markdown — his own voice, not a motivational poster. Ground it in his declared identities${ids ? `: ${ids}` : ""}. Do not repeat these recent ones: ${past || "none yet"}. Reply with ONLY the affirmation text.`;
       try {
-        const text = await callClaude(LIGHT, sys, [{ role: "user", content: `Write the ${period} affirmation.` }], 150, ANTHROPIC_API_KEY);
+        const text = await callClaude(LIGHT, sys, [{ role: "user", content: `Write the ${period} affirmation.` }], 150, ANTHROPIC_API_KEY, MODELS);
         return new Response(JSON.stringify({ text: text.trim() }), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch (e) {
         return new Response(JSON.stringify({ error: friendlyErr(e, "Couldn't write one — try again.") }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
@@ -639,7 +673,7 @@ ${ctx}`;
       try {
         const msgs = [...(Array.isArray(history) ? history : []), { role: "user", content: message }];
         while (msgs.length && (msgs[0] as { role: string }).role !== "user") msgs.shift();
-        const raw = await callClaude("claude-opus-4-8", sys, msgs, 1200, ANTHROPIC_API_KEY);
+        const raw = await callClaude(LIGHT, sys, msgs, 1200, ANTHROPIC_API_KEY, MODELS);
         const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
         const items = (Array.isArray(parsed?.items) ? parsed.items : [])
           .filter((it: { time?: string; what?: string }) => it && typeof it.what === "string" && it.what.trim())
@@ -685,7 +719,7 @@ Then give concrete design fixes:
 Reply ONLY valid JSON, no fences:
 {"law": "obvious|attractive|easy|satisfying", "anchor": "After I ...", "min_version": "...", "friction": "...", "why": "one sentence"}`;
       try {
-        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Redesign this row." }], 400, ANTHROPIC_API_KEY);
+        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Redesign this row." }], 400, ANTHROPIC_API_KEY, MODELS);
         const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
         return new Response(JSON.stringify({
           law: String(parsed?.law ?? "").slice(0, 20),
@@ -707,7 +741,7 @@ Reply ONLY valid JSON, no fences:
       const sys = `You are The Overseer applying Theory of Constraints to Ben's week. From his live data below, identify the SINGLE binding constraint — the one bottleneck that, if moved, most advances his $1M net worth or 190 lb goals. Everything else is maintenance. Prefer income when net worth is flat and revenue activity is low (you can't cut your way to $1M). Reply ONLY valid JSON, no fences:
 {"area": "income|body|mind|system", "bottleneck": "the one bottleneck in plain words, <12 words", "metric": "the ONE number to move", "baseline": integer (where it is now, best estimate or 0), "target": integer (a realistic 1-week target), "why": "one short sentence on why this is the constraint"}\n\n${ctx}`;
       try {
-        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Name this week's constraint." }], 300, ANTHROPIC_API_KEY);
+        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Name this week's constraint." }], 300, ANTHROPIC_API_KEY, MODELS);
         const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
         return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch {
@@ -735,7 +769,7 @@ Reply ONLY valid JSON, no fences:
       const sys = `Extract a structured recap of this tutoring session between Ben and his AI tutor. Be faithful to what actually happened — no inventing. Reply ONLY valid JSON, no fences:
 {"chunks": ["core idea in plain words", ...max 4], "weak_spots": ["specific thing Ben struggled with", ...max 3, empty if none], "retrieval": [{"question": "a retrieval question the tutor asked", "got_it": true|false}, ...max 8, empty if none]}`;
       try {
-        const raw = await callClaude("claude-haiku-4-5-20251001", sys, [{ role: "user", content: transcript }], 700, ANTHROPIC_API_KEY);
+        const raw = await callClaude("claude-haiku-4-5-20251001", sys, [{ role: "user", content: transcript }], 700, ANTHROPIC_API_KEY, MODELS);
         const parsed = JSON.parse(raw.trim().replace(/^```[a-z]*\s*/i, "").replace(/\s*```\s*$/, ""));
         return new Response(JSON.stringify(parsed), { headers: { ...cors, "Content-Type": "application/json" } });
       } catch {
@@ -767,7 +801,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Design the chapters." }], 3500, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Design the chapters." }], 3500, ANTHROPIC_API_KEY, MODELS);
         const parsed = JSON.parse(stripFences(raw));
         const chapters = (Array.isArray(parsed?.chapters) ? parsed.chapters : []).slice(0, 8)
           .map((c: Record<string, unknown>) => ({ title: String(c?.title ?? "").slice(0, 160), objective: String(c?.objective ?? "").slice(0, 300), summary: String(c?.summary ?? "").slice(0, 800) }))
@@ -797,7 +831,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block || "(no sources yet — teach the objective from general knowledge, and say plainly you're doing so)"}`;
       try {
-        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Build this chapter." }], 4500, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Build this chapter." }], 4500, ANTHROPIC_API_KEY, MODELS);
         const parsed = JSON.parse(stripFences(raw));
         const chunks = (Array.isArray(parsed?.chunks) ? parsed.chunks : []).slice(0, 6).map((c: Record<string, unknown>) => {
           const ch = (c?.check ?? {}) as Record<string, unknown>;
@@ -851,7 +885,7 @@ Reply ONLY valid JSON, no fences: {"cards":[ ... ]}
 HIS MATERIAL:
 ${block ? block.slice(0, 120000) : "(no sources yet — teach the objective from general knowledge and say so on the first card)"}`;
       try {
-        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Build the run." }], 6000, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Build the run." }], 6000, ANTHROPIC_API_KEY, MODELS);
         const p = JSON.parse(stripFences(raw));
         const S = (v: unknown, n: number) => String(v ?? "").slice(0, n);
         const arr = (v: unknown) => (Array.isArray(v) ? v : []);
@@ -924,7 +958,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Write the exam." }], 3500, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Write the exam." }], 3500, ANTHROPIC_API_KEY, MODELS);
         const parsed = JSON.parse(stripFences(raw));
         const questions = (Array.isArray(parsed?.questions) ? parsed.questions : []).slice(0, 12)
           .map((r: Record<string, unknown>) => ({ q: String(r?.q ?? "").slice(0, 400), expected: String(r?.expected ?? "").slice(0, 800) }))
@@ -949,7 +983,7 @@ Reply ONLY valid JSON, no fences, SAME ORDER as the input:
 ITEMS:
 ${JSON.stringify(items.map((it: { q: string; a: string; expected: string }, i: number) => ({ n: i + 1, question: it.q, key_points: it.expected, ben_answer: it.a })))}${block ? `\n\nHIS MATERIAL:\n${block}` : ""}`;
       try {
-        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Grade these." }], 1600, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Grade these." }], 1600, ANTHROPIC_API_KEY, MODELS);
         const parsed = JSON.parse(stripFences(raw));
         const results = (Array.isArray(parsed?.results) ? parsed.results : []).map((r: Record<string, unknown>) => {
           let sc = Number(r?.score); if (!Number.isFinite(sc)) sc = 0; sc = Math.max(0, Math.min(100, Math.round(sc)));
@@ -974,7 +1008,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Write the episode." }], 4000, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Write the episode." }], 4000, ANTHROPIC_API_KEY, MODELS);
         const parsed = JSON.parse(stripFences(raw));
         const segments = (Array.isArray(parsed?.segments) ? parsed.segments : []).slice(0, 60)
           .map((s: Record<string, unknown>) => ({ speaker: s?.speaker === "B" ? "B" : "A", text: String(s?.text ?? "").slice(0, 1200) }))
@@ -998,7 +1032,7 @@ Aim for 5-7 big_ideas, 6-12 key_terms, 2-4 misconceptions. Ground everything in 
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Write the study guide." }], 5000, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Write the study guide." }], 5000, ANTHROPIC_API_KEY, MODELS);
         const p = JSON.parse(stripFences(raw));
         const guide = {
           tldr: String(p?.tldr ?? "").slice(0, 1400),
@@ -1028,7 +1062,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Write the flashcards." }], 4500, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Write the flashcards." }], 4500, ANTHROPIC_API_KEY, MODELS);
         const p = JSON.parse(stripFences(raw));
         const cards = (Array.isArray(p?.cards) ? p.cards : []).slice(0, 40).map((c: Record<string, unknown>) => ({ front: String(c?.front ?? "").slice(0, 600), back: String(c?.back ?? "").slice(0, 1000), hint: String(c?.hint ?? "").slice(0, 300) })).filter((c: { front: string; back: string }) => c.front && c.back);
         if (!cards.length) return err("Couldn't make cards from that — try again.");
@@ -1050,7 +1084,7 @@ Reply ONLY valid JSON, no fences:
 HIS MATERIAL:
 ${block}`;
       try {
-        const raw = await callClaude(LIGHT, sys, [{ role: "user", content: "Build the mind map." }], 2000, ANTHROPIC_API_KEY);
+        const raw = await callClaude(HEAVY, sys, [{ role: "user", content: "Build the mind map." }], 2000, ANTHROPIC_API_KEY, MODELS);
         const p = JSON.parse(stripFences(raw));
         const branches = (Array.isArray(p?.branches) ? p.branches : []).slice(0, 8).map((b: Record<string, unknown>) => ({ label: String(b?.label ?? "").slice(0, 120), children: (Array.isArray(b?.children) ? b.children : []).slice(0, 8).map((c: unknown) => String(c).slice(0, 120)).filter(Boolean) })).filter((b: { label: string }) => b.label);
         if (!branches.length) return err("Couldn't build the mind map — try again.");
@@ -1077,10 +1111,180 @@ Ground your help in his material below when relevant; if you go beyond it, say s
 HIS MATERIAL (for grounding):
 ${material}`;
       try {
-        const text = await callClaude(LIGHT, sys, [{ role: "user", content: ask || "Explain this a bit more." }], 500, ANTHROPIC_API_KEY);
+        const text = await callClaude(HEAVY, sys, [{ role: "user", content: ask || "Explain this a bit more." }], 500, ANTHROPIC_API_KEY, MODELS);
         return ok({ text });
       } catch (e) { return err(e instanceof Error && e.message === "TOOLONG" ? "That point was too long to expand — ask about a smaller piece." : "Couldn't help with that right now — try again."); }
     }
+    // ─── CLIPS ──────────────────────────────────────────────────────────────
+    // Short narrated explainers, built from HIS OWN sources so they can never
+    // drift off-topic, in the faceless-explainer format he asked for: AI stills
+    // with slow pans, a real voice, burned-in captions. Three stages so no one
+    // request can time out and the UI can show honest progress:
+    //   clip-script  → storyboard (text model, grounded in the notebook)
+    //   clip-image   → ONE still per call (/api/v1/images), stored in Storage
+    //   clip-voice   → narration mp3 (/api/v1/audio/speech), stored in Storage
+    // Images and speech are OpenRouter-only endpoints; an Anthropic key can
+    // still write the script but can't render a clip, and we say so plainly.
+    if (advisor === "clip-script" || advisor === "clip-image" || advisor === "clip-voice") {
+      if (advisor !== "clip-script" && !isOpenRouter(ANTHROPIC_API_KEY)) {
+        return err("Clips need an OpenRouter key — images and voice run through OpenRouter's image/speech endpoints.");
+      }
+      const st = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` };
+      const restH = { apikey: ANON, Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+
+      // one row read, owner-scoped by the caller's JWT
+      const readClip = async (id: string) => {
+        if (!isUuid(id)) return null;
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/notebook_clips?id=eq.${id}&select=*`, { headers: restH });
+        if (!r.ok) return null;
+        return ((await r.json()) as Record<string, unknown>[])[0] ?? null;
+      };
+      const patchClip = async (id: string, body: Record<string, unknown>) => {
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/notebook_clips?id=eq.${id}`, {
+          method: "PATCH", headers: { ...restH, Prefer: "return=representation" }, body: JSON.stringify(body),
+        });
+        if (!r.ok) return null;
+        return ((await r.json()) as Record<string, unknown>[])[0] ?? null;
+      };
+      // Storage writes use the service role, so the uid prefix is enforced HERE.
+      const putObject = async (path: string, bytes: Uint8Array, contentType: string) => {
+        const r = await fetch(`${SUPABASE_URL}/storage/v1/object/clips/${path}`, {
+          method: "POST",
+          headers: { ...st, "Content-Type": contentType, "x-upsert": "true" },
+          body: new Blob([bytes as unknown as BlobPart], { type: contentType }),
+        });
+        return r.ok;
+      };
+
+      if (advisor === "clip-script") {
+        const notebookId = isUuid(String(body.notebookId ?? "")) ? String(body.notebookId) : "";
+        if (!notebookId) return err("Which notebook?");
+        const chapterId = isUuid(String(body.chapterId ?? "")) ? String(body.chapterId) : null;
+        const concept = String(body.concept ?? "").slice(0, 400);
+        const secs = Math.min(60, Math.max(15, Number(body.seconds) || 40));
+        const { block, count, failed } = await readNotebookSources(token, notebookId);
+        if (failed) return err("Couldn't read your sources just now — try again in a moment.");
+        if (!count) return err("Add sources to this notebook first — clips are built from your own material.");
+        // ~2.6 words/second of speech is a comfortable narration pace
+        const words = Math.round(secs * 2.6);
+        const scenes = Math.max(3, Math.min(8, Math.round(secs / 7)));
+        const sys = `You write SHORT narrated explainer videos for Ben, from HIS OWN study material. Format: the faceless-explainer style — a calm confident voice over still images, one idea per scene.
+
+RULES
+- Total narration ≈ ${words} words across EXACTLY ${scenes} scenes. Never exceed it.
+- Open with a hook that creates a real question in the first 6 words. No "in this video", no throat-clearing, no greetings.
+- ONE idea per scene, spoken plainly, like explaining to a sharp friend. Short sentences. No jargon unless you define it in the same breath.
+- Ground every claim in his material below. If you use something outside it, keep it to widely-accepted background.
+- Ben has ADHD: concrete images, real examples, momentum. Boring = failure.
+- End on a line that lands — a consequence, a reframe, or a question worth sitting with. Never "in conclusion".
+- image_prompt: describe a STILL PHOTO or illustration for that scene — subject, setting, lighting, mood, composition. Cinematic, specific, no text/words/letters in the image, no charts, no logos, no watermarks, no real public figures. Keep a consistent visual style across all scenes.
+- caption: 3-7 words, the on-screen text for that scene.
+
+Return ONLY JSON:
+{"title":"…","hook":"…","scenes":[{"narration":"…","caption":"…","image_prompt":"…"}]}
+
+HIS MATERIAL:
+${block.slice(0, 60000)}`;
+        const askFor = concept ? `Make the clip about: ${concept}` : "Pick the single most interesting idea in this material and make the clip about it.";
+        try {
+          const raw = await callClaude(HEAVY, sys, [{ role: "user", content: askFor }], 2000, ANTHROPIC_API_KEY, MODELS);
+          const parsed = JSON.parse(stripFences(raw)) as { title?: string; hook?: string; scenes?: { narration?: string; caption?: string; image_prompt?: string }[] };
+          const clean = (parsed.scenes ?? [])
+            .filter((x) => x && typeof x.narration === "string" && x.narration.trim())
+            .slice(0, 8)
+            .map((x) => ({
+              narration: String(x.narration).trim().slice(0, 400),
+              caption: String(x.caption ?? "").trim().slice(0, 60),
+              image_prompt: String(x.image_prompt ?? "").trim().slice(0, 600),
+              image_path: null as string | null,
+              seconds: 0,
+            }));
+          if (clean.length < 2) return err("That came back too thin — try again.");
+          const ins = await fetch(`${SUPABASE_URL}/rest/v1/notebook_clips`, {
+            method: "POST", headers: { ...restH, Prefer: "return=representation" },
+            body: JSON.stringify({
+              user_id: user.id, notebook_id: notebookId, chapter_id: chapterId,
+              concept, title: String(parsed.title ?? concept ?? "Clip").slice(0, 120),
+              hook: String(parsed.hook ?? "").slice(0, 300),
+              scenes: clean, seconds: secs, status: "scripted",
+            }),
+          });
+          if (!ins.ok) return err("Wrote the script but couldn't save it — try again.");
+          const row = ((await ins.json()) as Record<string, unknown>[])[0];
+          return ok({ clip: row });
+        } catch (e) { return err(friendlyErr(e, "Couldn't write that clip — try again.")); }
+      }
+
+      if (advisor === "clip-image") {
+        const clipId = String(body.clipId ?? "");
+        const i = Math.max(0, Math.min(7, Number(body.scene) || 0));
+        const row = await readClip(clipId);
+        if (!row) return err("That clip is gone.");
+        const scenes = (row.scenes ?? []) as { image_prompt: string; image_path: string | null }[];
+        if (!scenes[i]) return err("No such scene.");
+        if (scenes[i].image_path) return ok({ path: scenes[i].image_path, skipped: true });
+        const style = "Cinematic still photograph, natural lighting, shallow depth of field, muted filmic color grade, no text, no letters, no watermark, no logos.";
+        try {
+          const r = await fetch(`${OR_URL.replace("/chat/completions", "/images")}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANTHROPIC_API_KEY}` },
+            body: JSON.stringify({ model: MODELS.image, prompt: `${scenes[i].image_prompt}. ${style}` }),
+          });
+          const data = await r.json();
+          if (!r.ok) return err(data?.error?.message ?? "The image model refused that scene.");
+          const b64 = data?.data?.[0]?.b64_json;
+          if (!b64) return err("No image came back for that scene.");
+          const media = String(data?.data?.[0]?.media_type ?? "image/png");
+          const ext = media.includes("jpeg") ? "jpg" : media.includes("webp") ? "webp" : "png";
+          const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+          const path = `${user.id}/${clipId}/${i}.${ext}`;
+          if (!(await putObject(path, bytes, media))) return err("Made the image but couldn't store it — try again.");
+          const next = scenes.map((s, k) => (k === i ? { ...s, image_path: path } : s));
+          const spent = Number(data?.usage?.cost ?? 0) || 0;
+          const done = next.every((s) => s.image_path);
+          const saved = await patchClip(clipId, {
+            scenes: next,
+            cost_usd: Number(row.cost_usd ?? 0) + spent,
+            status: done ? "imaged" : "imaging",
+          });
+          if (!saved) return err("Stored the image but couldn't record it — try again.");
+          return ok({ path, cost: spent, clip: saved });
+        } catch (e) { return err(friendlyErr(e, "Couldn't render that scene — try again.")); }
+      }
+
+      // clip-voice — one mp3 for the whole clip, plus per-scene timings so the
+      // player can switch stills in sync without a second round trip.
+      const clipId = String(body.clipId ?? "");
+      const row = await readClip(clipId);
+      if (!row) return err("That clip is gone.");
+      const scenes = (row.scenes ?? []) as { narration: string; seconds: number }[];
+      const script = scenes.map((s) => s.narration).join(" ");
+      if (!script.trim()) return err("This clip has no narration.");
+      try {
+        const r = await fetch(`${OR_URL.replace("/chat/completions", "/audio/speech")}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANTHROPIC_API_KEY}` },
+          body: JSON.stringify({ model: MODELS.voice, input: script, voice: String(body.voice ?? "alloy"), response_format: "mp3" }),
+        });
+        if (!r.ok) {
+          let m = "The voice model refused that script.";
+          try { m = (await r.json())?.error?.message ?? m; } catch { /* raw bytes on success only */ }
+          return err(m);
+        }
+        const bytes = new Uint8Array(await r.arrayBuffer());
+        if (bytes.length < 1000) return err("The narration came back empty — try again.");
+        const path = `${user.id}/${clipId}/voice.mp3`;
+        if (!(await putObject(path, bytes, "audio/mpeg"))) return err("Made the narration but couldn't store it — try again.");
+        // Proportional timing: each scene holds for its share of the words. The
+        // client refines this against the audio element's real duration.
+        const totalWords = scenes.reduce((t, s) => t + s.narration.split(/\s+/).length, 0) || 1;
+        const timed = scenes.map((s) => ({ ...s, seconds: s.narration.split(/\s+/).length / totalWords }));
+        const saved = await patchClip(clipId, { audio_path: path, scenes: timed, status: "ready" });
+        if (!saved) return err("Stored the narration but couldn't record it — try again.");
+        return ok({ path, clip: saved });
+      } catch (e) { return err(friendlyErr(e, "Couldn't record the narration — try again.")); }
+    }
+
     // ─── end notebook modes ─────────────────────────────────────────────────
 
     const persona = PERSONAS[advisor] ?? PERSONAS.overseer;
@@ -1108,7 +1312,7 @@ ${material}`;
       ai = await fetch(OR_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${ANTHROPIC_API_KEY}` },
-        body: JSON.stringify({ model: orModel(HEAVY), max_tokens: 1500, messages: [{ role: "system", content: system }, ...msgs] }),
+        body: JSON.stringify({ model: orModel(HEAVY, MODELS), max_tokens: 1500, messages: [{ role: "system", content: system }, ...msgs] }),
       });
       data = await ai.json();
     } else {
@@ -1139,7 +1343,7 @@ ${material}`;
     if (wasCutOff && text) text += "\n\n…(cut off — say “continue” and I'll pick up right there.)";
 
     // remember what matters from this exchange — after the response ships
-    const extraction = extractMemories(token, String(message), text, ANTHROPIC_API_KEY);
+    const extraction = extractMemories(token, String(message), text, ANTHROPIC_API_KEY, MODELS);
     const er = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
     if (er?.waitUntil) er.waitUntil(extraction); else extraction.catch(() => {});
 

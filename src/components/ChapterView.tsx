@@ -12,6 +12,7 @@ import { supabase } from "@/lib/supabase";
 import { advisorCall, type NBChapter, type ChapterPack, type GradeResult } from "@/lib/notebook";
 import { sfx, buzz } from "@/lib/fx";
 import { Card, Prose } from "./ui";
+import Clips from "./Clips";
 
 type Phase = "intro" | "read" | "quiz" | "result";
 const STEERS = [
@@ -34,6 +35,7 @@ export default function ChapterView({ uid, notebookId, chapter, onBack, onChange
   // steering (coach) — tagged with the chunk it was asked on, so a slow reply
   // can't land on a chunk you've already moved past
   const [coach, setCoach] = useState<{ step: number; q: string; a: string }[]>([]);
+  const [watchAt, setWatchAt] = useState<number | null>(null);   // which teaching beat has its clip shelf open
   const [coachBusy, setCoachBusy] = useState("");
   const [ask, setAsk] = useState("");
 
@@ -165,6 +167,19 @@ export default function ChapterView({ uid, notebookId, chapter, onBack, onChange
           <Card tone="paper" key={step} className="rise-in">
             <Prose text={chunks[step].teach} />
           </Card>
+
+          {/* watch this beat — a 20-60s explainer built from this notebook's own
+              sources, so it can't wander off what he's actually reading */}
+          <button onClick={() => setWatchAt(watchAt === step ? null : step)}
+            className="mt-2 text-xs rounded-full bg-[var(--neon)]/12 border border-[var(--neon)]/30 text-[var(--neon)] px-3 py-1.5 active:scale-95">
+            {watchAt === step ? "hide the clip" : "🎬 watch this"}
+          </button>
+          {watchAt === step && (
+            <div className="mt-2 rise-in">
+              <Clips uid={uid} notebookId={notebookId} chapterId={chapter.id}
+                concept={chunks[step].teach.slice(0, 300)} compactHeader />
+            </div>
+          )}
 
           {/* steer the teaching */}
           <div className="flex flex-wrap gap-1.5 mt-2">

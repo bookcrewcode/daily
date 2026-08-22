@@ -18,6 +18,7 @@ import Body from "@/components/Body";
 import Notebooks from "@/components/Notebooks";
 import AIOffBanner from "@/components/AIOffBanner";
 import AIKey from "@/components/AIKey";
+import AIModels from "@/components/AIModels";
 import Today from "@/components/Today";
 import Plan from "@/components/Plan";
 import Goals from "@/components/Goals";
@@ -182,6 +183,7 @@ function Shell({ uid }: { uid: string }) {
               <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4 md:hidden" />
               <p className="text-[10px] uppercase tracking-[0.2em] opacity-45">Settings</p>
               <AIKey />
+              <AIModels />
               <p className="text-[10px] uppercase tracking-[0.2em] opacity-45 mt-5 mb-2">Legacy — the old rooms, data intact</p>
               <div className="grid grid-cols-2 gap-1.5">
                 {LEGACY.map((l) => (
