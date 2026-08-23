@@ -24,6 +24,7 @@ import {
 import { burstConfetti } from "@/lib/confetti";
 import { sfx, buzz } from "@/lib/fx";
 import { Num, Eyebrow, SegRing, ProgressCircle } from "./ui";
+import WorldBriefing from "./WorldBriefing";
 
 type Rep = { id: string; who: string; place: string; note: string };
 type Ev = { time: string; what: string };
@@ -652,6 +653,9 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
           ))}
         </div>
       )}
+
+      {/* the world, once a day, after the day's own work is on the board */}
+      <WorldBriefing uid={uid} />
 
       {err && <p className="text-xs text-orange-400 mt-2">{err}</p>}
       <p className="text-[10px] opacity-30 mt-3 text-center">Paper is boss until this matches the card 7 straight days. Score both at Shutdown.</p>
