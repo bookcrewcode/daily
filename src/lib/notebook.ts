@@ -1,4 +1,4 @@
-import { supabase, SUPABASE_URL, SUPABASE_ANON, ADVISOR_FN } from "./supabase";
+import { supabase, SUPABASE_URL, SUPABASE_ANON, ADVISOR_FN, LEARN_FN } from "./supabase";
 
 // ─── The notebook data model (mirrors the notebook_* tables) ───────────────
 export type Notebook = {
@@ -16,7 +16,7 @@ export type NBKind = "note" | "youtube" | "link" | "pdf";
 export type NBSource = { id: string; notebook_id: string; kind: string; title: string; url: string; content: string; created_at: string };
 
 export type ChapterCheck = { q: string; choices: string[]; answer: number; explain: string };
-export type ChapterChunk = { teach: string; check: ChapterCheck | null };
+export type ChapterChunk = { teach: string; check: ChapterCheck | null; cite?: string; cite_source?: string };
 export type RecallQ = { q: string; expected: string };
 export type ChapterPack = { chunks: ChapterChunk[]; recall: RecallQ[] };
 
@@ -53,10 +53,20 @@ export const TRANSCRIPT_FN = `${SUPABASE_URL}/functions/v1/transcript`;
 // either the payload or `{ error }` — callers check `.error`. Network failures
 // (fetch rejects when offline) surface as a synthetic `{ error }` so a caller
 // never has to wrap this in its own try/catch to stay safe.
+// Everything the notebook needs now lives in the small `learn` service. The
+// 100KB advisor keeps only the legacy coaching personas — it is too large to
+// redeploy safely, and it still carries the reasoning bug that silently
+// emptied 14 of 15 chapters.
+const LEARN_MODES = new Set([
+  "syllabus", "chapter-pack", "lesson", "coach", "grade",
+  "exam", "flashcards", "mindmap", "study-guide", "tutor",
+]);
+
 export async function advisorCall<T = Record<string, unknown>>(body: Record<string, unknown>): Promise<T & { error?: string }> {
   try {
     const { data: session } = await supabase.auth.getSession();
-    const res = await fetch(ADVISOR_FN, {
+    const url = LEARN_MODES.has(String(body.advisor ?? "")) ? LEARN_FN : ADVISOR_FN;
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${session.session?.access_token}` },
       body: JSON.stringify(body),

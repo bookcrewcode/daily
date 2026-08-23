@@ -167,6 +167,19 @@ export default function ChapterView({ uid, notebookId, chapter, onBack, onChange
 
           <Card tone="paper" key={step} className="rise-in">
             <Prose text={chunks[step].teach} />
+            {/* The citation — the reason to trust the sentence above. It's a
+                verbatim quote from HIS source, so he can check the teaching
+                against the material instead of taking the AI's word for it. */}
+            {chunks[step].cite ? (
+              <details className="mt-3 group">
+                <summary className="mono text-[10px] text-[var(--text-4)] cursor-pointer list-none active:scale-[0.99]">
+                  ▸ from {chunks[step].cite_source || "your sources"}
+                </summary>
+                <blockquote className="mt-2 border-l-2 border-[var(--neon)]/40 pl-3 text-[13px] italic text-[var(--text-2)] leading-relaxed">
+                  &ldquo;{chunks[step].cite}&rdquo;
+                </blockquote>
+              </details>
+            ) : null}
           </Card>
 
           {/* The clip for THIS beat — it follows the reading rather than living
