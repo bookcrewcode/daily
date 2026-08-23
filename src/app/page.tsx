@@ -19,6 +19,7 @@ import Notebooks from "@/components/Notebooks";
 import AIOffBanner from "@/components/AIOffBanner";
 import AIKey from "@/components/AIKey";
 import AIModels from "@/components/AIModels";
+import UpdateBar from "@/components/UpdateBar";
 import Today from "@/components/Today";
 import Plan from "@/components/Plan";
 import Goals from "@/components/Goals";
@@ -81,6 +82,7 @@ export default function App() {
 
   return (
     <GameProvider uid={session.user.id}>
+      <UpdateBar />
       <Shell uid={session.user.id} />
       <LegacyGameSync />
     </GameProvider>
