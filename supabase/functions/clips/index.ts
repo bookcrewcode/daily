@@ -110,37 +110,52 @@ async function readSources(token: string, notebookId: string): Promise<{ block: 
 }
 
 async function callText(model: string, system: string, user: string, maxTokens: number, key: string): Promise<string> {
-  if (isOpenRouter(key)) {
-    // reasoning OFF: this is a short structured-JSON job, and OpenRouter requires
-    // max_tokens to exceed the reasoning budget — a thinking model would
-    // otherwise burn the whole allowance before writing a single word and come
-    // back finish_reason "length" with empty content.
-    const r = await fetch(`${OR_BASE}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({
-        model, max_tokens: maxTokens,
-        reasoning: { effort: "none", exclude: true },
+  const once = async (budget: number, withReasoning: boolean): Promise<string> => {
+    if (isOpenRouter(key)) {
+      const b: Record<string, unknown> = {
+        model, max_tokens: budget,
         messages: [{ role: "system", content: system }, { role: "user", content: user }],
-      }),
+      };
+      // Some models reject effort:"none"; a 4xx makes us retry without the field
+      // rather than failing his request over a parameter he never chose.
+      if (withReasoning) b.reasoning = { effort: "none", exclude: true };
+      const r = await fetch(`${OR_BASE}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        body: JSON.stringify(b),
+      });
+      const raw = await r.text();
+      if (!r.ok) {
+        console.error(`[clips:script] upstream ${r.status} model=${model} body=${raw.slice(0, 400)}`);
+        throw new Error(`HTTP_${r.status}:${raw.slice(0, 160)}`);
+      }
+      const d = JSON.parse(raw);
+      const text = String(d?.choices?.[0]?.message?.content ?? "");
+      if (!text.trim()) {
+        console.error(`[clips:script] empty model=${model} finish=${d?.choices?.[0]?.finish_reason} usage=${JSON.stringify(d?.usage ?? {})}`);
+        throw new Error("EMPTY");
+      }
+      return text;
+    }
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: "claude-opus-4-8", max_tokens: budget, system, messages: [{ role: "user", content: user }] }),
     });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data?.error?.message ?? "AI error");
-    const text = String(data?.choices?.[0]?.message?.content ?? "");
-    // Only a truncation that actually cost us the payload is fatal. A model that
-    // stopped at the cap but still returned parseable content is fine.
-    if (data?.choices?.[0]?.finish_reason === "length" && !text.trim()) throw new Error("TOOLONG");
-    return text;
+    const raw = await r.text();
+    if (!r.ok) { console.error(`[clips:script] anthropic ${r.status} ${raw.slice(0, 300)}`); throw new Error(`HTTP_${r.status}`); }
+    const d = JSON.parse(raw);
+    const t = (d.content ?? []).filter((b2: { type: string }) => b2.type === "text").map((b2: { text: string }) => b2.text).join("");
+    if (!t.trim()) throw new Error("EMPTY");
+    return t;
+  };
+  try { return await once(maxTokens, true); }
+  catch (e) {
+    const m = e instanceof Error ? e.message : "";
+    if (m.startsWith("HTTP_4")) { console.error("[clips:script] retrying without reasoning field"); return await once(maxTokens, false); }
+    if (m === "EMPTY") { console.error("[clips:script] retrying with more room"); return await once(maxTokens * 2, false); }
+    throw e;
   }
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: "claude-opus-4-8", max_tokens: maxTokens, system, messages: [{ role: "user", content: user }] }),
-  });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data?.error?.message ?? "AI error");
-  if (data?.stop_reason === "max_tokens") throw new Error("TOOLONG");
-  return (data.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
 }
 
 Deno.serve(async (req) => {
@@ -224,16 +239,7 @@ ${block.slice(0, 60000)}`;
         ? `Make the clip about: ${concept}`
         : "Pick the single most interesting idea in this material and make the clip about it.";
       try {
-        // 6000, not 2000: a reasoning model needs headroom above its thinking
-        // budget. If it still comes back empty, retry once with more room
-        // rather than telling him to shorten a clip that was never too long.
-        let raw = "";
-        try {
-          raw = await callText(MODELS.smart, sys, ask, 6000, key);
-        } catch (first) {
-          if (first instanceof Error && first.message === "TOOLONG") raw = await callText(MODELS.smart, sys, ask, 12000, key);
-          else throw first;
-        }
+        const raw = await callText(MODELS.smart, sys, ask, 6000, key);
         const parsed = JSON.parse(stripFences(raw)) as {
           title?: string; hook?: string;
           scenes?: { narration?: string; caption?: string; image_prompt?: string }[];
@@ -262,9 +268,11 @@ ${block.slice(0, 60000)}`;
         return ok({ clip: ((await ins.json()) as Record<string, unknown>[])[0] });
       } catch (e) {
         const m = e instanceof Error ? e.message : "";
-        return err(m === "TOOLONG"
-          ? `${MODELS.smart} returned nothing usable twice — switch the Smart model in Settings and try again.`
-          : (m || "Couldn't write that clip — try again."));
+        if (m === "EMPTY") return err(`${MODELS.smart} returned nothing twice — switch the Smart model in Settings and try again.`);
+        if (m.startsWith("HTTP_402") || m.includes("credit")) return err("Your OpenRouter credits are out — top up and try again.");
+        if (m.startsWith("HTTP_401")) return err("OpenRouter rejected the key — re-paste it in Settings → AI key.");
+        if (m.startsWith("HTTP_")) return err(`The model provider errored (${m.slice(0, 70)}) — try again.`);
+        return err(m || "Couldn't write that clip — try again.");
       }
     }
 
@@ -285,7 +293,10 @@ ${block.slice(0, 60000)}`;
           body: JSON.stringify({ model: MODELS.image, prompt: `${scenes[i].image_prompt}. ${style}` }),
         });
         const data = await r.json();
-        if (!r.ok) return err(data?.error?.message ?? "The image model refused that scene.");
+        if (!r.ok) {
+          console.error(`[clips:image] upstream ${r.status} model=${MODELS.image} body=${JSON.stringify(data).slice(0, 400)}`);
+          return err(data?.error?.message ?? `The image model errored (HTTP ${r.status}).`);
+        }
         const b64 = data?.data?.[0]?.b64_json;
         if (!b64) return err("No image came back for that scene.");
         const media = String(data?.data?.[0]?.media_type ?? "image/png");
@@ -325,8 +336,9 @@ ${block.slice(0, 60000)}`;
           }),
         });
         if (!r.ok) {
-          let m = "The voice model refused that script.";
-          try { m = (await r.json())?.error?.message ?? m; } catch { /* success path is raw bytes */ }
+          let m = `The voice model errored (HTTP ${r.status}).`;
+          try { const j = await r.json(); m = j?.error?.message ?? m; console.error(`[clips:voice] upstream ${r.status} model=${MODELS.voice} body=${JSON.stringify(j).slice(0, 400)}`); }
+          catch { console.error(`[clips:voice] upstream ${r.status} model=${MODELS.voice} (non-JSON body)`); }
           return err(m);
         }
         const bytes = new Uint8Array(await r.arrayBuffer());
