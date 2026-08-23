@@ -9,7 +9,7 @@
 // every other AI surface in this app.
 
 import { useRef, useState } from "react";
-import { supabase, ADVISOR_FN, SUPABASE_ANON, todayStr, type ScheduleItem } from "@/lib/supabase";
+import { supabase, PLAN_FN, SUPABASE_ANON, todayStr, type ScheduleItem } from "@/lib/supabase";
 import { sfx } from "@/lib/fx";
 import { Card } from "./ui";
 
@@ -51,11 +51,10 @@ export default function ScheduleChat({
     setBusy(true); setErr(""); setNote("");
     try {
       const { data: session } = await supabase.auth.getSession();
-      const res = await fetch(ADVISOR_FN, {
+      const res = await fetch(PLAN_FN, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${session.session?.access_token}` },
         body: JSON.stringify({
-          advisor: "schedule",
           message: msg,
           // send the CURRENT plan so edits ("move gym to 8") work on real state
           items: proposal ?? items,

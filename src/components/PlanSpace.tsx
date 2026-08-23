@@ -2,8 +2,9 @@
 
 // Plan — two gears, deliberately different temperatures:
 //
-//   TODAY   the boring, fast gear: real timeline (classes + planned blocks +
-//           Google Calendar events), deadlines, inbox, semester. No AI needed.
+//   TODAY   plan the day by TALKING ("gym 7, class 9-11, bookcrew after lunch"),
+//           then the real timeline (classes + planned blocks + Google Calendar
+//           events), deadlines, inbox, semester.
 //   SEASON  the game gear: the 119-day campaign map to Dec 15 (SeasonMap).
 //
 // Google Calendar is wired back in both directions: the private iCal feed
@@ -15,10 +16,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr } from "@/lib/supabase";
 import { diffDays } from "@/lib/theGame";
 import { fetchCalendarEvents, resolveBlocks, parseTime, type CalEvent } from "@/lib/calendar";
-import { pushSchedule, acquireToken, NeedsAuth } from "@/lib/gcal";
+import { pushSchedule, acquireToken, everGranted, NeedsAuth } from "@/lib/gcal";
 import { sfx, buzz } from "@/lib/fx";
 import { Card, Eyebrow } from "./ui";
 import Semester from "./Semester";
+import ScheduleChat from "./ScheduleChat";
 import SeasonMap from "./SeasonMap";
 
 type Ev = { time: string; what: string };
@@ -164,12 +166,17 @@ export default function PlanSpace({ uid }: { uid: string }) {
   // Push today's planned blocks to Google Calendar — idempotent (replace, never
   // stack), and the returned ids are ALWAYS persisted: any old event whose
   // delete wasn't confirmed stays tracked so the next push can clean it up.
-  async function pushToCalendar() {
-    if (pushLock.current || !clientId) return;
+  // Drives both the manual "→ Google Cal" button and the chat's Apply, so the
+  // idempotent replace-don't-stack contract has exactly one implementation.
+  async function pushToCalendar(list?: Ev[]): Promise<{ ok: boolean; msg: string }> {
+    const fail = (m: string) => { setPushMsg(m); return { ok: false, msg: m }; };
+    if (pushLock.current) return { ok: false, msg: "Already pushing." };
+    if (!clientId) return fail("Connect Google Calendar first (Legacy → Today has the one-time setup).");
     const day = todayStr();
-    if (day !== dataDay.current) { setErr("Midnight — the plan rolled over; refreshing."); load(); return; }
-    const blocks = resolveBlocks(items.filter((x) => x?.what), new Date());
-    if (blocks.length === 0) { setPushMsg("Add times to the blocks first — untimed blocks can't become events."); return; }
+    if (day !== dataDay.current) { setErr("Midnight — the plan rolled over; refreshing."); load(); return { ok: false, msg: "Day rolled over." }; }
+    const source = (list ?? items).filter((x) => x?.what);
+    const blocks = resolveBlocks(source, new Date());
+    if (blocks.length === 0) return fail("Add times to the blocks first — untimed blocks can't become events.");
     pushLock.current = true; setPushing(true); setPushMsg("");
     try {
       // Re-read tracking from the DB right before pushing (same contract as
@@ -177,7 +184,7 @@ export default function PlanSpace({ uid }: { uid: string }) {
       // desktop-push stale. Union with memory so a failed tracking write from
       // THIS session still self-heals.
       const idsRead = await supabase.from("nights").select("gcal_event_ids").eq("user_id", uid).eq("day", day).maybeSingle();
-      if (idsRead.error) { setPushMsg("Couldn't check what's already on the calendar — nothing pushed. Try again."); return; }
+      if (idsRead.error) return fail("Couldn't check what's already on the calendar — nothing pushed. Try again.");
       const prevIds = [...new Set([...(((idsRead.data?.gcal_event_ids ?? []) as string[])), ...gcalIds])];
       let res = await pushSchedule(clientId, blocks, prevIds);
       if (res.needsAuth) {
@@ -192,24 +199,17 @@ export default function PlanSpace({ uid }: { uid: string }) {
       // while the push (or its OAuth popup) was in flight must survive.
       const { error } = await supabase.from("nights")
         .upsert({ user_id: uid, day, gcal_event_ids: res.ids }, { onConflict: "user_id,day" });
-      if (error) {
-        setPushMsg(`${res.created} on the calendar, but tracking didn't save. Push again from THIS screen to self-heal — after a reload, check Google Calendar first or you'll get duplicates.`);
-        return;
-      }
-      if (res.needsAuth) {
-        setPushMsg(res.created > 0
-          ? `Google needs a reconnect — ${res.created} of ${blocks.length} made it. Tap again and approve the popup (it replaces, won't duplicate).`
-          : "Google needs a reconnect — tap again and approve the popup.");
-        return;
-      }
-      if (res.failed > 0 || res.kept > 0) {
-        setPushMsg(`${res.created} on the calendar — ${res.failed > 0 ? `${res.failed} failed` : ""}${res.failed > 0 && res.kept > 0 ? ", " : ""}${res.kept > 0 ? `${res.kept} old couldn't be cleared (still tracked)` : ""}.`);
-        return;
-      }
-      setPushMsg(`${res.created} block${res.created === 1 ? "" : "s"} on Google Calendar, reminders set.`);
+      if (error) return fail(`${res.created} on the calendar, but tracking didn't save. Push again from THIS screen to self-heal — after a reload, check Google Calendar first or you'll get duplicates.`);
+      if (res.needsAuth) return fail(res.created > 0
+        ? `Google needs a reconnect — ${res.created} of ${blocks.length} made it. Tap again and approve the popup (it replaces, won't duplicate).`
+        : "Google needs a reconnect — tap again and approve the popup.");
+      if (res.failed > 0 || res.kept > 0) return fail(`${res.created} on the calendar — ${res.failed > 0 ? `${res.failed} failed` : ""}${res.failed > 0 && res.kept > 0 ? ", " : ""}${res.kept > 0 ? `${res.kept} old couldn't be cleared (still tracked)` : ""}.`);
+      const good = `${res.created} block${res.created === 1 ? "" : "s"} on Google Calendar, reminders set.`;
+      setPushMsg(good);
       sfx.coin(); buzz(15);
+      return { ok: true, msg: good };
     } catch (e) {
-      setPushMsg(e instanceof NeedsAuth ? "Google needs a reconnect — tap again." : "Couldn't reach Google Calendar — nothing changed there.");
+      return fail(e instanceof NeedsAuth ? "Google needs a reconnect — tap again." : "Couldn't reach Google Calendar — nothing changed there.");
     } finally { pushLock.current = false; setPushing(false); }
   }
 
@@ -310,15 +310,31 @@ export default function PlanSpace({ uid }: { uid: string }) {
 
       {mode === "season" ? <SeasonMap uid={uid} /> : (
         <>
+          {/* Plan the day by talking. The AI returns the WHOLE revised day; it
+              is shown as a preview and nothing is written until he taps Apply —
+              and Apply can push straight to Google Calendar with reminders. */}
+          <ScheduleChat
+            dayLabel="today"
+            items={items.filter((x) => x?.what)}
+            fixed={[
+              ...classes.map((c) => ({ time: c.time, what: `${c.what} (class)` })),
+              ...calTimed.map((c) => ({ time: c.time, what: `${c.what} (already on your calendar)` })),
+            ]}
+            onApply={(next) => writeItems(next as Ev[], "chat")}
+            onPush={clientId ? (next) => pushToCalendar(next as Ev[]) : undefined}
+          />
+
           {/* TODAY — the shipping-tracker timeline */}
-          <Card>
+          <Card className="mt-3">
             <div className="flex items-center justify-between mb-2">
               <Eyebrow>Today</Eyebrow>
-              {clientId && planned.length > 0 && (
-                <button onClick={pushToCalendar} disabled={pushing}
+              {clientId ? (planned.length > 0 && (
+                <button onClick={() => pushToCalendar()} disabled={pushing}
                   className="text-[10px] mono text-[var(--neon)] border border-[var(--neon)]/30 rounded-md px-2 py-1 active:scale-95 disabled:opacity-40">
-                  {pushing ? "pushing…" : "→ Google Cal"}
+                  {pushing ? "pushing…" : everGranted() ? "→ Google Cal" : "connect Google Cal"}
                 </button>
+              )) : (
+                <span className="text-[10px] mono text-[var(--text-4)]">Google Cal not set up</span>
               )}
             </div>
             {calAllDay.length > 0 && (

@@ -9,6 +9,7 @@ export const SUPABASE_URL = URL;
 export const SUPABASE_ANON = KEY;
 export const ADVISOR_FN = `${URL}/functions/v1/advisor`;
 export const CLIPS_FN = `${URL}/functions/v1/clips`;
+export const PLAN_FN = `${URL}/functions/v1/plan`;
 export const KALSHI_FN = `${URL}/functions/v1/kalshi`;
 
 export const supabase = createClient(
