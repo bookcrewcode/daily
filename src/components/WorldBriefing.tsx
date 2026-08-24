@@ -30,10 +30,12 @@ const BEAT_TONE: Record<string, string> = {
 
 // Direction, not a call. A tailwind is not "buy" and a headwind is not "sell" —
 // it is which way the story points for that company's actual business.
-const DIR: Record<string, { sign: string; tone: string; label: string }> = {
-  tailwind: { sign: "\u2191", tone: "var(--ok)", label: "tailwind" },
-  headwind: { sign: "\u2193", tone: "var(--bad)", label: "headwind" },
-  mixed: { sign: "\u2194", tone: "var(--warn)", label: "cuts both ways" },
+// The arrow and its colour carry the meaning; the legend under the briefing
+// spells it out in words, because a hover title is invisible on a phone.
+const DIR: Record<string, { sign: string; tone: string }> = {
+  tailwind: { sign: "\u2191", tone: "var(--ok)" },
+  headwind: { sign: "\u2193", tone: "var(--bad)" },
+  mixed: { sign: "\u2194", tone: "var(--warn)" },
 };
 
 export default function WorldBriefing({ uid }: { uid: string }) {
