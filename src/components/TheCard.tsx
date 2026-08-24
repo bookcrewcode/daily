@@ -1,49 +1,55 @@
 "use client";
 
-// 🗂️ THE CARD — the Fall 2026 GAME as a timing instrument, not a checklist.
+// 🗂️ THE CARD — today's list, and how fast you clear it.
 //
-// Ben's design brief, in his own words: his ADHD runs on pressure and thrill —
-// "the thrilling part will be completing the day as fast as possible." So v3
-// borrows LiveSplit's grammar with HONEST clocks: every core part stamps the
-// wall-clock moment it locked in, the day "closes" when core hits 5, and the
-// only opponents are the PB stamps and yesterday's ghost. No fake timers.
+// v43 replaced the five fixed categories (R/B/S/BC/L) with the day's REAL
+// checklist. Ben's words: "it should just be a checkoff list every day of
+// everything that I need to do for that day. So it should pair in hand with
+// the day-to-day planning." So the list is not a second copy of the plan — it
+// IS the plan. Both this screen and the Plan chat read and write the same
+// nights.items array, and deadlines falling due today are pulled onto it.
 //
-// Scoring rules are unchanged from the paper spec (see lib/theGame.ts).
-// Paper stays boss: per rule 6 the app only replaces the index card after
-// matching it for 7 straight days. This screen exists to earn that.
+// The game survives, scored on the list instead of the categories:
+//   point   = one finished item (bonus adds up to +4, day caps at 10)
+//   won day = at least min(3, list length) done — so a light day is won by
+//             clearing it, and a heavy day still needs three
+//   closed  = list cleared. That's the clock worth racing, and the only PB
+//             that still means anything now that the items change daily.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase, todayStr } from "@/lib/supabase";
 import {
-  type GameDayRow, type SplitKey, type Splits, SPLIT_KEYS,
-  emptyDay, coreParts, coreCount, bonusCount, bonusBC, dayTotal,
-  computeStreak, levelInfo, weekDays, weekBand, weekStart, repPace, trunkOfDay, seasonDay,
+  type GameDayRow, type DayItem, type Splits,
+  emptyDay, dayTotal, bonusCount, isStreakDay, winBar,
+  normalizeItems, sortItems, countDone, newItemId,
+  computeStreak, daysWon, winPace, levelInfo, weekDays, weekBand, weekStart, seasonDay,
   addDays, diffDays, secOfDay, fmtClock, fmtDelta, fmtDur, partBests,
-  SEASON_START, SEASON_END, SEASON_DAYS, REP_TARGET, WEEK_LABELS,
+  SEASON_START, SEASON_END, SEASON_DAYS, WIN_TARGET, WEEK_LABELS,
 } from "@/lib/theGame";
+import { splitsFor } from "@/lib/dayList";
 import { burstConfetti } from "@/lib/confetti";
 import { sfx, buzz } from "@/lib/fx";
 import { Num, Eyebrow, SegRing, ProgressCircle } from "./ui";
 import WorldBriefing from "./WorldBriefing";
 
-type Rep = { id: string; who: string; place: string; note: string };
 type Gig = { id: string; platform: string; hours: number; earnings: number };
 type Ev = { time: string; what: string };
+type GoalDue = { id: string; title: string };
 
-const GD_COLS = "day,r_launch,r_shutdown,b,s,bonus_uber,bonus_trading,bonus_dev,bonus_chess,frozen,learn_line,splits";
+const GD_COLS = "day,r_launch,r_shutdown,b,s,bonus_uber,bonus_trading,bonus_dev,bonus_chess,frozen,learn_line,splits,items_done,items_total";
 
-// per-day celebration store (localStorage) — JSON now; old builds wrote "5t".
-// A module-scope fallback keeps replays suppressed for the app session even
-// when localStorage is unavailable (private mode / quota).
-type FxStore = { c5: boolean; ten: boolean; gold: SplitKey[] };
+// per-day celebration store (localStorage) — a tab switch remounts this
+// component and must never replay the confetti and cheapen the real moment.
+type FxStore = { closed: boolean; ten: boolean; gold: boolean };
 const fxMem = new Map<string, FxStore>();
 function readFx(day: string): FxStore {
+  const empty = { closed: false, ten: false, gold: false };
   try {
     const raw = localStorage.getItem(`daily.card.fx.${day}`);
-    if (raw == null) return fxMem.get(day) ?? { c5: false, ten: false, gold: [] };
-    if (raw.startsWith("{")) return { c5: false, ten: false, gold: [], ...JSON.parse(raw) };
-    return { c5: raw.includes("5"), ten: raw.includes("t"), gold: [] };
-  } catch { return fxMem.get(day) ?? { c5: false, ten: false, gold: [] }; }
+    if (raw == null) return fxMem.get(day) ?? empty;
+    if (raw.startsWith("{")) return { ...empty, ...JSON.parse(raw) };
+    return empty;
+  } catch { return fxMem.get(day) ?? empty; }
 }
 function writeFx(day: string, fx: FxStore) {
   fxMem.set(day, { ...fx });
@@ -52,8 +58,7 @@ function writeFx(day: string, fx: FxStore) {
 
 export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: string) => void }) {
   const [days, setDays] = useState<GameDayRow[]>([]);
-  const [repDays, setRepDays] = useState<string[]>([]);        // one entry per rep (its day)
-  const [todayReps, setTodayReps] = useState<Rep[]>([]);
+  const [items, setItems] = useState<DayItem[]>([]);
   const [blocks, setBlocks] = useState<Ev[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadErr, setLoadErr] = useState(false);
@@ -62,16 +67,10 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   const [takeover, setTakeover] = useState(false);
   const [nowSec, setNowSec] = useState(() => secOfDay());
 
-  // expanders
-  const [repOpen, setRepOpen] = useState(false);
-  const [learnOpen, setLearnOpen] = useState(false);
-
-  // rep form
-  const [rWho, setRWho] = useState("");
-  const [rPlace, setRPlace] = useState("");
-  const [rNote, setRNote] = useState("");
-  const removingRep = useRef<Set<string>>(new Set());
-  const [removingIds, setRemovingIds] = useState<string[]>([]);
+  // add-an-item form
+  const [addOpen, setAddOpen] = useState(false);
+  const [aTime, setATime] = useState("");
+  const [aWhat, setAWhat] = useState("");
 
   // driving shifts — the bonus chip logs REAL money, not a mystery checkbox
   const [todayGigs, setTodayGigs] = useState<Gig[]>([]);
@@ -81,14 +80,9 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   const [gHours, setGHours] = useState("");
   const [gEarn, setGEarn] = useState("");
 
-  // learn line draft
-  const [lineDraft, setLineDraft] = useState("");
-  const lineTouched = useRef(false);
-
-  // persisted per-day so a tab switch (which remounts this component) can't
-  // replay the confetti and cheapen the real moment
-  const fxRef = useRef<{ day: string; fx: FxStore }>({ day: "", fx: { c5: false, ten: false, gold: [] } });
+  const fxRef = useRef<{ day: string; fx: FxStore }>({ day: "", fx: { closed: false, ten: false, gold: false } });
   const dayRef = useRef(todayStr());
+  const pulledGoals = useRef("");   // the day whose due-goals were already pulled in
 
   // Every write to `days` goes through commitDays so an in-flight async writer
   // can read the FRESH rows from daysRef — a render closure can be a whole
@@ -98,47 +92,93 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
     daysRef.current = updater(daysRef.current);
     setDays(daysRef.current);
   }, []);
+  const itemsRef = useRef<DayItem[]>([]);
+  const commitItems = useCallback((next: DayItem[]) => {
+    itemsRef.current = next;
+    setItems(next);
+  }, []);
 
   const load = useCallback(async () => {
     const today = todayStr();
     try {
-      const [gd, reps, tr, cb, ni, gg] = await Promise.all([
+      const [gd, ni, gl, cb, gg] = await Promise.all([
         supabase.from("game_days").select(GD_COLS).eq("user_id", uid).gte("day", SEASON_START),
-        supabase.from("bc_reps").select("day").eq("user_id", uid).gte("day", SEASON_START),
-        supabase.from("bc_reps").select("id,who,place,note").eq("user_id", uid).eq("day", today).order("created_at"),
-        supabase.from("class_blocks").select("label,location,start_t").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
         supabase.from("nights").select("items").eq("user_id", uid).eq("day", today).maybeSingle(),
+        supabase.from("goals").select("id,title").eq("user_id", uid).eq("status", "active").eq("due", today),
+        supabase.from("class_blocks").select("label,location,start_t").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
         supabase.from("gig_shifts").select("id,platform,hours,earnings").eq("user_id", uid).eq("day", today).order("created_at"),
       ]);
       // a failed read must never look like an empty card — the streak number
       // has to be trustworthy or the whole game is dead
-      if (gd.error || reps.error || tr.error) { setLoadErr(true); setLoaded(true); return; }
-      commitDays(() => ((gd.data ?? []) as GameDayRow[]).map((d) => ({ ...d, splits: d.splits ?? {} })));
-      setRepDays(((reps.data ?? []) as { day: string }[]).map((r) => r.day));
-      setTodayReps((tr.data ?? []) as Rep[]);
-      // a gig read failure is survivable: the card still scores, the shift list is just empty
-      setTodayGigs(gg.error ? [] : ((gg.data ?? []) as Gig[]));
+      if (gd.error || ni.error) { setLoadErr(true); setLoaded(true); return; }
+      commitDays(() => ((gd.data ?? []) as GameDayRow[]).map((d) => ({
+        ...d, splits: d.splits ?? {}, items_done: d.items_done ?? 0, items_total: d.items_total ?? 0,
+      })));
+
+      let list = normalizeItems(ni.data?.items);
+      // Deadlines due today join the list for real (not as a decoration), so
+      // checking one both scores the day and closes the goal. Materialised once
+      // per day and only ever ADDITIVE — a goal read failure just means no
+      // deadlines today, never a wiped list.
+      if (!gl.error && pulledGoals.current !== today) {
+        const have = new Set(list.map((i) => i.goal_id).filter(Boolean));
+        const missing = ((gl.data ?? []) as GoalDue[])
+          .filter((g) => !have.has(g.id))
+          .map((g) => ({ id: newItemId(), time: "", what: g.title.slice(0, 200), src: "goal" as const, goal_id: g.id }));
+        if (missing.length) {
+          const merged = [...list, ...missing];
+          const { error } = await supabase.from("nights")
+            .upsert({ user_id: uid, day: today, items: merged }, { onConflict: "user_id,day" });
+          if (!error) list = merged;
+        }
+        pulledGoals.current = today;
+      }
+      const listNow = sortItems(list);
+      commitItems(listNow);
+
+      // Self-heal. The Plan chat can rewrite the day while the Card is closed,
+      // and its mirror write can fail. Where game_days disagrees with the list
+      // that actually exists, the LIST wins — the week strip and the season map
+      // must never contradict the ring the user is looking at.
+      const cur = daysRef.current.find((d) => d.day === today) ?? emptyDay(today);
+      const nDone = countDone(listNow);
+      if (cur.items_done !== nDone || cur.items_total !== listNow.length) {
+        const fixed = {
+          ...cur, items_done: nDone, items_total: listNow.length,
+          splits: splitsFor(cur.splits ?? {}, listNow, secOfDay()),
+        };
+        const { error } = await supabase.from("game_days").upsert({
+          user_id: uid, day: today,
+          r_launch: fixed.r_launch, r_shutdown: fixed.r_shutdown, b: fixed.b, s: fixed.s,
+          bonus_uber: fixed.bonus_uber, bonus_trading: fixed.bonus_trading,
+          bonus_dev: fixed.bonus_dev, bonus_chess: fixed.bonus_chess,
+          frozen: fixed.frozen, learn_line: fixed.learn_line, splits: fixed.splits,
+          items_done: fixed.items_done, items_total: fixed.items_total,
+        }, { onConflict: "user_id,day" });
+        if (!error) commitDays((ds) => [...ds.filter((d) => d.day !== today), fixed]);
+      }
+
       const cls = (cb.error ? [] : ((cb.data ?? []) as { label: string; location: string; start_t: string }[]))
         .map((c) => ({ time: c.start_t, what: `${c.label}${c.location ? ` · ${c.location}` : ""}` }));
-      const plan = (ni.error ? [] : ((ni.data?.items ?? []) as Ev[])).filter((x) => x?.what);
-      setBlocks([...cls, ...plan].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")));
+      setBlocks(cls.sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")));
+      setTodayGigs(gg.error ? [] : ((gg.data ?? []) as Gig[]));
       setLoadErr(false); setLoaded(true);
     } catch { setLoadErr(true); setLoaded(true); }
-  }, [uid, commitDays]);
+  }, [uid, commitDays, commitItems]);
   useEffect(() => { load(); }, [load]);
 
   // midnight rollover: a card left open must flip to the new day.
-  // The same interval keeps the live clock (pace line / countdowns) honest.
+  // The same interval keeps the live clock (countdowns) honest.
   useEffect(() => {
     const check = () => {
       setNowSec(secOfDay());
       const now = todayStr();
       if (now !== dayRef.current) {
         dayRef.current = now;
-        setTodayReps([]); setRepOpen(false); setLearnOpen(false); setTakeover(false);
-        setRWho(""); setRPlace(""); setRNote("");
+        commitItems([]); setAddOpen(false); setATime(""); setAWhat("");
         setTodayGigs([]); setGigOpen(false); setGHours(""); setGEarn("");
-        lineTouched.current = false; setLineDraft("");
+        setTakeover(false);
+        pulledGoals.current = "";
         load();
       }
     };
@@ -146,36 +186,30 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
     const id = setInterval(check, 15000);
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
-  }, [load]);
+  }, [load, commitItems]);
 
   const today = todayStr();
   const rowsMap = useMemo(() => new Map(days.map((d) => [d.day, d])), [days]);
-  const repsByDay = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const d of repDays) m.set(d, (m.get(d) ?? 0) + 1);
-    return m;
-  }, [repDays]);
   const row = rowsMap.get(today) ?? emptyDay(today);
-  const ydRow = rowsMap.get(addDays(today, -1));
-  const repsToday = todayReps.length;
+  const total = items.length;
+  const done = countDone(items);
+  const bar = winBar(total);
+  const closed = total >= 1 && done >= total;
+  const bonus = bonusCount(row);
+  const points = row.frozen ? 0 : Math.min(10, done + bonus);
   const gigEarned = todayGigs.reduce((t, g) => t + (Number(g.earnings) || 0), 0);
   const gigHours = todayGigs.reduce((t, g) => t + (Number(g.hours) || 0), 0);
-  const parts = coreParts(row, repsToday);
-  const core = coreCount(row, repsToday);
-  const bonus = bonusCount(row, repsToday);
-  const total = dayTotal(row, repsToday);
-  const streak = useMemo(() => computeStreak(rowsMap, repsByDay, today), [rowsMap, repsByDay, today]);
+
+  const streak = useMemo(() => computeStreak(rowsMap, today), [rowsMap, today]);
+  const won = useMemo(() => daysWon(days, today), [days, today]);
+  const pace = winPace(won, today);
   const lvl = levelInfo(streak);
   const week = weekDays(today);
   const weekTotal = week.reduce((t, d) => {
-    // a reps-only day has no game_days row — its points still count.
-    // Off-season days never do (the strip renders them neutral; the header
-    // must agree with it).
     if (diffDays(SEASON_START, d) < 1 || d > SEASON_END) return t;
-    return t + dayTotal(rowsMap.get(d) ?? emptyDay(d), repsByDay.get(d) ?? 0);
+    return t + dayTotal(rowsMap.get(d) ?? emptyDay(d));
   }, 0);
   const band = weekBand(weekTotal);
-  const pace = repPace(repDays.length, today);
   const dayN = seasonDay(today);
   const hour = new Date().getHours();
   const nowT = `${String(hour).padStart(2, "0")}:${String(new Date().getMinutes()).padStart(2, "0")}`;
@@ -185,39 +219,26 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   // PBs exclude today (still in progress) and frozen days
   const pbs = useMemo(() => partBests(days, today), [days, today]);
   const closedSec = row.splits?.closed;
+  const pbClose = pbs.closed;
 
-  // sync the learn draft once per day from the server value
-  useEffect(() => {
-    if (!lineTouched.current) setLineDraft(row.learn_line);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [row.learn_line]);
-
-  // celebrations — once per day each, only on the transition.
-  // Confetti policy (v3): gold split = micro, card closed = small; that's it here.
+  // celebrations — once per day each, only on the transition
   useEffect(() => {
     if (fxRef.current.day !== today) fxRef.current = { day: today, fx: readFx(today) };
     const fx = fxRef.current.fx;
     let changed = false;
-
-    // gold splits: a stamp strictly earlier than the season PB for that part
-    for (const k of SPLIT_KEYS) {
-      const s = row.splits?.[k];
-      const pb = pbs[k];
-      if (typeof s === "number" && typeof pb === "number" && s < pb && !fx.gold.includes(k)) {
-        fx.gold = [...fx.gold, k]; changed = true;
-        burstConfetti("micro"); sfx.pr(); buzz(10);
-      }
-    }
-    if (core === 5 && !fx.c5) {
-      fx.c5 = true; changed = true;
+    if (closed && !fx.closed) {
+      fx.closed = true; changed = true;
       burstConfetti("small"); sfx.fanfare(); buzz([20, 30, 20]);
       setTakeover(true);
     }
-    if (total >= 10 && !fx.ten) { fx.ten = true; changed = true; sfx.levelup(); }
+    if (typeof closedSec === "number" && typeof pbClose === "number" && closedSec < pbClose && !fx.gold) {
+      fx.gold = true; changed = true;
+      burstConfetti("micro"); sfx.pr(); buzz(10);
+    }
+    if (points >= 10 && !fx.ten) { fx.ten = true; changed = true; sfx.levelup(); }
     if (changed) writeFx(today, fx);
-  }, [core, total, today, row.splits, pbs]);
+  }, [closed, points, today, closedSec, pbClose]);
 
-  // takeover auto-dismisses — it's a moment, not a modal to manage
   useEffect(() => {
     if (!takeover) return;
     const t = setTimeout(() => setTakeover(false), 4000);
@@ -232,27 +253,11 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
     if (todayStr() === today) return false;
     setErr("Midnight — the card just rolled to the new day. Tap again.");
     dayRef.current = todayStr();
-    setTodayReps([]); setRepOpen(false); setLearnOpen(false); setTakeover(false);
-    setRWho(""); setRPlace(""); setRNote("");
-    lineTouched.current = false; setLineDraft("");
+    commitItems([]); setAddOpen(false); setATime(""); setAWhat("");
+    setTakeover(false);
+    pulledGoals.current = "";
     load();
     return true;
-  }
-
-  // Stamp maintenance for a change to TODAY's row: a part that just locked in
-  // gets the current wall clock; a part that un-locked loses its stamp (honest
-  // data or no data). "closed" exists iff core is 5 right now.
-  function withStamps(next: GameDayRow, reps: number): GameDayRow {
-    const before = coreParts(row, reps);
-    const after = coreParts(next, reps);
-    const sp: Splits = { ...(next.splits ?? {}) };
-    for (const k of SPLIT_KEYS) {
-      if (!before[k] && after[k] && sp[k] == null) sp[k] = secOfDay();
-      if (before[k] && !after[k]) delete sp[k];
-    }
-    if (coreCount(next, reps) === 5) { if (sp.closed == null) sp.closed = secOfDay(); }
-    else delete sp.closed;
-    return { ...next, splits: sp };
   }
 
   function upsertPayload(d: GameDayRow, day: string) {
@@ -262,14 +267,82 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
       bonus_uber: d.bonus_uber, bonus_trading: d.bonus_trading,
       bonus_dev: d.bonus_dev, bonus_chess: d.bonus_chess,
       frozen: d.frozen, learn_line: d.learn_line, splits: d.splits ?? {},
+      items_done: d.items_done ?? 0, items_total: d.items_total ?? 0,
     };
+  }
+
+  // The list is the score, so the list and the score are written together.
+  // nights.items goes first (it's the shared source of truth with the Plan
+  // chat); game_days carries the counts so the season map and the streak never
+  // have to load every night row to know whether a day was won.
+  async function saveList(next: DayItem[], key: string, at: number): Promise<boolean> {
+    if (saving || dayRolled()) return false;
+    setSaving(key); setErr("");
+    try {
+      const sorted = sortItems(next);
+      const { error } = await supabase.from("nights")
+        .upsert({ user_id: uid, day: today, items: sorted }, { onConflict: "user_id,day" });
+      if (error) { setErr("Couldn't save the list — try again."); return false; }
+      commitItems(sorted);
+
+      const nDone = countDone(sorted);
+      const nTotal = sorted.length;
+      const base = daysRef.current.find((d) => d.day === today) ?? emptyDay(today);
+      const sp: Splits = splitsFor(base.splits ?? {}, sorted, at);
+
+      const nextRow = { ...base, items_done: nDone, items_total: nTotal, splits: sp };
+      const { error: e2 } = await supabase.from("game_days")
+        .upsert(upsertPayload(nextRow, today), { onConflict: "user_id,day" });
+      if (e2) { setErr("The list saved, but the score didn't — tap again."); return false; }
+      commitDays((ds) => [...ds.filter((d) => d.day !== today), nextRow]);
+      return true;
+    } catch { setErr("Couldn't reach the server — nothing saved."); return false; }
+    finally { setSaving(""); }
+  }
+
+  async function toggleItem(it: DayItem) {
+    const at = secOfDay();                       // tap time, never resolve time
+    const nextDone = !it.done;
+    const next = itemsRef.current.map((x) => x.id === it.id
+      ? { ...x, done: nextDone, at: nextDone ? at : undefined }
+      : x);
+    const ok = await saveList(next, `t_${it.id}`, at);
+    if (!ok) return;
+    if (nextDone) { sfx.coin(); buzz(12); } else sfx.pop();
+    // a deadline checked off the list is a goal finished — close it for real,
+    // but never let that secondary write undo the tick that already landed
+    if (it.goal_id) {
+      await supabase.from("goals")
+        .update({ status: nextDone ? "done" : "active", updated_at: new Date().toISOString() })
+        .eq("id", it.goal_id);
+    }
+  }
+
+  async function addItem() {
+    const what = aWhat.trim();
+    if (!what || saving) return;
+    const t = aTime.trim();
+    const item: DayItem = {
+      id: newItemId(),
+      time: /^([01]\d|2[0-3]):[0-5]\d$/.test(t) ? t : "",
+      what: what.slice(0, 200),
+      src: "card",
+    };
+    const ok = await saveList([...itemsRef.current, item], "add", secOfDay());
+    if (ok) { setAWhat(""); setATime(""); sfx.pop(); }
+  }
+
+  async function removeItem(id: string) {
+    if (saving) return;
+    await saveList(itemsRef.current.filter((x) => x.id !== id), `x_${id}`, secOfDay());
   }
 
   async function patch(fields: Partial<GameDayRow>, key: string): Promise<boolean> {
     if (saving || dayRolled()) return false;
     setSaving(key); setErr("");
     try {
-      const next = withStamps({ ...row, ...fields }, repsToday);
+      const base = daysRef.current.find((d) => d.day === today) ?? emptyDay(today);
+      const next = { ...base, ...fields };
       const { error } = await supabase.from("game_days").upsert(upsertPayload(next, today), { onConflict: "user_id,day" });
       if (error) { setErr("Couldn't save that — try again."); return false; }
       commitDays((ds) => [...ds.filter((d) => d.day !== today), next]);
@@ -293,83 +366,10 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
     finally { setSaving(""); }
   }
 
-  // BC stamps ride a quiet secondary write (the rep insert is the scoring
-  // truth; the stamp is telemetry). One retry, then let it go — the rep is
-  // never blocked or rolled back over a stamp. THREE guards learned the hard
-  // way: (1) `at` and `day` are captured at TAP time, so a rep whose insert
-  // resolves after midnight can't stamp yesterday with a ~0:00 clock and
-  // poison every season PB; (2) if the day rolled while the rep was in
-  // flight, the stamp is dropped entirely; (3) the base row comes from
-  // daysRef (fresh), never a render closure that a concurrent write outdated.
-  async function stampAfterReps(nextReps: number, at: number, day: string) {
-    // after a midnight roll, removals may still land (they only make the data
-    // MORE honest) but fresh stamps never do
-    const rolled = todayStr() !== day;
-    const cur = daysRef.current.find((d) => d.day === day) ?? emptyDay(day);
-    const sp: Splits = { ...(cur.splits ?? {}) };
-    if (!rolled && nextReps >= 1 && sp.bc == null) sp.bc = at;
-    if (nextReps === 0) delete sp.bc;
-    if (coreCount(cur, nextReps) === 5) { if (!rolled && sp.closed == null) sp.closed = at; }
-    else delete sp.closed;
-    if (JSON.stringify(sp) === JSON.stringify(cur.splits ?? {})) return;
-    const next = { ...cur, splits: sp };
-    let e = (await supabase.from("game_days").upsert(upsertPayload(next, day), { onConflict: "user_id,day" })).error;
-    if (e) e = (await supabase.from("game_days").upsert(upsertPayload(next, day), { onConflict: "user_id,day" })).error;
-    if (!e) commitDays((ds) => [...ds.filter((d) => d.day !== day), next]);
-  }
-
-  async function addRep() {
-    const who = rWho.trim();
-    if (!who || saving || dayRolled()) return;
-    const at = secOfDay();               // tap time, not resolve time
-    setSaving("rep"); setErr("");
-    try {
-      const { data, error } = await supabase.from("bc_reps")
-        .insert({ user_id: uid, day: today, who: who.slice(0, 120), place: rPlace.trim().slice(0, 120), note: rNote.trim().slice(0, 400) })
-        .select("id,who,place,note").single();
-      if (error || !data) { setErr("Couldn't log that rep — it's still here, try again."); return; }
-      setRWho(""); setRPlace(""); setRNote("");
-      sfx.coin(); buzz(15);
-      // day rolled while the insert was in flight (locked phone at 23:59) —
-      // the rep correctly lives on the tapped day, but it must NOT be appended
-      // to the NEW day's local lists; resync from the DB instead
-      if (todayStr() !== today) { load(); return; }
-      const nextCount = todayReps.length + 1;
-      setTodayReps((r) => [...r, data as Rep]);
-      setRepDays((r) => [...r, today]);
-      await stampAfterReps(nextCount, at, today);
-    } catch { setErr("Couldn't reach the server — the rep is still here, try again."); }
-    finally { setSaving(""); }
-  }
-
-  // deleteRep holds the SAME `saving` mutex as every other writer: its
-  // follow-up stamp upsert writes the whole game_days row, so letting it run
-  // concurrently with patch() silently reverted whichever write landed first.
-  async function deleteRep(id: string) {
-    if (saving || removingRep.current.has(id) || dayRolled()) return;
-    removingRep.current.add(id);
-    setRemovingIds([...removingRep.current]);
-    setSaving("repdel");
-    try {
-      const { error } = await supabase.from("bc_reps").delete().eq("id", id);
-      if (error) { setErr("Couldn't remove that rep."); return; }
-      const nextCount = Math.max(0, todayReps.length - 1);
-      setTodayReps((r) => r.filter((x) => x.id !== id));
-      setRepDays((r) => { const i = r.indexOf(today); return i >= 0 ? [...r.slice(0, i), ...r.slice(i + 1)] : r; });
-      await stampAfterReps(nextCount, secOfDay(), today);
-    } catch { setErr("Couldn't reach the server — that rep is still logged."); }
-    finally {
-      setSaving("");
-      removingRep.current.delete(id);
-      setRemovingIds([...removingRep.current]);
-    }
-  }
-
   // A driving shift is MONEY first and a game point second. It always records,
-  // whether or not the day has a BC rep yet — "reps before rides" is enforced
-  // by scoring (bonusCount ignores bonus_uber at 0 reps), never by hiding the
-  // button. The old chip was `disabled` with a hover-only `title`, which on a
-  // phone is simply a dead control that never explains itself.
+  // whether or not it has earned the point yet — the old chip was `disabled`
+  // with a hover-only `title`, which on a phone is a dead control that never
+  // explains itself.
   async function logGig() {
     const h = Number(gHours) || 0;
     const e = Number(gEarn) || 0;
@@ -384,7 +384,7 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
       sfx.coin(); buzz(15);
       if (todayStr() !== today) { load(); return; }   // rolled mid-flight
       setTodayGigs((g) => [...g, data as Gig]);
-    } catch { setErr("Couldn't reach the server — the shift is still here, try again."); }
+    } catch { setErr("Couldn't reach the server — the shift is still here, try again."); return; }
     finally { setGigSaving(false); }
     if (!row.bonus_uber) await patch({ bonus_uber: true }, "gig");
   }
@@ -403,21 +403,6 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
     finally { setGigSaving(false); }
   }
 
-  async function saveLine() {
-    const line = lineDraft.trim().slice(0, 400);
-    const ok = await patch({ learn_line: line }, "L");
-    if (ok && line) setLearnOpen(false);   // a failed save keeps the editor (and the line) open
-  }
-
-  // 🎧 commute-audio days: one tap must actually SCORE the point, not just
-  // fill the draft and let him believe it saved.
-  async function saveAudio() {
-    lineTouched.current = true;
-    setLineDraft("🎧 commute audio");
-    const ok = await patch({ learn_line: "🎧 commute audio" }, "L");
-    if (ok) setLearnOpen(false);
-  }
-
   // freeze: declared the NIGHT BEFORE, for tomorrow only, max one per week
   const tomorrow = addDays(today, 1);
   const tomorrowRow = rowsMap.get(tomorrow);
@@ -434,56 +419,36 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   );
 
   const inSeason = dayN >= 1 && dayN <= SEASON_DAYS;
-  const goldNow = fxRef.current.day === today ? fxRef.current.fx.gold : [];
-
-  // stamp / ghost cell for a core row's subtitle
-  function stampBits(k: SplitKey, done: boolean): React.ReactNode {
-    const s = row.splits?.[k];
-    if (done && typeof s === "number") {
-      const pb = pbs[k];
-      const isGold = goldNow.includes(k);
-      return (
-        <span className={`mono ${isGold ? "text-[var(--gold)] gold-flash font-semibold" : "opacity-60"}`}>
-          {fmtClock(s)}
-          {typeof pb === "number" && (
-            <span className={s <= pb ? "text-[var(--ok)]" : "text-[var(--bad)]"}> {fmtDelta(s - pb)}</span>
-          )}
-          {isGold && " · best"}
-        </span>
-      );
-    }
-    const yd = ydRow?.splits?.[k];
-    return typeof yd === "number" ? <span className="mono opacity-35">yd {fmtClock(yd)}</span> : null;
-  }
 
   // the chase line — real clocks only
-  const pbClose = pbs.closed;
   let chase: { text: string; cls: string } | null = null;
   if (!row.frozen) {
     if (typeof closedSec === "number") {
       const d = typeof pbClose === "number" ? closedSec - pbClose : null;
       chase = d !== null && d < 0
-        ? { text: `Closed ${fmtClock(closedSec)} — new best (${fmtDelta(d)})`, cls: "text-[var(--gold)]" }
-        : { text: `Closed ${fmtClock(closedSec)}${d !== null ? ` · PB ${fmtClock(pbClose!)} (${fmtDelta(d)})` : " — the season's first close sets the bar"}`, cls: "text-[var(--ok)]" };
-    } else if (typeof pbClose === "number") {
+        ? { text: `Cleared ${fmtClock(closedSec)} — new best (${fmtDelta(d)})`, cls: "text-[var(--gold)]" }
+        : { text: `Cleared ${fmtClock(closedSec)}${d !== null ? ` · best ${fmtClock(pbClose!)} (${fmtDelta(d)})` : " — the season's first clear sets the bar"}`, cls: "text-[var(--ok)]" };
+    } else if (typeof pbClose === "number" && total > 0) {
       chase = nowSec < pbClose
-        ? { text: `PB close ${fmtClock(pbClose)} · ${fmtDur(pbClose - nowSec)} to beat it`, cls: core >= 3 ? "text-[var(--text-2)]" : "text-[var(--text-3)]" }
-        : { text: `PB close ${fmtClock(pbClose)} passed — closing still counts`, cls: "text-[var(--text-3)]" };
-    } else if (inSeason) {
-      chase = { text: "First close sets the season record", cls: "text-[var(--text-3)]" };
+        ? { text: `Best clear ${fmtClock(pbClose)} · ${fmtDur(pbClose - nowSec)} to beat it`, cls: done >= bar ? "text-[var(--text-2)]" : "text-[var(--text-3)]" }
+        : { text: `Best clear ${fmtClock(pbClose)} passed — clearing still counts`, cls: "text-[var(--text-3)]" };
+    } else if (inSeason && total > 0) {
+      chase = { text: "First cleared list sets the season record", cls: "text-[var(--text-3)]" };
     }
   }
 
   return (
     <div className="pt-3">
-      {/* header: the ring is the day */}
+      {/* header: the ring is the list */}
       <div className="relative">
         <div className="glow-hero" />
         <div className="relative flex items-center gap-4">
-          <SegRing size={112} stroke={9} done={[parts.r, parts.b, parts.s, parts.bc, parts.l]} color="var(--ok)">
+          <SegRing size={112} stroke={total > 8 ? 7 : 9}
+            done={total > 0 ? items.map((i) => !!i.done) : [false]}
+            color={done >= bar && total > 0 ? "var(--ok)" : "var(--neon)"}>
             <div className="text-center leading-none">
-              <p className="font-bold text-[26px] mono">{core}<span className="text-[13px] text-[var(--text-4)]">/5</span></p>
-              <p className="text-[9px] mono text-[var(--text-4)] mt-1">+{bonus} = {total}</p>
+              <p className="font-bold text-[26px] mono">{done}<span className="text-[13px] text-[var(--text-4)]">/{total}</span></p>
+              <p className="text-[9px] mono text-[var(--text-4)] mt-1">{bonus > 0 ? `+${bonus} = ${points}` : `${points} pt${points === 1 ? "" : "s"}`}</p>
             </div>
           </SegRing>
           <div className="min-w-0 flex-1">
@@ -498,9 +463,9 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
           </div>
         </div>
         {chase && <p className={`relative mono text-[11px] mt-2.5 ${chase.cls}`}>{chase.text}</p>}
-        {hour >= 21 && core < 3 && !row.frozen && (
+        {hour >= 21 && total > 0 && done < bar && !row.frozen && (
           <p className="relative mono text-[11px] mt-1 text-[var(--bad)]">
-            Streak dies at midnight — {fmtDur(86400 - nowSec)} left. Core ≥ 3 saves it.
+            Streak dies at midnight — {fmtDur(86400 - nowSec)} left. {bar - done} more off the list saves it.
           </p>
         )}
       </div>
@@ -512,135 +477,94 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         </div>
       ) : (
         <>
-          {/* the five splits */}
+          {/* TODAY'S LIST — the same array the Plan chat writes */}
           <div className="mt-4 rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5">
-            <div className="space-y-2">
-              {/* R — two halves, both or no point */}
-              <div className={`rounded-xl border px-3 py-2.5 transition-colors ${parts.r ? "bg-[var(--ok)]/[0.07] border-[var(--ok)]/30" : "bg-[var(--raised)] border-[var(--border-1)]"}`}>
-                <div className="flex items-center gap-2">
-                  <span className={`w-6 h-6 rounded-full grid place-items-center text-xs font-black shrink-0 ${parts.r ? "bg-[var(--ok)] text-black" : "bg-white/10"}`}>R</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold">Rituals</p>
-                    <p className="text-[10px] text-[var(--text-3)]">{parts.r ? stampBits("r", true) : <>both or no point {stampBits("r", false)}</>}</p>
-                  </div>
-                  <button onClick={() => patch({ r_launch: !row.r_launch }, "rl")} disabled={!!saving}
-                    className={`px-3 py-2 rounded-lg text-xs font-bold active:scale-95 disabled:opacity-50 ${row.r_launch ? "bg-[var(--ok)] text-black" : "bg-white/10"}`}>
-                    Launch
-                  </button>
-                  <button onClick={() => patch({ r_shutdown: !row.r_shutdown }, "rs")} disabled={!!saving}
-                    className={`px-3 py-2 rounded-lg text-xs font-bold active:scale-95 disabled:opacity-50 ${row.r_shutdown ? "bg-[var(--ok)] text-black" : "bg-white/10"}`}>
-                    Shutdown
-                  </button>
-                </div>
-              </div>
-
-              {/* B and S — single taps */}
-              {([["B", "Body", "b", row.b, parts.b, "gym day: train · rest day: clean eating + walk"], ["S", "School", "s", row.s, parts.s, "one 30-min block on the priority course"]] as const).map(([k, label, field, val, done, hint]) => (
-                <button key={k} onClick={() => patch({ [field]: !val } as Partial<GameDayRow>, k)} disabled={!!saving}
-                  className={`w-full rounded-xl border px-3 py-2.5 flex items-center gap-2 active:scale-[0.99] disabled:opacity-60 transition-colors ${done ? "bg-[var(--ok)]/[0.07] border-[var(--ok)]/30" : "bg-[var(--raised)] border-[var(--border-1)]"}`}>
-                  <span className={`w-6 h-6 rounded-full grid place-items-center text-xs font-black shrink-0 ${done ? "bg-[var(--ok)] text-black" : "bg-white/10"}`}>{k}</span>
-                  <div className="min-w-0 flex-1 text-left">
-                    <p className="text-sm font-semibold">{label}</p>
-                    <p className="text-[10px] text-[var(--text-3)]">{done ? stampBits(field as SplitKey, true) : <>{hint} {stampBits(field as SplitKey, false)}</>}</p>
-                  </div>
-                  {done && <span className="text-[var(--ok)] font-black">✓</span>}
-                </button>
-              ))}
-
-              {/* BC — derived from the rep log. No log = didn't happen. */}
-              <div className={`rounded-xl border px-3 py-2.5 transition-colors ${parts.bc ? "bg-[var(--ok)]/[0.07] border-[var(--ok)]/30" : "bg-[var(--raised)] border-[var(--border-1)]"}`}>
-                <button onClick={() => setRepOpen((v) => !v)} className="w-full flex items-center gap-2 text-left">
-                  <span className={`w-6 h-6 rounded-full grid place-items-center text-[10px] font-black shrink-0 ${parts.bc ? "bg-[var(--ok)] text-black" : "bg-white/10"}`}>BC</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold">BookCrew {repsToday > 0 && <span className="mono text-xs opacity-60">· {repsToday} rep{repsToday === 1 ? "" : "s"}</span>}</p>
-                    <p className="text-[10px] text-[var(--text-3)] truncate">
-                      {parts.bc ? stampBits("bc", true) : <>one real BookCrew conversation — DM, email, call, door {stampBits("bc", false)}</>}
-                    </p>
-                  </div>
-                  <span className="text-xs opacity-50">{repOpen ? "▴" : "＋ rep"}</span>
-                </button>
-                {repOpen && (
-                  <div className="mt-2.5 space-y-1.5">
-                    <p className="text-[10px] text-[var(--text-3)] leading-relaxed">
-                      A <b>rep</b> = one attempt to sell BookCrew to a real person outside your own head.
-                      Cold DM, cold email, a call, a walk-in, a demo, a follow-up. It counts when it&apos;s <i>sent</i>,
-                      not when they reply. Building the product, tweaking the site, and planning are not reps.
-                    </p>
-                    {todayReps.map((r) => (
-                      <div key={r.id} className="flex items-center gap-2 rounded-lg bg-black/25 px-2.5 py-1.5">
-                        <p className="text-xs flex-1 min-w-0 truncate">{r.who}{r.place ? ` @ ${r.place}` : ""}{r.note ? ` — ${r.note}` : ""}</p>
-                        <button onClick={() => deleteRep(r.id)} disabled={removingIds.includes(r.id)} className="opacity-30 text-xs active:scale-90 disabled:opacity-10">✕</button>
-                      </div>
-                    ))}
-                    <div className="grid grid-cols-2 gap-1.5">
-                      <input value={rWho} onChange={(e) => setRWho(e.target.value)} disabled={saving === "rep"} placeholder="who"
-                        className="rounded-lg bg-black/30 px-3 py-2 outline-none text-sm" />
-                      <input value={rPlace} onChange={(e) => setRPlace(e.target.value)} disabled={saving === "rep"} placeholder="where"
-                        className="rounded-lg bg-black/30 px-3 py-2 outline-none text-sm" />
-                    </div>
-                    <input value={rNote} onChange={(e) => setRNote(e.target.value)} disabled={saving === "rep"}
-                      onKeyDown={(e) => { if (e.key === "Enter") addRep(); }}
-                      placeholder="what they said · next step" className="w-full rounded-lg bg-black/30 px-3 py-2 outline-none text-sm" />
-                    <button onClick={addRep} disabled={!!saving || !rWho.trim()}
-                      className="w-full rounded-lg bg-[var(--neon)] text-black text-sm font-bold py-2 active:scale-95 disabled:opacity-40">
-                      {saving === "rep" ? "logging…" : "Log the rep"}
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* L — the one line in his own words IS the point */}
-              <div className={`rounded-xl border px-3 py-2.5 transition-colors ${parts.l ? "bg-[var(--ok)]/[0.07] border-[var(--ok)]/30" : "bg-[var(--raised)] border-[var(--border-1)]"}`}>
-                <button onClick={() => setLearnOpen((v) => !v)} className="w-full flex items-center gap-2 text-left">
-                  <span className={`w-6 h-6 rounded-full grid place-items-center text-xs font-black shrink-0 ${parts.l ? "bg-[var(--ok)] text-black" : "bg-white/10"}`}>L</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-semibold">Learn <span className="opacity-50 font-normal">· {trunkOfDay(today)}</span></p>
-                    <p className="text-[10px] text-[var(--text-3)] truncate">
-                      {parts.l ? <>{stampBits("l", true)} <span className="opacity-60">· {row.learn_line}</span></> : <>one leaf, one line in your own words {stampBits("l", false)}</>}
-                    </p>
-                  </div>
-                  <span className="text-xs opacity-50">{learnOpen ? "▴" : parts.l ? "edit" : "＋ line"}</span>
-                </button>
-                {learnOpen && (
-                  <div className="mt-2.5">
-                    <textarea value={lineDraft} onChange={(e) => { lineTouched.current = true; setLineDraft(e.target.value); }} rows={2} disabled={saving === "L"}
-                      placeholder="the line that proves it stuck — your words, not the book's"
-                      className="w-full rounded-lg bg-black/30 px-3 py-2 outline-none text-sm resize-none" />
-                    <div className="flex gap-2 mt-1.5">
-                      <button onClick={saveLine} disabled={!!saving} className="flex-1 rounded-lg bg-[var(--neon)] text-black text-sm font-bold py-2 active:scale-95 disabled:opacity-40">
-                        {saving === "L" ? "saving…" : "Save the line"}
-                      </button>
-                      <button onClick={saveAudio} disabled={!!saving}
-                        className="rounded-lg bg-white/10 text-xs font-semibold px-3 active:scale-95" title="NotebookLM audio on the commute counts on driving days — one tap scores it">🎧</button>
-                    </div>
-                    <button onClick={() => onGoTab("learning")} className="text-[10px] opacity-40 underline mt-1.5">open the study room →</button>
-                  </div>
-                )}
-              </div>
+            <div className="flex items-baseline justify-between mb-2">
+              <Eyebrow>Today&apos;s list</Eyebrow>
+              {total > 0 && (
+                <p className="mono text-[10px]" style={{ color: done >= bar ? "var(--ok)" : "var(--text-4)" }}>
+                  {done >= bar ? "streak safe" : `${bar - done} more for the streak`}
+                </p>
+              )}
             </div>
 
-            {/* MVD net — evenings only, when the streak is actually at risk */}
-            {hour >= 17 && hour < 21 && core < 3 && (
-              <p className="text-[11px] text-[var(--warn)] mt-3">
-                MVD fallback: ~90 min. Rituals + any two others = the streak survives. Don&apos;t negotiate past that.
-              </p>
+            {total === 0 ? (
+              <div className="rounded-xl border border-dashed border-[var(--border-2)] bg-[var(--raised)] px-3 py-4 text-center">
+                <p className="text-sm text-[var(--text-2)]">Nothing on today yet.</p>
+                <p className="text-[11px] text-[var(--text-3)] mt-1">Talk the day out in Plan and it lands here — or add a line below.</p>
+                <button onClick={() => onGoTab("plan")}
+                  className="mt-2.5 rounded-lg bg-[var(--neon)] text-black text-sm font-bold px-4 py-2 active:scale-95">
+                  Plan today →
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {items.map((it) => (
+                  <div key={it.id}
+                    className={`group rounded-xl border px-2.5 py-2.5 flex items-center gap-2.5 transition-colors ${
+                      it.done ? "bg-[var(--ok)]/[0.07] border-[var(--ok)]/30" : "bg-[var(--raised)] border-[var(--border-1)]"}`}>
+                    <button onClick={() => toggleItem(it)} disabled={!!saving}
+                      aria-label={it.done ? `Uncheck ${it.what}` : `Check off ${it.what}`}
+                      className={`w-7 h-7 rounded-lg grid place-items-center shrink-0 text-sm font-black active:scale-90 disabled:opacity-50 ${
+                        it.done ? "bg-[var(--ok)] text-black" : "bg-white/10 text-transparent"}`}>
+                      ✓
+                    </button>
+                    <button onClick={() => toggleItem(it)} disabled={!!saving} className="min-w-0 flex-1 text-left active:scale-[0.99] disabled:opacity-60">
+                      <p className={`text-sm leading-snug ${it.done ? "line-through opacity-45" : "font-medium"}`}>
+                        {it.what}
+                      </p>
+                      <p className="text-[10px] text-[var(--text-4)] mono mt-0.5">
+                        {it.time || "anytime"}
+                        {it.src === "goal" && <span className="text-[var(--warn)]"> · deadline</span>}
+                        {it.done && typeof it.at === "number" && <span className="opacity-70"> · done {fmtClock(it.at)}</span>}
+                      </p>
+                    </button>
+                    <button onClick={() => removeItem(it.id)} disabled={!!saving}
+                      aria-label={`Remove ${it.what}`}
+                      className="opacity-25 text-xs px-1 active:scale-90 disabled:opacity-10">✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {addOpen ? (
+              <div className="mt-2 flex gap-1.5">
+                <input value={aTime} onChange={(e) => setATime(e.target.value)} disabled={!!saving}
+                  placeholder="09:00" inputMode="numeric"
+                  className="w-20 rounded-lg bg-black/30 px-2.5 py-2 outline-none text-sm mono" />
+                <input value={aWhat} onChange={(e) => setAWhat(e.target.value)} disabled={!!saving} autoFocus
+                  onKeyDown={(e) => { if (e.key === "Enter") addItem(); }}
+                  placeholder="what needs doing"
+                  className="flex-1 min-w-0 rounded-lg bg-black/30 px-3 py-2 outline-none text-sm" />
+                <button onClick={addItem} disabled={!!saving || !aWhat.trim()}
+                  className="rounded-lg bg-[var(--neon)] text-black text-sm font-bold px-3 active:scale-95 disabled:opacity-40">
+                  {saving === "add" ? "…" : "add"}
+                </button>
+              </div>
+            ) : (
+              <button onClick={() => setAddOpen(true)} className="mono text-[10px] text-[var(--neon)] mt-2 active:scale-95">＋ add a line</button>
+            )}
+
+            {total > 0 && (
+              <div className="flex items-center gap-3 mt-2.5 pt-2.5 border-t border-[var(--border-1)]">
+                <button onClick={() => onGoTab("plan")} className="mono text-[10px] text-[var(--text-4)] underline active:scale-95">
+                  replan the day →
+                </button>
+                {hour >= 17 && hour < 21 && done < bar && (
+                  <p className="text-[10px] text-[var(--warn)]">
+                    {bar - done} left for the streak. Pick the smallest ones.
+                  </p>
+                )}
+              </div>
             )}
           </div>
 
-          {/* Bonus — every chip states its own rule, and none of them are dead.
-              The old Uber chip was `disabled` with a hover-only `title`: on a
-              phone that is a grey button that does nothing and never says why.
-              It's a real shift logger now, and the "reps before rides" rule is
-              enforced where it belongs — in scoring, not by hiding the control. */}
+          {/* Bonus — things that aren't on the list but still count */}
           <div className="mt-3 rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5">
-            <Eyebrow className="mb-2">Bonus · +{bonus} of 5 max</Eyebrow>
+            <Eyebrow className="mb-2">Bonus · +{bonus} of 4 max</Eyebrow>
             <div className="flex flex-wrap gap-1.5">
-              <span className={`px-3 py-2 rounded-lg text-xs font-semibold mono ${bonusBC(repsToday) > 0 ? "bg-[var(--neon)]/15 text-[var(--neon)] border border-[var(--neon)]/40" : "bg-white/5 opacity-45 border border-[var(--border-1)]"}`}>
-                extra reps +{bonusBC(repsToday)}
-              </span>
-
               <button onClick={() => setGigOpen((v) => !v)}
-                className={`px-3 py-2 rounded-lg text-xs font-semibold active:scale-95 border ${row.bonus_uber && repsToday >= 1 ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-[var(--border-1)]"}`}>
+                className={`px-3 py-2 rounded-lg text-xs font-semibold active:scale-95 border ${row.bonus_uber ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-[var(--border-1)]"}`}>
                 Drove{gigEarned > 0 ? <span className="mono opacity-75"> · ${Math.round(gigEarned)}</span> : null} <span className="opacity-45">{gigOpen ? "▴" : "＋"}</span>
               </button>
 
@@ -656,11 +580,6 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
 
             {gigOpen && (
               <div className="mt-2.5 space-y-1.5 rise-in">
-                {repsToday === 0 && (
-                  <p className="text-[10px] text-[var(--warn)] leading-relaxed">
-                    Reps before rides — your own rule. The shift still saves; it starts scoring the +1 the moment today&apos;s first BookCrew rep is logged.
-                  </p>
-                )}
                 {todayGigs.map((g) => (
                   <div key={g.id} className="flex items-center gap-2 rounded-lg bg-black/25 px-2.5 py-1.5">
                     <p className="text-xs flex-1 min-w-0 truncate mono">{g.platform} · {g.hours}h · ${Math.round(g.earnings)}</p>
@@ -698,8 +617,7 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
             <details className="mt-2.5">
               <summary className="text-[10px] text-[var(--text-4)] cursor-pointer list-none active:scale-95">what counts for each of these ▾</summary>
               <div className="mt-1.5 space-y-1 text-[10px] text-[var(--text-3)] leading-relaxed">
-                <p><b>extra reps</b> — reps 2 and 3 of the day, +1 each. Rep 1 already scored in the Core Five. Caps at +2.</p>
-                <p><b>Drove</b> — any DoorDash / Uber Eats shift. Records the real hours and dollars, and scores +1 once the day has a BookCrew rep.</p>
+                <p><b>Drove</b> — any DoorDash / Uber Eats shift. Records the real hours and dollars, and feeds the gig goal in Hustle.</p>
                 <p><b>Traded my rules</b> — you followed your trading rules 100%. Discipline, not profit: a losing day by the rules scores, a winning day off the rules doesn&apos;t.</p>
                 <p><b>Shipped code</b> — something is live that wasn&apos;t live this morning. &quot;Worked on it&quot; isn&apos;t shipped.</p>
                 <p><b>Rated chess</b> — at least one rated game. Win or lose.</p>
@@ -711,18 +629,18 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
           <details className="mt-3 rounded-xl border border-[var(--border-1)] bg-[var(--card)] px-3.5 py-3">
             <summary className="text-[11px] font-semibold text-[var(--text-2)] cursor-pointer list-none active:scale-[0.99]">How the day scores ▾</summary>
             <div className="mt-2 space-y-1.5 text-[11px] text-[var(--text-3)] leading-relaxed">
-              <p><b className="text-[var(--text-2)]">The Core Five</b> — 1 point each. <b>R</b> both rituals, launch AND shutdown or no point. <b>B</b> body. <b>S</b> one 30-minute block on the priority course. <b>BC</b> at least one BookCrew rep logged. <b>L</b> one line on what you learned, your words.</p>
-              <p><b className="text-[var(--text-2)]">Bonus</b> — up to +5 on top. Nice, but it never saves a day.</p>
-              <p><b className="text-[var(--text-2)]">The streak</b> — lives on <b>core ≥ 3</b>. Not five. Three. Bonus doesn&apos;t count toward it, so a 0-core day with +5 bonus still breaks the chain.</p>
+              <p><b className="text-[var(--text-2)]">The list</b> — whatever you planned in the Plan chat, plus anything due today, plus lines you add here. One point each.</p>
+              <p><b className="text-[var(--text-2)]">Bonus</b> — up to +4 for things that were never on the list. The day caps at 10 points.</p>
+              <p><b className="text-[var(--text-2)]">The streak</b> — lives on <b>{"min(3, list length)"}</b> items done. A three-item day is won by clearing it; a twelve-item day still only needs three. Bonus doesn&apos;t count toward it.</p>
+              <p><b className="text-[var(--text-2)]">Cleared</b> — every line ticked. That stamps the clock, and beating your earliest-ever clear is the record worth chasing.</p>
               <p><b className="text-[var(--text-2)]">Freeze</b> — declared the night before, one a week. Scores 0, streak survives. Declaring is allowed; disappearing without declaring is what breaks you.</p>
               <p><b className="text-[var(--text-2)]">The week</b> — out of 70. Under 25 Down · 25–39 Surviving · 40–54 Running · 55+ Compounding.</p>
-              <p><b className="text-[var(--text-2)]">The clocks</b> — every part stamps the real time it locked in, and the day &quot;closes&quot; when core hits 5. Gold = earlier than any day before it this season. That&apos;s the thing to race.</p>
             </div>
           </details>
         </>
       )}
 
-      {/* week strip + rep engine */}
+      {/* week strip + season pace */}
       <div className="mt-3 rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5">
         <div className="flex items-center justify-between mb-2">
           <Eyebrow>This week</Eyebrow>
@@ -731,14 +649,13 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         <div className="grid grid-cols-7 gap-1">
           {week.map((d) => {
             const r = rowsMap.get(d) ?? emptyDay(d);
-            const t = dayTotal(r, repsByDay.get(d) ?? 0);
-            const c = coreCount(r, repsByDay.get(d) ?? 0);
+            const t = dayTotal(r);
             const isToday = d === today;
             const future = d > today;
             // pre/post-season days can never score — never paint them as failures
             const off = diffDays(SEASON_START, d) < 1 || d > SEASON_END;
-            // semantic trio: green = streak-safe (core ≥3), amber = partial, red = a past zero
-            const col = r.frozen ? "#38bdf8" : c >= 3 ? "var(--ok)" : t > 0 ? "var(--warn)" : !future && !isToday ? "var(--bad)" : "var(--text-4)";
+            // semantic trio: green = won, amber = partial, red = a past zero
+            const col = r.frozen ? "#38bdf8" : isStreakDay(r) ? "var(--ok)" : t > 0 ? "var(--warn)" : !future && !isToday ? "var(--bad)" : "var(--text-4)";
             return (
               <div key={d} className={`rounded-lg py-1.5 text-center border ${isToday ? "border-[var(--neon)]/50 bg-[var(--neon)]/10" : "border-[var(--border-1)] bg-white/[0.02]"} ${future || off ? "opacity-30" : ""}`}>
                 <p className="text-[9px] opacity-45">{["S", "M", "T", "W", "T", "F", "S"][new Date(d + "T00:00:00").getDay()]}</p>
@@ -750,13 +667,13 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
           })}
         </div>
         <div className="flex items-center gap-3 mt-3 pt-3 border-t border-[var(--border-1)]">
-          <ProgressCircle pct={pace.total / REP_TARGET} size={46} stroke={5}>
+          <ProgressCircle pct={pace.total / WIN_TARGET} size={46} stroke={5}>
             <Num value={pace.total} className="text-[11px] font-bold" />
           </ProgressCircle>
           <div className="min-w-0">
-            <Eyebrow>250-rep engine</Eyebrow>
+            <Eyebrow>Days won · {pace.total}/{WIN_TARGET}</Eyebrow>
             <p className="mono text-[11px] text-[var(--text-2)] mt-0.5">
-              pace → ~{pace.projected}{pace.perDayNeeded > 0 ? ` · need ${pace.perDayNeeded.toFixed(1)}/day` : ""}
+              pace → ~{pace.projected} of {SEASON_DAYS}{pace.perWeekNeeded > 0 ? ` · need ${pace.perWeekNeeded.toFixed(1)}/wk` : ""}
             </p>
           </div>
         </div>
@@ -772,10 +689,10 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         )}
       </div>
 
-      {/* next blocks — the 12:30 / 4:00 question: what's the next block? */}
+      {/* class timetable context — not scored, just "what's next" */}
       {nextBlocks.length > 0 && (
         <div className="mt-3 rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5">
-          <Eyebrow className="mb-1.5">Next block</Eyebrow>
+          <Eyebrow className="mb-1.5">Next class</Eyebrow>
           {nextBlocks.map((b, i) => (
             <div key={i} className="flex gap-3 text-sm py-0.5">
               <span className="mono text-xs opacity-45 w-11 shrink-0 pt-0.5">{b.time}</span>
@@ -789,23 +706,22 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
       <WorldBriefing uid={uid} />
 
       {err && <p className="text-xs text-orange-400 mt-2">{err}</p>}
-      <p className="text-[10px] opacity-30 mt-3 text-center">Paper is boss until this matches the card 7 straight days. Score both at Shutdown.</p>
 
-      {/* day-complete takeover — the moment, then back to life */}
+      {/* list-cleared takeover — the moment, then back to life */}
       {takeover && (
         <div className="fixed inset-0 z-50 bg-black/90 grid place-items-center p-6" onClick={() => setTakeover(false)}>
           <div className="text-center" style={{ animation: "levelPop 0.5s ease" }}>
             <div className="flex justify-center">
-              <SegRing size={140} stroke={10} done={[true, true, true, true, true]} color="var(--ok)">
-                <span className="text-4xl font-bold mono">5</span>
+              <SegRing size={140} stroke={10} done={items.map(() => true)} color="var(--ok)">
+                <span className="text-4xl font-bold mono">{total}</span>
               </SegRing>
             </div>
-            <p className="text-2xl font-bold mt-4">Card closed{typeof closedSec === "number" ? <span className="mono"> — {fmtClock(closedSec)}</span> : ""}</p>
+            <p className="text-2xl font-bold mt-4">List cleared{typeof closedSec === "number" ? <span className="mono"> — {fmtClock(closedSec)}</span> : ""}</p>
             {typeof closedSec === "number" && typeof pbClose === "number" && closedSec < pbClose && (
-              <p className="text-[var(--gold)] font-semibold mt-1">New best close</p>
+              <p className="text-[var(--gold)] font-semibold mt-1">New best clear</p>
             )}
             <p className="mono text-xs text-[var(--text-3)] mt-3">
-              streak {streak} · day {dayN}/{SEASON_DAYS}{lvl.next ? ` · ${lvl.next.name} in ${lvl.next.togo}d` : ""} · reps {pace.total}/{REP_TARGET}
+              streak {streak} · day {dayN}/{SEASON_DAYS}{lvl.next ? ` · ${lvl.next.name} in ${lvl.next.togo}d` : ""} · {pace.total} days won
             </p>
             <p className="text-[10px] text-[var(--text-4)] mt-5">tap anywhere</p>
           </div>

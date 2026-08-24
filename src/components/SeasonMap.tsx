@@ -18,8 +18,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase, todayStr } from "@/lib/supabase";
 import {
-  type GameDayRow, emptyDay, coreCount, coreParts, dayTotal, addDays, diffDays, seasonDay,
-  SEASON_START, SEASON_DAYS, REP_TARGET, TIERS, LEVEL_DATES, WEEK_LABELS,
+  type GameDayRow, emptyDay, dayTotal, listDone, isStreakDay, daysWon, addDays, diffDays, seasonDay,
+  SEASON_START, SEASON_DAYS, WIN_TARGET, TIERS, LEVEL_DATES, WEEK_LABELS,
 } from "@/lib/theGame";
 import { burstConfetti } from "@/lib/confetti";
 import { sfx, buzz } from "@/lib/fx";
@@ -27,7 +27,7 @@ import { Eyebrow, Num } from "./ui";
 
 type BossGoal = { id: string; title: string; due: string; stepsDone: number; stepsTotal: number };
 
-const GD_COLS = "day,r_launch,r_shutdown,b,s,bonus_uber,bonus_trading,bonus_dev,bonus_chess,frozen,learn_line,splits";
+const GD_COLS = "day,r_launch,r_shutdown,b,s,bonus_uber,bonus_trading,bonus_dev,bonus_chess,frozen,learn_line,splits,items_done,items_total";
 
 // ── path geometry (sanidhyy/duolingo-clone parameterization) ────────────────
 const VB_W = 360;
@@ -43,7 +43,6 @@ const MONDAYS = Object.keys(WEEK_LABELS).sort();
 
 export default function SeasonMap({ uid }: { uid: string }) {
   const [days, setDays] = useState<GameDayRow[]>([]);
-  const [repDays, setRepDays] = useState<string[]>([]);
   const [bosses, setBosses] = useState<BossGoal[]>([]);
   const [tiers, setTiers] = useState<number[]>([]);
   // a failed season_tiers read must NEVER leave a [] baseline — claiming on
@@ -60,16 +59,16 @@ export default function SeasonMap({ uid }: { uid: string }) {
 
   const load = useCallback(async () => {
     try {
-      const [gd, reps, gl, st] = await Promise.all([
+      const [gd, gl, st] = await Promise.all([
         supabase.from("game_days").select(GD_COLS).eq("user_id", uid).gte("day", SEASON_START),
-        supabase.from("bc_reps").select("day").eq("user_id", uid).gte("day", SEASON_START),
         supabase.from("goals").select("id,title,due").eq("user_id", uid).eq("status", "active").not("due", "is", null).gte("due", SEASON_START).lte("due", "2026-12-15"),
         supabase.from("user_settings").select("season_tiers").eq("user_id", uid).maybeSingle(),
       ]);
-      // the map's spine (days + reps) must be trustworthy or not shown at all
-      if (gd.error || reps.error) { setLoadErr(true); setLoaded(true); return; }
-      setDays(((gd.data ?? []) as GameDayRow[]).map((d) => ({ ...d, splits: d.splits ?? {} })));
-      setRepDays(((reps.data ?? []) as { day: string }[]).map((r) => r.day));
+      // the map's spine must be trustworthy or not shown at all
+      if (gd.error) { setLoadErr(true); setLoaded(true); return; }
+      setDays(((gd.data ?? []) as GameDayRow[]).map((d) => ({
+        ...d, splits: d.splits ?? {}, items_done: d.items_done ?? 0, items_total: d.items_total ?? 0,
+      })));
       let soft = false;
       // tiers and goals fail independently — one bad read never blanks the other
       if (st.error) soft = true;
@@ -100,18 +99,12 @@ export default function SeasonMap({ uid }: { uid: string }) {
   const today = todayStr();
   const todayI = seasonDay(today);
   const rowsMap = useMemo(() => new Map(days.map((d) => [d.day, d])), [days]);
-  const repsByDay = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const d of repDays) m.set(d, (m.get(d) ?? 0) + 1);
-    return m;
-  }, [repDays]);
-  const totalReps = repDays.length;
+  const totalWon = useMemo(() => daysWon(days, today), [days, today]);
 
   const scoreOf = useCallback((day: string) => {
     const r = rowsMap.get(day) ?? emptyDay(day);
-    const reps = repsByDay.get(day) ?? 0;
-    return { row: r, reps, core: coreCount(r, reps), total: dayTotal(r, reps) };
-  }, [rowsMap, repsByDay]);
+    return { row: r, done: listDone(r), listTotal: r.items_total ?? 0, won: isStreakDay(r), total: dayTotal(r) };
+  }, [rowsMap]);
 
   // fog starts past the NEXT level landmark — the map reveals itself in arcs
   const nextLevelI = LEVEL_DATES.find((l) => l.days >= Math.max(1, todayI))?.days ?? SEASON_DAYS;
@@ -214,19 +207,19 @@ export default function SeasonMap({ uid }: { uid: string }) {
         <p className="text-[9px] text-[var(--text-4)] mt-2 mono">every day of the season · intensity = points · gold ring = level date</p>
       </div>
 
-      {/* battle-pass rep track */}
+      {/* battle-pass track — days won */}
       <div className="mt-3 rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5">
         <div className="flex items-baseline justify-between">
-          <Eyebrow>Rep track</Eyebrow>
-          <p className="mono text-xs text-[var(--text-2)]"><Num value={totalReps} className="font-bold text-[var(--foreground)]" />/{REP_TARGET}</p>
+          <Eyebrow>Days won</Eyebrow>
+          <p className="mono text-xs text-[var(--text-2)]"><Num value={totalWon} className="font-bold text-[var(--foreground)]" />/{WIN_TARGET}</p>
         </div>
         <div className="h-1.5 rounded-full bg-white/10 overflow-hidden mt-2">
-          <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.min(100, (totalReps / REP_TARGET) * 100)}%`, background: "var(--neon)" }} />
+          <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${Math.min(100, (totalWon / WIN_TARGET) * 100)}%`, background: "var(--neon)" }} />
         </div>
         <div className="grid grid-cols-5 gap-1.5 mt-2.5">
           {TIERS.map((t) => {
             const claimed = tiers.includes(t.at);
-            const claimable = tiersLoaded && totalReps >= t.at && !claimed;
+            const claimable = tiersLoaded && totalWon >= t.at && !claimed;
             return (
               <button key={t.at} onClick={() => claimable && claimTier(t.at)} disabled={!claimable || claimBusy}
                 className={`rounded-lg border px-1 py-2 text-center transition-colors ${
@@ -280,7 +273,8 @@ export default function SeasonMap({ uid }: { uid: string }) {
 
             let node: React.ReactNode;
             if (isToday) {
-              const c = s!.core;
+              // the today ring fills with the day's list (empty list = empty ring)
+              const frac = s!.listTotal > 0 ? Math.min(1, s!.done / s!.listTotal) : 0;
               const r = 15, circ = 2 * Math.PI * r;
               const b0 = dayBosses[0];
               const labelLeft = x > VB_W / 2;
@@ -290,7 +284,7 @@ export default function SeasonMap({ uid }: { uid: string }) {
                     <circle cx={x} cy={y} r={19} fill="var(--canvas)" stroke="var(--border-2)" strokeWidth="1" />
                     <circle cx={x} cy={y} r={r} fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth="3.5" />
                     <circle cx={x} cy={y} r={r} fill="none" stroke="var(--ok)" strokeWidth="3.5" strokeLinecap="round"
-                      strokeDasharray={`${(c / 5) * circ} ${circ}`} transform={`rotate(-90 ${x} ${y})`} />
+                      strokeDasharray={`${frac * circ} ${circ}`} transform={`rotate(-90 ${x} ${y})`} />
                     <circle cx={x} cy={y} r={6} fill="var(--neon)" />
                     {/* on season day 1 the caption would clip above the viewBox — drop it below */}
                     <text x={x} y={i === 1 ? y + 32 : y - 26} fontSize="8" fill="var(--text-3)" textAnchor="middle"
@@ -348,7 +342,7 @@ export default function SeasonMap({ uid }: { uid: string }) {
                 </g>
               );
             } else if (past) {
-              const col = s!.row.frozen ? "#38bdf8" : s!.core >= 3 ? "var(--neon)" : s!.total > 0 ? "rgba(251,191,36,0.55)" : "none";
+              const col = s!.row.frozen ? "#38bdf8" : s!.won ? "var(--neon)" : s!.total > 0 ? "rgba(251,191,36,0.55)" : "none";
               node = col === "none"
                 ? <circle cx={x} cy={y} r={5.5} fill="none" stroke="rgba(248,113,113,0.4)" strokeWidth="1.5" />
                 : <circle cx={x} cy={y} r={5.5} fill={col} />;
@@ -382,13 +376,14 @@ export default function SeasonMap({ uid }: { uid: string }) {
             selInfo.row.frozen ? <p className="text-xs text-sky-300 mt-1.5">Freeze day — scored 0, streak survived.</p> : (
               <div className="flex items-center gap-3 mt-2">
                 <p className="mono text-lg font-bold">{selInfo.total}<span className="text-[10px] text-[var(--text-4)]"> pts</span></p>
-                <div className="flex gap-1">
-                  {(["r", "b", "s", "bc", "l"] as const).map((k) => {
-                    const on = coreParts(selInfo.row, selInfo.reps)[k];
-                    return <span key={k} className={`w-5 h-5 rounded grid place-items-center text-[9px] font-black uppercase ${on ? "bg-[var(--ok)] text-black" : "bg-white/5 text-[var(--text-4)]"}`}>{k}</span>;
-                  })}
-                </div>
-                {selInfo.reps > 0 && <p className="mono text-[10px] text-[var(--text-3)]">{selInfo.reps} rep{selInfo.reps === 1 ? "" : "s"}</p>}
+                {selInfo.listTotal > 0 ? (
+                  <p className="mono text-[11px] text-[var(--text-2)]">
+                    {selInfo.done}/{selInfo.listTotal} off the list
+                    <span className={selInfo.won ? "text-[var(--ok)]" : "text-[var(--text-4)]"}> · {selInfo.won ? "won" : "short"}</span>
+                  </p>
+                ) : (
+                  <p className="mono text-[11px] text-[var(--text-4)]">no list that day</p>
+                )}
               </div>
             )
           ) : <p className="text-xs text-[var(--text-3)] mt-1.5">{diffDays(today, sel)} days out.</p>}

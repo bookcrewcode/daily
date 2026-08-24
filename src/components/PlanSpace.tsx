@@ -14,7 +14,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr } from "@/lib/supabase";
-import { diffDays } from "@/lib/theGame";
+import { diffDays, type DayItem, normalizeItems, sortItems, mergeItems, newItemId } from "@/lib/theGame";
+import { mirrorCounts } from "@/lib/dayList";
 import { fetchCalendarEvents, resolveBlocks, parseTime, type CalEvent } from "@/lib/calendar";
 import { pushSchedule, acquireToken, everGranted, NeedsAuth } from "@/lib/gcal";
 import { sfx, buzz } from "@/lib/fx";
@@ -22,17 +23,23 @@ import { Card, Eyebrow } from "./ui";
 import Semester from "./Semester";
 import ScheduleChat from "./ScheduleChat";
 import SeasonMap from "./SeasonMap";
+import LongGame from "./LongGame";
+import CalendarLink from "./CalendarLink";
 
-type Ev = { time: string; what: string };
+// The plan's blocks ARE the Card's checklist — same array, same objects.
+type Ev = DayItem;
+// Classes and calendar events are context, not checklist items: they are things
+// that happen TO the day, so they are never scored and never carry a tick.
+type Slot = { time: string; what: string };
 type Goal = { id: string; title: string; due: string | null; status: string };
 type Capture = { id: string; text: string };
 
 const fmtNow = () => `${String(new Date().getHours()).padStart(2, "0")}:${String(new Date().getMinutes()).padStart(2, "0")}`;
 
 export default function PlanSpace({ uid }: { uid: string }) {
-  const [mode, setMode] = useState<"today" | "season">("today");
+  const [mode, setMode] = useState<"today" | "goals" | "season">("today");
   const [items, setItems] = useState<Ev[]>([]);
-  const [classes, setClasses] = useState<Ev[]>([]);
+  const [classes, setClasses] = useState<Slot[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [captures, setCaptures] = useState<Capture[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -80,7 +87,7 @@ export default function PlanSpace({ uid }: { uid: string }) {
       ]);
       // a failed read must never render as "empty" — the first four feed core sections
       if (n.error || g.error || cb.error || c.error) { setLoadErr(true); setLoaded(true); return; }
-      setItems(((n.data?.items ?? []) as Ev[]));   // RAW — display filters, writes preserve
+      setItems(sortItems(normalizeItems(n.data?.items)));
       setGcalIds(((n.data?.gcal_event_ids ?? []) as string[]));
       setClasses(((cb.data ?? []) as { label: string; location: string; start_t: string }[])
         .map((x) => ({ time: x.start_t, what: `${x.label}${x.location ? ` · ${x.location}` : ""}` })));
@@ -136,15 +143,22 @@ export default function PlanSpace({ uid }: { uid: string }) {
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
   }, [load]);
 
+  // Every write goes through here so the plan and the Card can never disagree:
+  // the list lands in nights.items, and its counts are mirrored into game_days,
+  // which is what the streak, the week strip and the season map actually read.
   async function writeItems(next: Ev[], key: string) {
     if (saving) return false;
     const day = todayStr();
     if (day !== dataDay.current) { setErr("Midnight — the plan rolled over; refreshing."); load(); return false; }
     setSaving(key); setErr("");
     try {
-      const { error } = await supabase.from("nights").upsert({ user_id: uid, day, items: next }, { onConflict: "user_id,day" });
+      const sorted = sortItems(next);
+      const { error } = await supabase.from("nights").upsert({ user_id: uid, day, items: sorted }, { onConflict: "user_id,day" });
       if (error) { setErr("Couldn't save the plan — try again."); return false; }
-      setItems(next); sfx.pop();
+      setItems(sorted); sfx.pop();
+      // a failed mirror is not worth losing the plan over — the Card reconciles
+      // the counts the next time it loads
+      await mirrorCounts(uid, day, sorted);
       return true;
     } catch { setErr("Couldn't reach the server — nothing saved."); return false; }
     finally { setSaving(""); }
@@ -153,8 +167,7 @@ export default function PlanSpace({ uid }: { uid: string }) {
   async function addBlock() {
     const what = bWhat.trim();
     if (!what) return;
-    const next = [...items, { time: bTime, what: what.slice(0, 120) }]
-      .sort((a, b) => ((a?.time || "99:99")).localeCompare(b?.time || "99:99"));
+    const next = [...items, { id: newItemId(), time: bTime, what: what.slice(0, 120), src: "plan" as const }];
     const ok = await writeItems(next, "block");
     if (ok) { setBWhat(""); setBTime(""); }
   }
@@ -299,29 +312,32 @@ export default function PlanSpace({ uid }: { uid: string }) {
       <div className="flex items-center justify-between mb-3">
         <h1 className="font-display text-2xl font-bold leading-none">Plan</h1>
         <div className="flex gap-1 p-1 rounded-xl bg-white/5 border border-[var(--border-1)]">
-          {(["today", "season"] as const).map((m) => (
+          {(["today", "goals", "season"] as const).map((m) => (
             <button key={m} onClick={() => setMode(m)}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${mode === m ? "bg-[var(--neon)] text-black" : "opacity-55"}`}>
-              {m === "today" ? "Today" : "Season"}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${mode === m ? "bg-[var(--neon)] text-black" : "opacity-55"}`}>
+              {m === "today" ? "Today" : m === "goals" ? "Long game" : "Season"}
             </button>
           ))}
         </div>
       </div>
 
-      {mode === "season" ? <SeasonMap uid={uid} /> : (
+      {mode === "season" ? <SeasonMap uid={uid} /> : mode === "goals" ? <LongGame uid={uid} /> : (
         <>
+          {/* Is the wire actually live? Proven with a real API read, not a flag. */}
+          <CalendarLink clientId={clientId} />
+
           {/* Plan the day by talking. The AI returns the WHOLE revised day; it
               is shown as a preview and nothing is written until he taps Apply —
               and Apply can push straight to Google Calendar with reminders. */}
           <ScheduleChat
             dayLabel="today"
-            items={items.filter((x) => x?.what)}
+            items={items.filter((x) => x?.what).map((x) => ({ time: x.time, what: x.what }))}
             fixed={[
               ...classes.map((c) => ({ time: c.time, what: `${c.what} (class)` })),
               ...calTimed.map((c) => ({ time: c.time, what: `${c.what} (already on your calendar)` })),
             ]}
-            onApply={(next) => writeItems(next as Ev[], "chat")}
-            onPush={clientId ? (next) => pushToCalendar(next as Ev[]) : undefined}
+            onApply={(next) => writeItems(mergeItems(items, normalizeItems(next)), "chat")}
+            onPush={clientId ? (next) => pushToCalendar(normalizeItems(next)) : undefined}
           />
 
           {/* TODAY — the shipping-tracker timeline */}

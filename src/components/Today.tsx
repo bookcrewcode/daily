@@ -7,6 +7,8 @@ import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
 import { sfx, buzz } from "@/lib/fx";
 import { parseTime, fmtMinutes } from "@/lib/calendar";
+import { mergeItems, normalizeItems } from "@/lib/theGame";
+import { mirrorCounts } from "@/lib/dayList";
 import { Ring, NumCard, SectionTitle, Card } from "./ui";
 import Overseer from "./Overseer";
 import GameBar from "./GameBar";
@@ -194,14 +196,18 @@ export default function Today({ uid, onOpenAdvisor, onGoTab }: {
     // READ-ERROR GUARD: a failed read returns {data:null} exactly like "no row
     // yet". Treating them the same would upsert blank top3/notes OVER real data.
     // Bail instead — ScheduleChat keeps the proposal and shows a retry note.
-    const { data: existing, error: readErr } = await supabase.from("nights").select("top3,notes").eq("user_id", uid).eq("day", day).maybeSingle();
+    const { data: existing, error: readErr } = await supabase.from("nights").select("top3,notes,items").eq("user_id", uid).eq("day", day).maybeSingle();
     if (readErr) return false;
+    // nights.items is now the Card's checklist too, so a replan here must carry
+    // finished work across instead of silently un-checking this morning.
+    const merged = mergeItems(normalizeItems(existing?.items), normalizeItems(items));
     const { error } = await supabase.from("nights").upsert(
-      { user_id: uid, day, items, top3: (existing?.top3 as string[]) ?? ["", "", ""], notes: existing?.notes ?? "" },
+      { user_id: uid, day, items: merged, top3: (existing?.top3 as string[]) ?? ["", "", ""], notes: existing?.notes ?? "" },
       { onConflict: "user_id,day" },
     );
     if (error) return false;
-    setPlan((p) => ({ top3: p?.top3 ?? [], items }));
+    await mirrorCounts(uid, day, merged);
+    setPlan((p) => ({ top3: p?.top3 ?? [], items: merged }));
     return true;
   }
 
