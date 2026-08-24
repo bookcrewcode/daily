@@ -27,6 +27,7 @@ import { Num, Eyebrow, SegRing, ProgressCircle } from "./ui";
 import WorldBriefing from "./WorldBriefing";
 
 type Rep = { id: string; who: string; place: string; note: string };
+type Gig = { id: string; platform: string; hours: number; earnings: number };
 type Ev = { time: string; what: string };
 
 const GD_COLS = "day,r_launch,r_shutdown,b,s,bonus_uber,bonus_trading,bonus_dev,bonus_chess,frozen,learn_line,splits";
@@ -72,6 +73,14 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   const removingRep = useRef<Set<string>>(new Set());
   const [removingIds, setRemovingIds] = useState<string[]>([]);
 
+  // driving shifts — the bonus chip logs REAL money, not a mystery checkbox
+  const [todayGigs, setTodayGigs] = useState<Gig[]>([]);
+  const [gigOpen, setGigOpen] = useState(false);
+  const [gigSaving, setGigSaving] = useState(false);
+  const [gPlatform, setGPlatform] = useState<"DoorDash" | "Uber Eats">("DoorDash");
+  const [gHours, setGHours] = useState("");
+  const [gEarn, setGEarn] = useState("");
+
   // learn line draft
   const [lineDraft, setLineDraft] = useState("");
   const lineTouched = useRef(false);
@@ -93,12 +102,13 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   const load = useCallback(async () => {
     const today = todayStr();
     try {
-      const [gd, reps, tr, cb, ni] = await Promise.all([
+      const [gd, reps, tr, cb, ni, gg] = await Promise.all([
         supabase.from("game_days").select(GD_COLS).eq("user_id", uid).gte("day", SEASON_START),
         supabase.from("bc_reps").select("day").eq("user_id", uid).gte("day", SEASON_START),
         supabase.from("bc_reps").select("id,who,place,note").eq("user_id", uid).eq("day", today).order("created_at"),
         supabase.from("class_blocks").select("label,location,start_t").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
         supabase.from("nights").select("items").eq("user_id", uid).eq("day", today).maybeSingle(),
+        supabase.from("gig_shifts").select("id,platform,hours,earnings").eq("user_id", uid).eq("day", today).order("created_at"),
       ]);
       // a failed read must never look like an empty card — the streak number
       // has to be trustworthy or the whole game is dead
@@ -106,6 +116,8 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
       commitDays(() => ((gd.data ?? []) as GameDayRow[]).map((d) => ({ ...d, splits: d.splits ?? {} })));
       setRepDays(((reps.data ?? []) as { day: string }[]).map((r) => r.day));
       setTodayReps((tr.data ?? []) as Rep[]);
+      // a gig read failure is survivable: the card still scores, the shift list is just empty
+      setTodayGigs(gg.error ? [] : ((gg.data ?? []) as Gig[]));
       const cls = (cb.error ? [] : ((cb.data ?? []) as { label: string; location: string; start_t: string }[]))
         .map((c) => ({ time: c.start_t, what: `${c.label}${c.location ? ` · ${c.location}` : ""}` }));
       const plan = (ni.error ? [] : ((ni.data?.items ?? []) as Ev[])).filter((x) => x?.what);
@@ -125,6 +137,7 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         dayRef.current = now;
         setTodayReps([]); setRepOpen(false); setLearnOpen(false); setTakeover(false);
         setRWho(""); setRPlace(""); setRNote("");
+        setTodayGigs([]); setGigOpen(false); setGHours(""); setGEarn("");
         lineTouched.current = false; setLineDraft("");
         load();
       }
@@ -145,6 +158,8 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   const row = rowsMap.get(today) ?? emptyDay(today);
   const ydRow = rowsMap.get(addDays(today, -1));
   const repsToday = todayReps.length;
+  const gigEarned = todayGigs.reduce((t, g) => t + (Number(g.earnings) || 0), 0);
+  const gigHours = todayGigs.reduce((t, g) => t + (Number(g.hours) || 0), 0);
   const parts = coreParts(row, repsToday);
   const core = coreCount(row, repsToday);
   const bonus = bonusCount(row, repsToday);
@@ -350,6 +365,44 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
     }
   }
 
+  // A driving shift is MONEY first and a game point second. It always records,
+  // whether or not the day has a BC rep yet — "reps before rides" is enforced
+  // by scoring (bonusCount ignores bonus_uber at 0 reps), never by hiding the
+  // button. The old chip was `disabled` with a hover-only `title`, which on a
+  // phone is simply a dead control that never explains itself.
+  async function logGig() {
+    const h = Number(gHours) || 0;
+    const e = Number(gEarn) || 0;
+    if ((!h && !e) || saving || gigSaving || dayRolled()) return;
+    setGigSaving(true); setErr("");
+    try {
+      const { data, error } = await supabase.from("gig_shifts")
+        .insert({ user_id: uid, day: today, platform: gPlatform, hours: h, earnings: e })
+        .select("id,platform,hours,earnings").single();
+      if (error || !data) { setErr("Couldn't log that shift — the numbers are still here, try again."); return; }
+      setGHours(""); setGEarn("");
+      sfx.coin(); buzz(15);
+      if (todayStr() !== today) { load(); return; }   // rolled mid-flight
+      setTodayGigs((g) => [...g, data as Gig]);
+    } catch { setErr("Couldn't reach the server — the shift is still here, try again."); }
+    finally { setGigSaving(false); }
+    if (!row.bonus_uber) await patch({ bonus_uber: true }, "gig");
+  }
+
+  async function deleteGig(id: string) {
+    if (saving || gigSaving || dayRolled()) return;
+    setGigSaving(true);
+    try {
+      const { error } = await supabase.from("gig_shifts").delete().eq("id", id);
+      if (error) { setErr("Couldn't remove that shift."); return; }
+      const left = todayGigs.filter((x) => x.id !== id);
+      setTodayGigs(left);
+      // last shift gone = the day didn't involve driving; the point goes with it
+      if (left.length === 0 && row.bonus_uber) { setGigSaving(false); await patch({ bonus_uber: false }, "gig"); return; }
+    } catch { setErr("Couldn't reach the server — that shift is still logged."); }
+    finally { setGigSaving(false); }
+  }
+
   async function saveLine() {
     const line = lineDraft.trim().slice(0, 400);
     const ok = await patch({ learn_line: line }, "L");
@@ -501,13 +554,18 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold">BookCrew {repsToday > 0 && <span className="mono text-xs opacity-60">· {repsToday} rep{repsToday === 1 ? "" : "s"}</span>}</p>
                     <p className="text-[10px] text-[var(--text-3)] truncate">
-                      {parts.bc ? stampBits("bc", true) : <>one rep a stranger can see {stampBits("bc", false)}</>}
+                      {parts.bc ? stampBits("bc", true) : <>one real BookCrew conversation — DM, email, call, door {stampBits("bc", false)}</>}
                     </p>
                   </div>
                   <span className="text-xs opacity-50">{repOpen ? "▴" : "＋ rep"}</span>
                 </button>
                 {repOpen && (
                   <div className="mt-2.5 space-y-1.5">
+                    <p className="text-[10px] text-[var(--text-3)] leading-relaxed">
+                      A <b>rep</b> = one attempt to sell BookCrew to a real person outside your own head.
+                      Cold DM, cold email, a call, a walk-in, a demo, a follow-up. It counts when it&apos;s <i>sent</i>,
+                      not when they reply. Building the product, tweaking the site, and planning are not reps.
+                    </p>
                     {todayReps.map((r) => (
                       <div key={r.id} className="flex items-center gap-2 rounded-lg bg-black/25 px-2.5 py-1.5">
                         <p className="text-xs flex-1 min-w-0 truncate">{r.who}{r.place ? ` @ ${r.place}` : ""}{r.note ? ` — ${r.note}` : ""}</p>
@@ -569,25 +627,98 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
             )}
           </div>
 
-          {/* bonus chips */}
+          {/* Bonus — every chip states its own rule, and none of them are dead.
+              The old Uber chip was `disabled` with a hover-only `title`: on a
+              phone that is a grey button that does nothing and never says why.
+              It's a real shift logger now, and the "reps before rides" rule is
+              enforced where it belongs — in scoring, not by hiding the control. */}
           <div className="mt-3 rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5">
             <Eyebrow className="mb-2">Bonus · +{bonus} of 5 max</Eyebrow>
             <div className="flex flex-wrap gap-1.5">
               <span className={`px-3 py-2 rounded-lg text-xs font-semibold mono ${bonusBC(repsToday) > 0 ? "bg-[var(--neon)]/15 text-[var(--neon)] border border-[var(--neon)]/40" : "bg-white/5 opacity-45 border border-[var(--border-1)]"}`}>
-                reps +{bonusBC(repsToday)}
+                extra reps +{bonusBC(repsToday)}
               </span>
-              {([["Uber", "bonus_uber", row.bonus_uber, repsToday === 0 && !row.bonus_uber, repsToday === 0 ? "Reps before rides — log the day's first BC rep first" : ""],
-                 ["Rules 100%", "bonus_trading", row.bonus_trading, false, ""],
-                 ["Shipped", "bonus_dev", row.bonus_dev, false, ""],
-                 ["Chess", "bonus_chess", row.bonus_chess, false, ""]] as const).map(([label, field, val, dis, title]) => (
-                <button key={field} onClick={() => patch({ [field]: !val } as Partial<GameDayRow>, field)} disabled={!!saving || dis} title={title}
+
+              <button onClick={() => setGigOpen((v) => !v)}
+                className={`px-3 py-2 rounded-lg text-xs font-semibold active:scale-95 border ${row.bonus_uber && repsToday >= 1 ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-[var(--border-1)]"}`}>
+                Drove{gigEarned > 0 ? <span className="mono opacity-75"> · ${Math.round(gigEarned)}</span> : null} <span className="opacity-45">{gigOpen ? "▴" : "＋"}</span>
+              </button>
+
+              {([["Traded my rules", "bonus_trading", row.bonus_trading],
+                 ["Shipped code", "bonus_dev", row.bonus_dev],
+                 ["Rated chess", "bonus_chess", row.bonus_chess]] as const).map(([label, field, val]) => (
+                <button key={field} onClick={() => patch({ [field]: !val } as Partial<GameDayRow>, field)} disabled={!!saving}
                   className={`px-3 py-2 rounded-lg text-xs font-semibold active:scale-95 border disabled:opacity-35 ${val ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-[var(--border-1)]"}`}>
                   {label}
                 </button>
               ))}
             </div>
-            <p className="text-[10px] text-[var(--text-4)] mt-2">Uber only counts after the day&apos;s first rep · trading point is discipline, not P&amp;L · &quot;worked on&quot; ≠ shipped.</p>
+
+            {gigOpen && (
+              <div className="mt-2.5 space-y-1.5 rise-in">
+                {repsToday === 0 && (
+                  <p className="text-[10px] text-[var(--warn)] leading-relaxed">
+                    Reps before rides — your own rule. The shift still saves; it starts scoring the +1 the moment today&apos;s first BookCrew rep is logged.
+                  </p>
+                )}
+                {todayGigs.map((g) => (
+                  <div key={g.id} className="flex items-center gap-2 rounded-lg bg-black/25 px-2.5 py-1.5">
+                    <p className="text-xs flex-1 min-w-0 truncate mono">{g.platform} · {g.hours}h · ${Math.round(g.earnings)}</p>
+                    <button onClick={() => deleteGig(g.id)} disabled={gigSaving} className="opacity-30 text-xs active:scale-90 disabled:opacity-10">✕</button>
+                  </div>
+                ))}
+                <div className="flex gap-1.5">
+                  {(["DoorDash", "Uber Eats"] as const).map((pf) => (
+                    <button key={pf} onClick={() => setGPlatform(pf)}
+                      className={`flex-1 rounded-lg py-2 text-xs font-semibold active:scale-95 border ${gPlatform === pf ? "bg-white/15 border-[var(--border-2)]" : "bg-black/30 border-[var(--border-1)] opacity-55"}`}>
+                      {pf}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <input value={gHours} onChange={(e) => setGHours(e.target.value)} disabled={gigSaving}
+                    inputMode="decimal" placeholder="hours" className="rounded-lg bg-black/30 px-3 py-2 outline-none text-sm" />
+                  <input value={gEarn} onChange={(e) => setGEarn(e.target.value)} disabled={gigSaving}
+                    inputMode="decimal" placeholder="$ earned"
+                    onKeyDown={(e) => { if (e.key === "Enter") logGig(); }}
+                    className="rounded-lg bg-black/30 px-3 py-2 outline-none text-sm" />
+                </div>
+                <button onClick={logGig} disabled={gigSaving || (!gHours && !gEarn)}
+                  className="w-full rounded-lg bg-[var(--neon)] text-black text-sm font-bold py-2 active:scale-95 disabled:opacity-40">
+                  {gigSaving ? "logging…" : "Log the shift"}
+                </button>
+                {gigEarned > 0 && (
+                  <p className="mono text-[10px] text-[var(--text-4)]">
+                    today ${Math.round(gigEarned)}{gigHours > 0 ? ` · ${gigHours}h · $${(gigEarned / gigHours).toFixed(0)}/hr` : ""} · also counts toward the gig goal
+                  </p>
+                )}
+              </div>
+            )}
+
+            <details className="mt-2.5">
+              <summary className="text-[10px] text-[var(--text-4)] cursor-pointer list-none active:scale-95">what counts for each of these ▾</summary>
+              <div className="mt-1.5 space-y-1 text-[10px] text-[var(--text-3)] leading-relaxed">
+                <p><b>extra reps</b> — reps 2 and 3 of the day, +1 each. Rep 1 already scored in the Core Five. Caps at +2.</p>
+                <p><b>Drove</b> — any DoorDash / Uber Eats shift. Records the real hours and dollars, and scores +1 once the day has a BookCrew rep.</p>
+                <p><b>Traded my rules</b> — you followed your trading rules 100%. Discipline, not profit: a losing day by the rules scores, a winning day off the rules doesn&apos;t.</p>
+                <p><b>Shipped code</b> — something is live that wasn&apos;t live this morning. &quot;Worked on it&quot; isn&apos;t shipped.</p>
+                <p><b>Rated chess</b> — at least one rated game. Win or lose.</p>
+              </div>
+            </details>
           </div>
+
+          {/* the whole scoring model, one tap away — no more guessing at it */}
+          <details className="mt-3 rounded-xl border border-[var(--border-1)] bg-[var(--card)] px-3.5 py-3">
+            <summary className="text-[11px] font-semibold text-[var(--text-2)] cursor-pointer list-none active:scale-[0.99]">How the day scores ▾</summary>
+            <div className="mt-2 space-y-1.5 text-[11px] text-[var(--text-3)] leading-relaxed">
+              <p><b className="text-[var(--text-2)]">The Core Five</b> — 1 point each. <b>R</b> both rituals, launch AND shutdown or no point. <b>B</b> body. <b>S</b> one 30-minute block on the priority course. <b>BC</b> at least one BookCrew rep logged. <b>L</b> one line on what you learned, your words.</p>
+              <p><b className="text-[var(--text-2)]">Bonus</b> — up to +5 on top. Nice, but it never saves a day.</p>
+              <p><b className="text-[var(--text-2)]">The streak</b> — lives on <b>core ≥ 3</b>. Not five. Three. Bonus doesn&apos;t count toward it, so a 0-core day with +5 bonus still breaks the chain.</p>
+              <p><b className="text-[var(--text-2)]">Freeze</b> — declared the night before, one a week. Scores 0, streak survives. Declaring is allowed; disappearing without declaring is what breaks you.</p>
+              <p><b className="text-[var(--text-2)]">The week</b> — out of 70. Under 25 Down · 25–39 Surviving · 40–54 Running · 55+ Compounding.</p>
+              <p><b className="text-[var(--text-2)]">The clocks</b> — every part stamps the real time it locked in, and the day &quot;closes&quot; when core hits 5. Gold = earlier than any day before it this season. That&apos;s the thing to race.</p>
+            </div>
+          </details>
         </>
       )}
 
