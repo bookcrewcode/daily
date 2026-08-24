@@ -212,13 +212,21 @@ HOW TO WRITE IT
 - "headline": what happened, factually, in under 14 words. No clickbait, no question marks.
 - "why": TWO sentences maximum — what it actually means and what changes because of it. Assume he's smart and knows nothing about this story. If it touches rates, crypto, or his money, say so plainly.
 - "sources": the [index] numbers you used for that item, most relevant first. Use ONLY indices from the list. Never invent a source or a URL.
+- "exposure": up to 4 listed companies or ETFs whose BUSINESS is genuinely exposed to this specific story, most exposed first. Each is {"name","ticker","dir","note"}:
+    * Only large, liquid, well-known listings. No micro caps, no private companies, no "rumoured to IPO".
+    * "ticker": the primary US listing symbol, uppercase. If you are not certain of the symbol, use "" rather than guessing one.
+    * "dir": "tailwind" | "headwind" | "mixed" - the direction this story points for that business.
+    * "note": at most 14 words on the MECHANISM. What in this story reaches their revenue, costs or regulation? Not "sentiment".
+    * If nothing listed is meaningfully exposed, return []. Most world and science items should be empty. Do not reach for a name.
+- "thesis": your own read of the story, 2 sentences maximum. First sentence: what you actually think this means, beyond restating it. Second sentence: the specific thing that would prove you WRONG. This is the only field where you may go past the headlines.
+    * Never recommend a trade. No buy, sell, hold, "accumulate", price targets, position sizes, or timing calls. You are explaining what is exposed and why, not telling him what to do with it.
 - Cover only what is IN the headlines below. If a beat has nothing real tonight, give it fewer items or omit the section — a short honest briefing beats a padded one.
 - 3-5 items per section, 4 sections max. Order sections by what matters most tonight.
 - "lede": one sentence — the single most important thing that happened today.
 - "watch": one sentence — the specific thing to watch for tomorrow.
 
 Return ONLY JSON:
-{"lede":"…","sections":[{"key":"econ|crypto|world|science|tech","title":"…","items":[{"headline":"…","why":"…","sources":[0,4]}]}],"watch":"…"}
+{"lede":"…","sections":[{"key":"econ|crypto|world|science|tech","title":"…","items":[{"headline":"…","why":"…","sources":[0,4],"exposure":[{"name":"…","ticker":"…","dir":"tailwind|headwind|mixed","note":"…"}],"thesis":"…"}]}],"watch":"…"}
 
 TONIGHT'S HEADLINES (${day}):
 ${feedBlock}`;
@@ -246,12 +254,12 @@ ${feedBlock}`;
     }
 
     let raw = "";
-    try { raw = await call(7000, true); }
+    try { raw = await call(12000, true); }
     catch (e) {
       const m = e instanceof Error ? e.message : "";
-      if (m.startsWith("HTTP_4")) raw = await call(7000, false);
-      else if (m === "EMPTY") raw = await call(14000, false);
-      else if (m.startsWith("HTTP_402")) return err("Your OpenRouter credits are out — top up and try again.");
+      if (m.startsWith("HTTP_402")) return err("Your OpenRouter credits are out — top up and try again.");
+      else if (m.startsWith("HTTP_4")) raw = await call(12000, false);
+      else if (m === "EMPTY") raw = await call(22000, false);
       else return err("The model provider errored — try again.");
     }
 
@@ -268,13 +276,32 @@ ${feedBlock}`;
 
     // Resolve cited indices into REAL links. An index the model invented simply
     // drops out — a fabricated source is worse than no source.
+    const DIRS = new Set(["tailwind", "headwind", "mixed"]);
     const sections = (parsed.sections ?? []).slice(0, 5).map((sec) => {
       const items = (Array.isArray(sec.items) ? sec.items as Record<string, unknown>[] : []).slice(0, 6).map((it) => {
         const idx = (Array.isArray(it.sources) ? it.sources : []).map((n) => Number(n)).filter((n) => Number.isInteger(n) && n >= 0 && n < heads.length).slice(0, 3);
+        // Exposure is the model's read, not a data feed, so it is bounded hard:
+        // a ticker that is not shaped like a real symbol is dropped rather than
+        // shown, and an unknown direction falls back to "mixed" instead of
+        // implying a call the model did not make.
+        const exposure = (Array.isArray(it.exposure) ? it.exposure as Record<string, unknown>[] : [])
+          .slice(0, 4)
+          .map((e) => {
+            const t = String(e.ticker ?? "").trim().toUpperCase();
+            return {
+              name: String(e.name ?? "").slice(0, 60),
+              ticker: /^[A-Z][A-Z.\-]{0,5}$/.test(t) ? t : "",
+              dir: DIRS.has(String(e.dir)) ? String(e.dir) : "mixed",
+              note: String(e.note ?? "").slice(0, 140),
+            };
+          })
+          .filter((e) => e.name);
         return {
           headline: String(it.headline ?? "").slice(0, 220),
           why: String(it.why ?? "").slice(0, 600),
           sources: idx.map((n) => ({ title: heads[n].source, url: heads[n].url })),
+          exposure,
+          thesis: String(it.thesis ?? "").slice(0, 400),
         };
       }).filter((it) => it.headline);
       return { key: String(sec.key ?? "").slice(0, 20), title: String(sec.title ?? "").slice(0, 80), items };

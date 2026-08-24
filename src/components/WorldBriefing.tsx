@@ -16,7 +16,8 @@ import { Card, Eyebrow } from "./ui";
 import { sfx } from "@/lib/fx";
 
 type Src = { title: string; url: string };
-type Item = { headline: string; why: string; sources: Src[] };
+type Exposure = { name: string; ticker: string; dir: string; note: string };
+type Item = { headline: string; why: string; sources: Src[]; exposure?: Exposure[]; thesis?: string };
 type Section = { key: string; title: string; items: Item[] };
 type Briefing = {
   id: string; day: string; lede: string; sections: Section[]; watch: string;
@@ -25,6 +26,14 @@ type Briefing = {
 
 const BEAT_TONE: Record<string, string> = {
   econ: "var(--ok)", crypto: "var(--warn)", world: "var(--bad)", science: "var(--neon)", tech: "var(--text-2)",
+};
+
+// Direction, not a call. A tailwind is not "buy" and a headwind is not "sell" —
+// it is which way the story points for that company's actual business.
+const DIR: Record<string, { sign: string; tone: string; label: string }> = {
+  tailwind: { sign: "\u2191", tone: "var(--ok)", label: "tailwind" },
+  headwind: { sign: "\u2193", tone: "var(--bad)", label: "headwind" },
+  mixed: { sign: "\u2194", tone: "var(--warn)", label: "cuts both ways" },
 };
 
 export default function WorldBriefing({ uid }: { uid: string }) {
@@ -136,6 +145,17 @@ export default function WorldBriefing({ uid }: { uid: string }) {
                   <p className="text-[12px] text-[var(--text-2)] leading-relaxed">{b.watch}</p>
                 </div>
               )}
+
+              {/* The tickers and the read are the model's interpretation, not a
+                  data feed and not advice. Say so where he'll actually see it. */}
+              <p className="text-[10px] text-[var(--text-4)] leading-relaxed">
+                Arrows are which way a story points for that company&apos;s business
+                (<span className="text-[var(--ok)]">&#8593;</span> tailwind,{" "}
+                <span className="text-[var(--bad)]">&#8595;</span> headwind,{" "}
+                <span className="text-[var(--warn)]">&#8596;</span> both ways) &mdash; not a call to buy or sell anything.
+                The italic line is a read on what it means, written to be arguable. Both are interpretation, not a market
+                data feed: check a ticker before you act on it.
+              </p>
 
               {/* honesty: a thin briefing should say why it was thin */}
               {b.feeds_failed?.length > 0 && (
