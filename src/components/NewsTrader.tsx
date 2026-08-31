@@ -1,20 +1,25 @@
 "use client";
 
-// 📈 THE NEWS AGENT — a paper trading agent that reads the briefing, writes a
-// thesis, takes a position, and is then graded against its own claim.
+// 📈 THE BOOK — RegimeBot's news theses, and what they taught.
 //
-// Ben: "a paper trade based off of the news, then the agent makes a thesis and
-// makes a trade... it teaches me based on the news, and then I could watch this
-// agent make live trades and learn from that."
+// Ben: "use the regime bot as the thing that paper trades the news from the
+// personal app, and then have it be all in the personal app, like the PL, the
+// stats, the trades it's taking each day... And then post-analysis of wins and
+// losses from the bots, why a thesis worked, why it lost."
 //
-// The screen is built around the LEARNING, not the P&L. Every closed trade
-// shows what the agent claimed, what it said would prove it wrong, and whether
-// that claim actually survived — because "up 3%" teaches nothing on its own,
-// and a winner for the wrong reason is worth knowing about.
+// So there is exactly one trader and one book:
 //
-// PAPER ONLY. The edge function's Alpaca URL is a hardcoded constant and the
-// key RPC refuses live (AK…) keys outright. This screen says so on its face,
-// because a simulator that looks like a brokerage is a trap.
+//   this app  = the ANALYST. Reads 14 news feeds nightly, works out which listed
+//               companies each story actually touches, writes a thesis and the
+//               thing that would prove it wrong. It never places an order.
+//   RegimeBot = the TRADER. Prices each idea, turns the prose falsifier into an
+//               invalidation LEVEL, sizes off the stop, executes on the paper
+//               account, and scores the result against SPY.
+//
+// This screen is the window onto that. It is built around whether the REASONING
+// was sound, kept deliberately separate from whether the trade made money,
+// because those come apart constantly and confusing them teaches the wrong
+// lesson. A winner on a broken thesis is luck.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, SUPABASE_URL, SUPABASE_ANON } from "@/lib/supabase";
@@ -22,359 +27,228 @@ import { Card, Eyebrow, SectionTitle } from "./ui";
 import { sfx, buzz } from "@/lib/fx";
 
 const TRADER_FN = `${SUPABASE_URL}/functions/v1/trader`;
+const BRIDGE_FN = `${SUPABASE_URL}/functions/v1/botbridge`;
 
-type Cfg = {
-  enabled: boolean; dry: boolean; per_trade_pct: number; max_open: number;
-  hold_days: number; stop_pct: number; take_pct: number; allow_short: boolean;
+type Thesis = {
+  id: string; symbol: string; direction: string; sector: string;
+  conviction: number; horizon_days: number;
+  entry_ref: number; invalidation_level: number; target_level: number;
+  reasoning: string; catalyst: string; sources: string[];
+  created: string; status: string; resolved: string | null;
+  outcome_pct: number | null; benchmark_pct: number | null; alpha: number | null;
+  note: string; postmortem: string; synced_at: string;
 };
-type Pos = {
-  symbol: string; qty: number; side: string; avg_entry_price: number;
-  current_price: number; market_value: number; unrealized_pl: number; unrealized_plpc: number;
-};
-type Trade = {
-  id: string; day: string; symbol: string; side: string; notional: number;
-  headline: string; source_url: string; thesis: string; falsifier: string; conviction: number;
-  status: string; reject_reason: string; entry_price: number | null; exit_price: number | null;
-  exit_reason: string; pnl: number | null; pnl_pct: number | null; verdict: string; lesson: string;
-  spy_entry: number | null; spy_exit: number | null;
+type Pick = {
+  id: string; day: string; symbol: string; side: string; status: string;
+  headline: string; thesis: string; falsifier: string; conviction: number; reject_reason: string;
 };
 type Equity = { day: string; equity: number; spy_close: number | null };
 
-const money = (n: number) => (n < 0 ? "-$" : "$") + Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 2 });
-const pct = (n: number) => (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+const pct = (n: number) => (n >= 0 ? "+" : "") + (n * 100).toFixed(1) + "%";
+const money = (n: number) => "$" + n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 const tone = (n: number) => (n > 0 ? "var(--ok)" : n < 0 ? "var(--bad)" : "var(--text-3)");
 
-const VERDICT: Record<string, { label: string; tone: string }> = {
-  held: { label: "thesis held", tone: "var(--ok)" },
-  broke: { label: "thesis broke", tone: "var(--bad)" },
-  unclear: { label: "unclear", tone: "var(--warn)" },
+const STATUS: Record<string, { label: string; tone: string }> = {
+  open: { label: "open", tone: "var(--text-3)" },
+  correct: { label: "hit its target", tone: "var(--ok)" },
+  wrong: { label: "hit its invalidation", tone: "var(--bad)" },
+  expired: { label: "ran out of time", tone: "var(--warn)" },
 };
 
 export default function NewsTrader({ uid }: { uid: string }) {
   const [loaded, setLoaded] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const [alpacaErr, setAlpacaErr] = useState("");
-  const [account, setAccount] = useState<{ equity: number; last_equity: number; cash: number } | null>(null);
-  const [positions, setPositions] = useState<Pos[]>([]);
-  const [cfg, setCfg] = useState<Cfg | null>(null);
-  const [trades, setTrades] = useState<Trade[]>([]);
+  const [theses, setTheses] = useState<Thesis[]>([]);
+  const [picks, setPicks] = useState<Pick[]>([]);
   const [curve, setCurve] = useState<Equity[]>([]);
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
-  const [keyTail, setKeyTail] = useState("");
-  const [showKeys, setShowKeys] = useState(false);
-  const [kId, setKId] = useState("");
-  const [kSec, setKSec] = useState("");
+  const [openId, setOpenId] = useState<string | null>(null);
   const running = useRef(false);
-
-  const call = useCallback(async (mode: string, extra?: Record<string, unknown>) => {
-    const { data: s } = await supabase.auth.getSession();
-    const r = await fetch(TRADER_FN, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${s.session?.access_token}` },
-      body: JSON.stringify({ mode, ...(extra ?? {}) }),
-    });
-    return await r.json();
-  }, []);
 
   const load = useCallback(async () => {
     try {
-      const [st, tr, eq, ks] = await Promise.all([
-        call("status"),
-        supabase.from("agent_trades").select("*").eq("user_id", uid).order("created_at", { ascending: false }).limit(60),
+      const [th, pk, eq] = await Promise.all([
+        supabase.from("bot_theses").select("*").eq("user_id", uid).order("created", { ascending: false }).limit(80),
+        supabase.from("agent_trades").select("id,day,symbol,side,status,headline,thesis,falsifier,conviction,reject_reason")
+          .eq("user_id", uid).order("created_at", { ascending: false }).limit(20),
         supabase.from("agent_equity").select("day,equity,spy_close").eq("user_id", uid).order("day"),
-        supabase.rpc("alpaca_key_status"),
       ]);
-      setConnected(!!st?.connected);
-      setAlpacaErr(String(st?.alpacaError ?? ""));
-      setAccount(st?.account ?? null);
-      setPositions(st?.positions ?? []);
-      setCfg(st?.cfg ?? null);
-      if (!tr.error) setTrades((tr.data ?? []) as Trade[]);
+      if (!th.error) setTheses((th.data ?? []) as Thesis[]);
+      if (!pk.error) setPicks((pk.data ?? []) as Pick[]);
       if (!eq.error) setCurve((eq.data ?? []) as Equity[]);
-      if (!ks.error) setKeyTail(String(ks.data ?? ""));
-    } catch { setErr("Couldn't reach the agent — try again."); }
+    } catch { setErr("Couldn't load the book."); }
     finally { setLoaded(true); }
-  }, [uid, call]);
+  }, [uid]);
   useEffect(() => { load(); }, [load]);
 
-  async function saveKeys() {
-    if (!kId.trim() || !kSec.trim()) return;
-    setBusy("keys"); setErr(""); setMsg("");
-    const { error } = await supabase.rpc("set_alpaca_keys", { p_key: kId.trim(), p_secret: kSec.trim() });
-    setBusy("");
-    if (error) { setErr(error.message); return; }
-    setKId(""); setKSec(""); setShowKeys(false);
-    setMsg("Keys saved. They live encrypted in the vault — this app never shows them again.");
-    sfx.pop();
-    await load();
-  }
-
-  async function saveCfg(next: Partial<Cfg>) {
-    if (!cfg) return;
-    const merged = { ...cfg, ...next };
-    setCfg(merged);
-    const { error } = await supabase.from("user_settings")
-      .upsert({ user_id: uid, trader: merged }, { onConflict: "user_id" });
-    if (error) { setErr("Couldn't save that setting."); await load(); }
-  }
-
-  async function run() {
+  async function runAnalyst() {
     if (running.current) return;
     running.current = true; setBusy("run"); setErr(""); setMsg("");
     try {
-      const j = await call("run");
+      const { data: s } = await supabase.auth.getSession();
+      const r = await fetch(TRADER_FN, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${s.session?.access_token}` },
+        body: JSON.stringify({ mode: "run" }),
+      });
+      const j = await r.json();
       if (j.error) setErr(j.error);
       else if (j.skipped) setMsg(j.skipped);
-      else setMsg(`${(j.placed ?? []).length} position${(j.placed ?? []).length === 1 ? "" : "s"} from ${j.candidates} candidate${j.candidates === 1 ? "" : "s"}${j.dry ? " — dry run, no orders sent" : ""}.`);
+      else setMsg(`${(j.placed ?? []).length} pick${(j.placed ?? []).length === 1 ? "" : "s"} written from ${j.candidates} candidate${j.candidates === 1 ? "" : "s"}. RegimeBot takes it from here.`);
       if (!j.error) { sfx.coin(); buzz(12); await load(); }
-    } catch { setErr("Couldn't reach the agent."); }
+    } catch { setErr("Couldn't reach the analyst."); }
     finally { running.current = false; setBusy(""); }
   }
 
-  async function sync() {
-    if (running.current) return;
-    running.current = true; setBusy("sync"); setErr(""); setMsg("");
+  async function postmortem(id: string, force = false) {
+    setBusy(id); setErr("");
     try {
-      const j = await call("sync");
+      const { data: s } = await supabase.auth.getSession();
+      const r = await fetch(BRIDGE_FN, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: SUPABASE_ANON, Authorization: `Bearer ${s.session?.access_token}` },
+        body: JSON.stringify({ mode: "postmortem", id, force }),
+      });
+      const j = await r.json();
       if (j.error) setErr(j.error);
-      else setMsg(`${(j.opened ?? []).length} filled, ${(j.closed ?? []).length} closed.`);
-      if (!j.error) await load();
-    } catch { setErr("Couldn't reach the agent."); }
-    finally { running.current = false; setBusy(""); }
+      else { setTheses((ts) => ts.map((t) => (t.id === id ? { ...t, postmortem: j.postmortem } : t))); sfx.pop(); }
+    } catch { setErr("Couldn't write the post-mortem."); }
+    finally { setBusy(""); }
   }
 
-  if (!loaded) return <div className="pt-3"><div className="skeleton h-28" /><div className="skeleton h-40 mt-3" /></div>;
+  if (!loaded) return <div className="pt-3"><div className="skeleton h-24" /><div className="skeleton h-40 mt-3" /></div>;
 
-  const open = trades.filter((t) => t.status === "open" || t.status === "pending");
-  const closed = trades.filter((t) => t.status === "closed");
-  const dry = trades.filter((t) => t.status === "dry");
-  const rejected = trades.filter((t) => t.status === "rejected");
+  const open = theses.filter((t) => t.status === "open");
+  const done = theses.filter((t) => t.status !== "open");
+  const scored = done.filter((t) => t.alpha !== null);
 
-  // LIKE FOR LIKE, per trade. Comparing this account's equity against SPY would
-  // be meaningless: at a few percent per position it sits ~90% in cash, so its
-  // equity line stays flat however good the picks are — and the account is
-  // shared with RegimeBot, so equity isn't even all this agent's doing. The fair
-  // question is what each position returned versus what SPY did over the SAME
-  // days, which is what these two numbers are.
-  const matched = closed.filter((t) =>
-    t.pnl_pct !== null && t.spy_entry && t.spy_exit && t.spy_entry > 0);
-  const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
-  const agentPct = avg(matched.map((t) => t.pnl_pct as number));
-  const spyPct = avg(matched.map((t) => ((t.spy_exit! - t.spy_entry!) / t.spy_entry!) * 100));
+  const hits = done.filter((t) => t.status === "correct").length;
+  const meanAlpha = scored.length ? scored.reduce((a, t) => a + (t.alpha as number), 0) / scored.length : null;
+  // The calibration test the bot's own risk ladder runs: high-conviction calls
+  // must actually outperform low-conviction ones, or the rating means nothing.
+  const hi = scored.filter((t) => t.conviction >= 4);
+  const lo = scored.filter((t) => t.conviction <= 3);
+  const hiA = hi.length ? hi.reduce((a, t) => a + (t.alpha as number), 0) / hi.length : null;
+  const loA = lo.length ? lo.reduce((a, t) => a + (t.alpha as number), 0) / lo.length : null;
 
-  const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
-  const held = closed.filter((t) => t.verdict === "held").length;
-  const beat = matched.filter((t) =>
-    (t.pnl_pct as number) > ((t.spy_exit! - t.spy_entry!) / t.spy_entry!) * 100).length;
+  const last = curve[curve.length - 1];
+  const waiting = picks.filter((p) => p.status === "dry");
 
   return (
     <div className="pt-3">
-      <SectionTitle>The news agent</SectionTitle>
+      <SectionTitle>The book</SectionTitle>
 
       <div className="rounded-xl border border-[var(--border-2)] bg-[var(--raised)] px-3.5 py-3">
         <p className="text-[12px] text-[var(--text-2)] leading-relaxed">
-          <b>Paper money only.</b> This trades a simulated Alpaca account — the endpoint is hardcoded and
-          a live key is refused outright. Nothing here is advice, and a paper record does not transfer to
-          real money: no slippage, no emotion, and the agent never sized a position it could actually lose.
+          <b>Paper money.</b> This app reads the news and writes the thesis; <b>RegimeBot</b> prices it,
+          places it on the Alpaca paper account and scores it. Nothing here is advice, and a paper
+          record does not carry over to real money &mdash; no slippage, and nothing you could actually lose.
         </p>
       </div>
 
-      {/* ── connection ─────────────────────────────────────────────── */}
+      {/* ── scorecard ──────────────────────────────────────────────── */}
       <Card className="mt-3">
-        <div className="flex items-center gap-2.5">
-          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: connected ? "var(--ok)" : "var(--text-4)" }} />
-          <p className="text-[12px] flex-1 min-w-0 text-[var(--text-2)]">
-            {connected
-              ? `Alpaca paper connected${keyTail ? ` · key ending ${keyTail}` : ""}`
-              : keyTail ? "Keys saved, but Alpaca refused them" : "Not connected to Alpaca yet"}
-          </p>
-          <button onClick={() => setShowKeys((v) => !v)} className="mono text-[10px] text-[var(--neon)] active:scale-95">
-            {showKeys ? "cancel" : connected ? "replace keys" : "connect"}
-          </button>
-        </div>
-        {alpacaErr && <p className="text-[11px] text-orange-400 mt-1.5">{alpacaErr}</p>}
-
-        {showKeys && (
-          <div className="mt-3 space-y-2 rise-in">
-            <p className="text-[11px] text-[var(--text-3)] leading-relaxed">
-              Make a free <b>paper</b> account at alpaca.markets, generate API keys, and paste them here.
-              The key id starts with <span className="mono">PK</span> — a live key (<span className="mono">AK</span>) is
-              rejected. They go straight to the encrypted vault; this app can never show them back to you.
+        <Eyebrow>Is the reasoning any good?</Eyebrow>
+        <div className="flex items-baseline gap-5 mt-2">
+          <div>
+            <p className="mono text-[26px] font-bold" style={{ color: meanAlpha === null ? "var(--text-3)" : tone(meanAlpha) }}>
+              {meanAlpha === null ? "—" : pct(meanAlpha)}
             </p>
-            <input value={kId} onChange={(e) => setKId(e.target.value)} placeholder="Key ID (PK…)"
-              autoComplete="off" spellCheck={false}
-              className="w-full rounded-lg bg-black/30 px-3 py-2 outline-none text-sm mono" />
-            <input value={kSec} onChange={(e) => setKSec(e.target.value)} placeholder="Secret key" type="password"
-              autoComplete="off" spellCheck={false}
-              className="w-full rounded-lg bg-black/30 px-3 py-2 outline-none text-sm mono" />
-            <button onClick={saveKeys} disabled={busy === "keys" || !kId.trim() || !kSec.trim()}
-              className="w-full rounded-lg bg-[var(--neon)] text-black text-sm font-bold py-2 active:scale-95 disabled:opacity-40">
-              {busy === "keys" ? "saving…" : "Save the keys"}
-            </button>
+            <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mt-0.5">mean alpha</p>
           </div>
+          <div>
+            <p className="mono text-[26px] font-bold">{done.length ? `${hits}/${done.length}` : "—"}</p>
+            <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mt-0.5">hit target</p>
+          </div>
+          <div>
+            <p className="mono text-[26px] font-bold">{open.length}</p>
+            <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mt-0.5">still open</p>
+          </div>
+        </div>
+        <p className="text-[11px] text-[var(--text-4)] mt-2 leading-relaxed">
+          Alpha is what a thesis returned <i>minus what SPY did over exactly the same days</i> &mdash; being up
+          in a market that rose more is not skill.
+          {scored.length < 10 && ` Only ${scored.length} scored so far; the bot's own risk ladder won't widen until 10, for good reason.`}
+        </p>
+        {hiA !== null && loA !== null && (
+          <p className="text-[11px] mt-1.5 leading-relaxed" style={{ color: hiA > loA ? "var(--ok)" : "var(--warn)" }}>
+            Conviction {hiA > loA ? "is calibrated" : "is not calibrated"}: high-conviction calls average {pct(hiA)} against {pct(loA)} for the rest.
+            {hiA <= loA && " Rating things 4 and 5 is currently adding nothing."}
+          </p>
+        )}
+        {last && (
+          <p className="mono text-[11px] text-[var(--text-3)] mt-3 pt-3 border-t border-[var(--border-1)]">
+            paper account {money(last.equity)} &middot; last reported {last.day}
+          </p>
         )}
       </Card>
 
-      {/* ── scoreboard ─────────────────────────────────────────────── */}
-      {(account || curve.length > 0) && (
-        <Card className="mt-3">
-          <Eyebrow>Per trade, against SPY over the same days</Eyebrow>
-          <div className="flex items-baseline gap-4 mt-2">
-            <div>
-              <p className="mono text-[26px] font-bold" style={{ color: agentPct === null ? "var(--text-3)" : tone(agentPct) }}>
-                {agentPct === null ? "—" : pct(agentPct)}
-              </p>
-              <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mt-0.5">avg trade</p>
-            </div>
-            <div>
-              <p className="mono text-[26px] font-bold" style={{ color: spyPct === null ? "var(--text-3)" : tone(spyPct) }}>
-                {spyPct === null ? "—" : pct(spyPct)}
-              </p>
-              <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mt-0.5">SPY, same days</p>
-            </div>
-          </div>
-          {matched.length < 5 && (
-            <p className="text-[11px] text-[var(--text-4)] mt-2">
-              {matched.length === 0
-                ? "Nothing has closed yet. Each position is measured against what SPY did over its own holding window, so this fills in as trades finish."
-                : `Only ${matched.length} closed trade${matched.length === 1 ? "" : "s"}. That is noise, not skill — this needs dozens before it means anything.`}
+      {/* ── tonight ────────────────────────────────────────────────── */}
+      <Card className="mt-3">
+        <Eyebrow className="mb-2">Tonight</Eyebrow>
+        {waiting.length > 0 ? (
+          <>
+            <p className="text-[12px] text-[var(--text-2)] leading-relaxed mb-2">
+              {waiting.length} pick{waiting.length === 1 ? "" : "s"} written and waiting for RegimeBot to price and place:
             </p>
-          )}
-          {matched.length >= 5 && (
-            <p className="text-[11px] text-[var(--text-4)] mt-2">
-              Beat SPY on {beat} of {matched.length}. Still a small sample.
+            {waiting.map((p) => (
+              <p key={p.id} className="text-[12px] mb-1">
+                <span className="mono font-bold">{p.symbol}</span>
+                <span className="text-[var(--text-4)]"> &middot; {p.side === "buy" ? "long" : "short"} &middot; {p.headline}</span>
+              </p>
+            ))}
+            <p className="mono text-[10px] text-[var(--text-4)] mt-2">
+              on your Mac: <span className="text-[var(--text-2)]">research.py news</span> &rarr;{" "}
+              <span className="text-[var(--text-2)]">execute</span> &rarr;{" "}
+              <span className="text-[var(--text-2)]">push</span>
             </p>
-          )}
-          {account && (
-            <div className="stat mono text-[11px] text-[var(--text-3)] mt-3 pt-3 border-t border-[var(--border-1)] leading-relaxed">
-              <div>
-                account equity <b className="text-[var(--text)]">{money(account.equity)}</b> · cash {money(account.cash)}
-                <span className="text-[var(--text-4)]"> · shared with RegimeBot, so this is not the agent&apos;s score</span>
-              </div>
-              {closed.length > 0 && (
-                <div>
-                  {closed.length} closed · {wins} up · <b className="text-[var(--text)]">{held}</b> where the thesis actually held
-                </div>
-              )}
-            </div>
-          )}
-        </Card>
-      )}
-
-      {/* ── controls ───────────────────────────────────────────────── */}
-      {cfg && (
-        <Card className="mt-3">
-          <Eyebrow className="mb-2">The agent</Eyebrow>
-          <div className="flex flex-wrap gap-1.5">
-            <button onClick={() => saveCfg({ dry: !cfg.dry })}
-              className={`px-3 py-2 rounded-lg text-xs font-semibold border active:scale-95 ${cfg.dry ? "bg-white/5 border-[var(--border-1)]" : "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40"}`}>
-              {cfg.dry ? "Dry run" : "Placing paper orders"}
-            </button>
-            <button onClick={() => saveCfg({ enabled: !cfg.enabled })}
-              className={`px-3 py-2 rounded-lg text-xs font-semibold border active:scale-95 ${cfg.enabled ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-[var(--border-1)]"}`}>
-              {cfg.enabled ? "Runs nightly" : "Manual only"}
-            </button>
-            <button onClick={() => saveCfg({ allow_short: !cfg.allow_short })}
-              className={`px-3 py-2 rounded-lg text-xs font-semibold border active:scale-95 ${cfg.allow_short ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-[var(--border-1)]"}`}>
-              {cfg.allow_short ? "Shorts on" : "Long only"}
-            </button>
-          </div>
-          <p className="text-[11px] text-[var(--text-4)] mt-2 leading-relaxed">
-            {cfg.per_trade_pct}% of equity per position · at most {cfg.max_open} open · exits at
-            −{cfg.stop_pct}%, +{cfg.take_pct}%, or {cfg.hold_days} days, whichever comes first.
-            {cfg.dry && " In dry run the agent still picks and writes a thesis, it just doesn't send the order."}
+          </>
+        ) : (
+          <p className="text-[12px] text-[var(--text-3)] leading-relaxed">
+            Nothing waiting. The analyst runs after the briefing each night; on most nights it correctly picks nothing.
           </p>
-          <div className="flex gap-2 mt-3">
-            <button onClick={run} disabled={!!busy}
-              className="flex-1 rounded-lg bg-[var(--neon)] text-black text-sm font-bold py-2.5 active:scale-95 disabled:opacity-40">
-              {busy === "run" ? "reading the news…" : "Run on tonight's briefing"}
-            </button>
-            <button onClick={sync} disabled={!!busy || !connected}
-              className="rounded-lg bg-white/10 text-sm font-semibold px-4 active:scale-95 disabled:opacity-40">
-              {busy === "sync" ? "…" : "Sync"}
-            </button>
-          </div>
-          {msg && <p className="text-[11px] text-[var(--ok)] mt-2">{msg}</p>}
-          {err && <p className="text-[11px] text-orange-400 mt-2">{err}</p>}
-        </Card>
-      )}
+        )}
+        <button onClick={runAnalyst} disabled={!!busy}
+          className="mt-3 w-full rounded-lg bg-[var(--neon)] text-black text-sm font-bold py-2.5 active:scale-95 disabled:opacity-40">
+          {busy === "run" ? "reading the news…" : "Run the analyst on tonight's briefing"}
+        </button>
+        {msg && <p className="text-[11px] text-[var(--ok)] mt-2">{msg}</p>}
+        {err && <p className="text-[11px] text-orange-400 mt-2">{err}</p>}
+      </Card>
 
-      {/* ── live positions ─────────────────────────────────────────── */}
-      {positions.length > 0 && (
-        <Card className="mt-3">
-          <Eyebrow className="mb-2">Open right now</Eyebrow>
-          <div className="space-y-2">
-            {positions.map((p) => {
-              const plpc = p.unrealized_plpc * 100;
-              return (
-                <div key={p.symbol} className="flex items-baseline gap-2">
-                  <span className="mono text-sm font-bold w-14">{p.symbol}</span>
-                  <span className="mono text-[11px] text-[var(--text-4)] flex-1">
-                    {p.qty} @ {money(p.avg_entry_price)} → {money(p.current_price)}
-                  </span>
-                  <span className="mono text-[12px] font-semibold" style={{ color: tone(plpc) }}>{pct(plpc)}</span>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      )}
-
-      {/* ── the trades, as claims ──────────────────────────────────── */}
-      <SectionTitle>What it thought, and whether it was right</SectionTitle>
-      {trades.length === 0 ? (
-        <Card><p className="note text-[13px] text-[var(--text-3)] leading-relaxed">
-          Nothing yet. Build tonight&apos;s briefing on the Card first — the agent only trades names that a real
-          story tonight actually touched, so with no briefing it has nothing to act on.
+      {/* ── the book ───────────────────────────────────────────────── */}
+      <SectionTitle>Open positions</SectionTitle>
+      {open.length === 0 ? (
+        <Card><p className="text-[13px] text-[var(--text-3)] leading-relaxed">
+          Nothing open. RegimeBot pushes its book here whenever it runs.
         </p></Card>
       ) : (
         <div className="space-y-2.5">
-          {[...open, ...dry, ...closed, ...rejected].map((t) => {
-            const v = VERDICT[t.verdict];
+          {open.map((t) => {
+            const room = ((t.entry_ref - t.invalidation_level) / t.entry_ref) * (t.direction === "long" ? 1 : -1);
+            const reach = ((t.target_level - t.entry_ref) / t.entry_ref) * (t.direction === "long" ? 1 : -1);
             return (
               <Card key={t.id}>
                 <div className="flex items-baseline gap-2">
                   <span className="mono text-sm font-bold">{t.symbol}</span>
                   <span className="mono text-[10px] uppercase tracking-wider text-[var(--text-4)]">
-                    {t.side === "buy" ? "long" : "short"} · {money(t.notional)} · {"●".repeat(t.conviction)}
+                    {t.direction} &middot; {t.sector} &middot; {"●".repeat(t.conviction)}{"○".repeat(Math.max(0, 5 - t.conviction))}
                   </span>
                   <span className="flex-1" />
-                  {t.status === "closed" && t.pnl_pct !== null ? (
-                    <span className="mono text-[13px] font-bold" style={{ color: tone(t.pnl_pct) }}>{pct(t.pnl_pct)}</span>
-                  ) : (
-                    <span className="mono text-[10px] text-[var(--text-4)]">
-                      {t.status === "dry" ? "not sent" : t.status}
-                    </span>
-                  )}
+                  <span className="mono text-[10px] text-[var(--text-4)]">{t.horizon_days}d</span>
                 </div>
-
-                {t.headline && (
-                  <p className="text-[11.5px] text-[var(--text-3)] mt-1.5 leading-snug">
-                    {t.source_url
-                      ? <a href={t.source_url} target="_blank" rel="noopener noreferrer" className="underline decoration-dotted underline-offset-2">{t.headline}</a>
-                      : t.headline}
-                  </p>
-                )}
-                {t.thesis && <p className="text-[12.5px] mt-1.5 leading-relaxed">{t.thesis}</p>}
-                {t.falsifier && (
-                  <p className="text-[11.5px] text-[var(--text-3)] mt-1 leading-relaxed">
-                    <span className="text-[var(--text-4)]">Wrong if:</span> {t.falsifier}
-                  </p>
-                )}
-
-                {t.status === "closed" && (
-                  <div className="mt-2 pt-2 border-t border-[var(--border-1)]">
-                    <p className="mono text-[10px] text-[var(--text-4)]">
-                      closed — {t.exit_reason}
-                      {v && <span style={{ color: v.tone }}> · {v.label}</span>}
-                    </p>
-                    {t.lesson && <p className="text-[12px] text-[var(--text-2)] mt-1 leading-relaxed italic">{t.lesson}</p>}
-                  </div>
-                )}
-                {t.status === "rejected" && t.reject_reason && (
-                  <p className="text-[11px] text-orange-400 mt-1.5">Alpaca refused it: {t.reject_reason}</p>
+                <p className="mono text-[11px] text-[var(--text-3)] mt-1.5">
+                  entry {t.entry_ref} &middot; <span style={{ color: "var(--bad)" }}>wrong at {t.invalidation_level}</span>
+                  {" "}({pct(-room)}) &middot; <span style={{ color: "var(--ok)" }}>target {t.target_level}</span> ({pct(reach)})
+                </p>
+                {t.catalyst && <p className="text-[11.5px] text-[var(--text-3)] mt-1.5 leading-snug">{t.catalyst}</p>}
+                <p className="text-[12.5px] mt-1.5 leading-relaxed">{t.reasoning}</p>
+                {t.sources?.[0] && /^https?:\/\//.test(t.sources[0]) && (
+                  <a href={t.sources[0]} target="_blank" rel="noopener noreferrer"
+                    className="mono text-[9px] text-[var(--text-4)] underline decoration-dotted underline-offset-2 mt-1.5 inline-block">
+                    the story &#8599;
+                  </a>
                 )}
               </Card>
             );
@@ -382,10 +256,69 @@ export default function NewsTrader({ uid }: { uid: string }) {
         </div>
       )}
 
+      {/* ── resolved, with the lesson ──────────────────────────────── */}
+      {done.length > 0 && (
+        <>
+          <SectionTitle>Closed &mdash; and what it taught</SectionTitle>
+          <div className="space-y-2.5">
+            {done.map((t) => {
+              const st = STATUS[t.status] ?? STATUS.open;
+              const isOpen = openId === t.id;
+              return (
+                <Card key={t.id}>
+                  <button onClick={() => setOpenId(isOpen ? null : t.id)} className="w-full text-left active:scale-[0.995]">
+                    <div className="flex items-baseline gap-2">
+                      <span className="mono text-sm font-bold">{t.symbol}</span>
+                      <span className="mono text-[10px]" style={{ color: st.tone }}>{st.label}</span>
+                      <span className="flex-1" />
+                      {t.outcome_pct !== null && (
+                        <span className="mono text-[13px] font-bold" style={{ color: tone(t.outcome_pct) }}>{pct(t.outcome_pct)}</span>
+                      )}
+                    </div>
+                    {t.alpha !== null && (
+                      <p className="mono text-[11px] mt-1" style={{ color: tone(t.alpha) }}>
+                        {pct(t.alpha)} vs SPY
+                        <span className="text-[var(--text-4)]"> (SPY did {pct(t.benchmark_pct ?? 0)} over the same days)</span>
+                      </p>
+                    )}
+                    <p className="text-[11.5px] text-[var(--text-3)] mt-1 leading-snug">{t.catalyst}</p>
+                  </button>
+
+                  {isOpen && (
+                    <div className="mt-2.5 pt-2.5 border-t border-[var(--border-1)] rise-in">
+                      <p className="text-[12.5px] leading-relaxed">{t.reasoning}</p>
+                      <p className="mono text-[10px] text-[var(--text-4)] mt-1.5">
+                        entry {t.entry_ref} &middot; invalidation {t.invalidation_level} &middot; target {t.target_level}
+                        {t.resolved ? ` · resolved ${t.resolved}` : ""}
+                      </p>
+                      {t.postmortem ? (
+                        <div className="mt-2.5 rounded-lg bg-[var(--raised)] border border-[var(--border-1)] p-3">
+                          <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mb-1.5">Post-mortem</p>
+                          <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{t.postmortem}</p>
+                          <button onClick={() => postmortem(t.id, true)} disabled={!!busy}
+                            className="mono text-[10px] text-[var(--text-4)] underline mt-2 active:scale-95 disabled:opacity-40">
+                            {busy === t.id ? "rewriting…" : "rewrite it"}
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => postmortem(t.id)} disabled={!!busy}
+                          className="mt-2.5 w-full rounded-lg bg-white/10 text-sm font-semibold py-2 active:scale-95 disabled:opacity-40">
+                          {busy === t.id ? "thinking it through…" : "Why did this work / not work?"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+        </>
+      )}
+
       <p className="text-[11px] text-[var(--text-4)] mt-4 leading-relaxed">
-        A profitable trade for the wrong reason is not a vindicated thesis, so the agent is graded on whether
-        its claim survived, separately from whether the position made money. That column is the one worth
-        reading.
+        A thesis is closed by its <i>invalidation price</i>, never by someone deciding afterwards that they
+        still like it. That is the whole discipline: the level was set when the idea was fresh, and it gets
+        to be right.
       </p>
     </div>
   );
