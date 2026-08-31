@@ -113,6 +113,15 @@ async function alpaca(a: Alp, path: string, init?: RequestInit, base = TRADE_BAS
 //     model handed a small ceiling burns the lot deliberating and returns
 //     EMPTY content with finish_reason "length". So every retry also doubles
 //     the ceiling rather than asking the same impossible question again.
+// One SPY read, used at fill and at close, so each trade carries its own
+// like-for-like benchmark window.
+async function spyPrice(a: Alp): Promise<number | null> {
+  const s = await alpaca(a, "/v2/stocks/bars/latest?symbols=SPY&feed=iex", undefined, DATA_BASE);
+  if (!s.ok) return null;
+  const bar = (s.json as { bars?: Record<string, { c?: number }> })?.bars?.SPY;
+  return bar && Number.isFinite(Number(bar.c)) ? Number(bar.c) : null;
+}
+
 async function ask(model: string, key: string, sys: string, user: string, budget: number): Promise<string> {
   const once = async (b: number, withReasoning: boolean): Promise<string> => {
     const body: Record<string, unknown> = {
@@ -402,7 +411,12 @@ Return ONLY JSON:
             method: "PATCH", headers: svcH,
             body: JSON.stringify({
               status: "open", entry_price: Number(p.avg_entry_price),
-              qty: Math.abs(Number(p.qty)), entry_at: new Date().toISOString(),
+              // The position may already include another bot's shares on a
+              // shared account. Record what THIS trade bought - notional at the
+              // fill price - not the whole position.
+              qty: Math.min(Math.abs(Number(p.qty)), Number(t.notional) / Math.max(0.01, Number(p.avg_entry_price))),
+              entry_at: new Date().toISOString(),
+              spy_entry: await spyPrice(creds),
             }),
           });
           opened.push(sym);
@@ -422,7 +436,13 @@ Return ONLY JSON:
         if (!reason) continue;
 
         // close with an opposing market order for the whole position
-        const qty = Math.abs(Number(p.qty));
+        // Close ONLY what this agent opened. RegimeBot (or anything else) may
+        // hold the same symbol in the same account, and Alpaca merges them into
+        // a single position - dumping all of it would close someone else's trade.
+        const held = Math.abs(Number(p.qty));
+        const mine = Number(t.qty ?? 0) > 0 ? Number(t.qty) : held;
+        const qty = Math.min(held, mine);
+        if (!(qty > 0)) continue;
         const closeSide = String(p.side) === "long" ? "sell" : "buy";
         const c = await alpaca(creds, "/v2/orders", {
           method: "POST",
@@ -435,7 +455,11 @@ Return ONLY JSON:
 
         const exit = Number(p.current_price);
         const entry = Number(t.entry_price ?? p.avg_entry_price);
-        const pnl = Number(p.unrealized_pl);
+        // Derived from OUR quantity and OUR entry, so a merged position cannot
+        // credit this agent with another bot's gains.
+        const dir = String(p.side) === "long" ? 1 : -1;
+        const pnl = (exit - entry) * qty * dir;
+        const spyNow = await spyPrice(creds);
 
         // The agent marks its own homework against the falsifier it wrote at
         // entry — which is the entire point of the exercise.
@@ -457,7 +481,7 @@ Return ONLY JSON:
           method: "PATCH", headers: svcH,
           body: JSON.stringify({
             status: "closed", exit_price: exit, exit_at: new Date().toISOString(),
-            exit_reason: reason, pnl, pnl_pct: plpc, verdict, lesson,
+            exit_reason: reason, pnl, pnl_pct: plpc, verdict, lesson, spy_exit: spyNow,
           }),
         });
         closed.push({ symbol: sym, pnl, plpc, reason, verdict });

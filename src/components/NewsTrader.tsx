@@ -36,6 +36,7 @@ type Trade = {
   headline: string; source_url: string; thesis: string; falsifier: string; conviction: number;
   status: string; reject_reason: string; entry_price: number | null; exit_price: number | null;
   exit_reason: string; pnl: number | null; pnl_pct: number | null; verdict: string; lesson: string;
+  spy_entry: number | null; spy_exit: number | null;
 };
 type Equity = { day: string; equity: number; spy_close: number | null };
 
@@ -151,13 +152,22 @@ export default function NewsTrader({ uid }: { uid: string }) {
   const dry = trades.filter((t) => t.status === "dry");
   const rejected = trades.filter((t) => t.status === "rejected");
 
-  // Benchmark from the marks stored on the day, not re-derived later.
-  const first = curve[0], last = curve[curve.length - 1];
-  const agentPct = first && last && first.equity > 0 ? ((last.equity - first.equity) / first.equity) * 100 : null;
-  const spyPct = first?.spy_close && last?.spy_close ? ((last.spy_close - first.spy_close) / first.spy_close) * 100 : null;
+  // LIKE FOR LIKE, per trade. Comparing this account's equity against SPY would
+  // be meaningless: at a few percent per position it sits ~90% in cash, so its
+  // equity line stays flat however good the picks are — and the account is
+  // shared with RegimeBot, so equity isn't even all this agent's doing. The fair
+  // question is what each position returned versus what SPY did over the SAME
+  // days, which is what these two numbers are.
+  const matched = closed.filter((t) =>
+    t.pnl_pct !== null && t.spy_entry && t.spy_exit && t.spy_entry > 0);
+  const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+  const agentPct = avg(matched.map((t) => t.pnl_pct as number));
+  const spyPct = avg(matched.map((t) => ((t.spy_exit! - t.spy_entry!) / t.spy_entry!) * 100));
 
   const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
   const held = closed.filter((t) => t.verdict === "held").length;
+  const beat = matched.filter((t) =>
+    (t.pnl_pct as number) > ((t.spy_exit! - t.spy_entry!) / t.spy_entry!) * 100).length;
 
   return (
     <div className="pt-3">
@@ -210,29 +220,39 @@ export default function NewsTrader({ uid }: { uid: string }) {
       {/* ── scoreboard ─────────────────────────────────────────────── */}
       {(account || curve.length > 0) && (
         <Card className="mt-3">
-          <Eyebrow>Against the only benchmark that matters</Eyebrow>
+          <Eyebrow>Per trade, against SPY over the same days</Eyebrow>
           <div className="flex items-baseline gap-4 mt-2">
             <div>
               <p className="mono text-[26px] font-bold" style={{ color: agentPct === null ? "var(--text-3)" : tone(agentPct) }}>
                 {agentPct === null ? "—" : pct(agentPct)}
               </p>
-              <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mt-0.5">the agent</p>
+              <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mt-0.5">avg trade</p>
             </div>
             <div>
               <p className="mono text-[26px] font-bold" style={{ color: spyPct === null ? "var(--text-3)" : tone(spyPct) }}>
                 {spyPct === null ? "—" : pct(spyPct)}
               </p>
-              <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mt-0.5">S&amp;P 500</p>
+              <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mt-0.5">SPY, same days</p>
             </div>
           </div>
-          {curve.length < 2 && (
+          {matched.length < 5 && (
             <p className="text-[11px] text-[var(--text-4)] mt-2">
-              Needs a few days of marks before this means anything. One day of difference is noise, not skill.
+              {matched.length === 0
+                ? "Nothing has closed yet. Each position is measured against what SPY did over its own holding window, so this fills in as trades finish."
+                : `Only ${matched.length} closed trade${matched.length === 1 ? "" : "s"}. That is noise, not skill — this needs dozens before it means anything.`}
+            </p>
+          )}
+          {matched.length >= 5 && (
+            <p className="text-[11px] text-[var(--text-4)] mt-2">
+              Beat SPY on {beat} of {matched.length}. Still a small sample.
             </p>
           )}
           {account && (
             <div className="stat mono text-[11px] text-[var(--text-3)] mt-3 pt-3 border-t border-[var(--border-1)] leading-relaxed">
-              <div>equity <b className="text-[var(--text)]">{money(account.equity)}</b> · cash {money(account.cash)}</div>
+              <div>
+                account equity <b className="text-[var(--text)]">{money(account.equity)}</b> · cash {money(account.cash)}
+                <span className="text-[var(--text-4)]"> · shared with RegimeBot, so this is not the agent&apos;s score</span>
+              </div>
               {closed.length > 0 && (
                 <div>
                   {closed.length} closed · {wins} up · <b className="text-[var(--text)]">{held}</b> where the thesis actually held
