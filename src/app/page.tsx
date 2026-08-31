@@ -28,6 +28,7 @@ import Night from "@/components/Night";
 import Money from "@/components/Money";
 import TradingBot from "@/components/TradingBot";
 import KalshiHub from "@/components/KalshiHub";
+import NewsTrader from "@/components/NewsTrader";
 import IncomeEngine from "@/components/IncomeEngine";
 import Vocab from "@/components/Vocab";
 import Tools from "@/components/Tools";
@@ -151,7 +152,7 @@ function Shell({ uid }: { uid: string }) {
           {tab === "food" && <Food uid={uid} />}
           {tab === "night" && <Night uid={uid} />}
           {tab === "money" && (<><Money uid={uid} /><TradingBot /></>)}
-          {tab === "markets" && <KalshiHub />}
+          {tab === "markets" && <><NewsTrader uid={uid} /><KalshiHub /></>}
           {tab === "hustle" && <IncomeEngine />}
           {tab === "vocab" && <Vocab uid={uid} />}
           {tab === "affirmations" && <Affirmations uid={uid} />}
