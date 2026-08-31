@@ -20,8 +20,7 @@ import { useGame } from "@/lib/useGameData";
 import { burstConfetti } from "@/lib/confetti";
 import { sfx, buzz, xpToast } from "@/lib/fx";
 import Diagram, { type DiagramSpec } from "./Diagram";
-import ChapterClip from "./ChapterClip";
-import ClipFeed from "./ClipFeed";
+import ChapterVideos from "./ChapterVideos";
 
 type Card =
   | { kind: "teach"; text: string; diagram: DiagramSpec | null }
@@ -48,13 +47,15 @@ function shuffledIdx(n: number, seed: number): number[] {
 
 export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
   uid: string; notebookId: string;
-  chapter: { id: string; title: string; objective: string; best_score: number; status: string };
+  // videos ride along so the run can surface the chapter's explainers inline;
+  // optional because older callers pass a chapter row without them
+  chapter: { id: string; title: string; objective: string; best_score: number; status: string;
+             videos?: import("@/lib/curriculum").ChapterVideo[] };
   onClose: () => void; onCleared: () => void;
 }) {
   const game = useGame();
   const [cards, setCards] = useState<Card[] | null>(null);
   const [i, setI] = useState(0);
-  const [feedOpen, setFeedOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
@@ -244,11 +245,9 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
               <div>
                 <p className="study-prose text-[1.06rem]">{card.text}</p>
                 {card.diagram && <Diagram spec={card.diagram} />}
-                {/* the clip for THIS beat — keyed by (chapter, card index), so
-                    moving through the run moves through the clips */}
-                <ChapterClip uid={uid} notebookId={notebookId} chapterId={chapter.id}
-                  beat={i} concept={(card.text ?? "").slice(0, 300)}
-                  onOpenFeed={() => setFeedOpen(true)} />
+                {/* The chapter's videos, collapsed — if a card doesn't land,
+                    the explainer for it is one tap away. */}
+                <ChapterVideos videos={chapter.videos ?? []} compact />
               </div>
             )}
 
@@ -434,7 +433,6 @@ export default function Run({ uid, notebookId, chapter, onClose, onCleared }: {
           </button>
         </div>
       )}
-      {feedOpen && <ClipFeed uid={uid} chapterId={chapter.id} onClose={() => setFeedOpen(false)} />}
     </div>,
     document.body,
   );

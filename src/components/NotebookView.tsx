@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { LADDER, LADDER_NOTEBOOK } from "@/lib/curriculum";
 import { advisorCall, notebookProgress, type Notebook, type NBChapter } from "@/lib/notebook";
 import { sfx } from "@/lib/fx";
 import { Card, Segmented } from "./ui";
@@ -46,14 +47,47 @@ export default function NotebookView({ uid, notebook, onBack }: { uid: string; n
   const load = useCallback(async () => {
     try {
       const { data, error } = await supabase.from("notebook_chapters")
-        .select("id,notebook_id,idx,title,objective,summary,pack,status,best_score,created_at")
+        .select("id,notebook_id,idx,title,objective,summary,pack,status,best_score,created_at,videos")
         .eq("user_id", uid).eq("notebook_id", notebook.id).order("idx", { ascending: true });
       if (error) { setLoadErr(true); setLoaded(true); return; }
-      setChapters((data ?? []) as NBChapter[]);
+      setChapters(((data ?? []) as NBChapter[]).map((c) => ({ ...c, videos: Array.isArray(c.videos) ? c.videos : [] })));
       setLoadErr(false); setLoaded(true);
     } catch { setLoadErr(true); setLoaded(true); }
   }, [uid, notebook.id]);
   useEffect(() => { load(); }, [load]);
+
+  // Ben's own precalculus-to-quantum syllabus, with the verified videos
+  // attached. Same atomic RPC as the AI path — never a half-written notebook.
+  async function loadLadder() {
+    if (gen) return;
+    if (chapters.length > 0 &&
+        !confirm(`Replace the ${chapters.length} chapters here with the ${LADDER.length}-chapter ladder?\n\nThe current ones are saved into Sources first, so this is reversible. Chapter progress is cleared.`)) return;
+    setGen(true); setErr("");
+    try {
+      // The RPC replaces, so the outgoing chapters would be gone for good.
+      // Stash them as a source note first — same notebook, his own data, and it
+      // means the swap is reversible without anyone having taken a backup by hand.
+      if (chapters.length > 0) {
+        const dump = chapters.map((c) => ({ idx: c.idx, title: c.title, objective: c.objective, summary: c.summary, pack: c.pack }));
+        const { error: bErr } = await supabase.from("notebook_sources").insert({
+          user_id: uid, notebook_id: notebook.id, kind: "note",
+          title: `Chapters before the ladder (${new Date().toISOString().slice(0, 10)})`,
+          url: "", content: JSON.stringify(dump, null, 1).slice(0, 200000),
+        });
+        if (bErr) { setErr("Couldn't back up the current chapters, so nothing was replaced. Try again."); return; }
+      }
+      const { error } = await supabase.rpc("rebuild_notebook_chapters", {
+        p_notebook_id: notebook.id,
+        p_chapters: LADDER.map((c) => ({
+          title: c.title, objective: c.objective, summary: c.summary, videos: c.videos,
+        })),
+      });
+      if (error) { await load(); setErr("Couldn't install the ladder — try again (your chapters are untouched)."); return; }
+      sfx.coin();
+      await load();
+    } catch { setErr("Couldn't reach the server — try again."); }
+    finally { setGen(false); }
+  }
 
   async function buildChapters(replace: boolean) {
     if (gen) return;
@@ -132,7 +166,14 @@ export default function NotebookView({ uid, notebook, onBack }: { uid: string; n
         <div className="mt-3">
           <div className="flex items-center justify-between mb-2">
             <p className="text-[10px] uppercase tracking-widest opacity-40">📗 Chapters{prog.total > 0 ? ` · ${prog.done}/${prog.total}` : ""}</p>
-            {chapters.length > 0 && <button onClick={() => buildChapters(true)} disabled={gen} className="text-[10px] opacity-40 underline">rebuild</button>}
+            <span className="flex items-center gap-3">
+              {notebook.title === LADDER_NOTEBOOK && (
+                <button onClick={loadLadder} disabled={gen} className="text-[10px] text-[var(--neon)] underline disabled:opacity-40">
+                  {gen ? "installing…" : "load the ladder"}
+                </button>
+              )}
+              {chapters.length > 0 && <button onClick={() => buildChapters(true)} disabled={gen} className="text-[10px] opacity-40 underline">rebuild</button>}
+            </span>
           </div>
 
           {!loaded ? (
@@ -146,6 +187,17 @@ export default function NotebookView({ uid, notebook, onBack }: { uid: string; n
               <button onClick={() => buildChapters(false)} disabled={gen} className="rounded-xl bg-[var(--neon)] text-black font-bold px-5 py-2.5 active:scale-95 disabled:opacity-50">
                 {gen ? "designing your chapters…" : "✨ Build my chapters"}
               </button>
+              {notebook.title === LADDER_NOTEBOOK && (
+                <div className="mt-3 pt-3 border-t border-[var(--border-1)]">
+                  <p className="text-[12px] text-[var(--text-3)] leading-relaxed mb-2">
+                    Or install the written syllabus: {LADDER.length} chapters from precalculus to quantum mechanics,
+                    each with hand-picked videos to watch before the questions.
+                  </p>
+                  <button onClick={loadLadder} disabled={gen} className="rounded-xl bg-white/10 font-semibold px-4 py-2 text-sm active:scale-95 disabled:opacity-50">
+                    {gen ? "installing…" : "Load the ladder"}
+                  </button>
+                </div>
+              )}
               {err && <p className="text-xs text-orange-400 mt-2">{err}</p>}
             </Card>
           ) : (

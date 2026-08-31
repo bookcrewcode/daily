@@ -12,8 +12,7 @@ import { supabase } from "@/lib/supabase";
 import { advisorCall, type NBChapter, type ChapterPack, type GradeResult } from "@/lib/notebook";
 import { sfx, buzz } from "@/lib/fx";
 import { Card, Prose } from "./ui";
-import ChapterClip from "./ChapterClip";
-import ClipFeed from "./ClipFeed";
+import ChapterVideos from "./ChapterVideos";
 
 type Phase = "intro" | "read" | "quiz" | "result";
 const STEERS = [
@@ -36,7 +35,6 @@ export default function ChapterView({ uid, notebookId, chapter, onBack, onChange
   // steering (coach) — tagged with the chunk it was asked on, so a slow reply
   // can't land on a chunk you've already moved past
   const [coach, setCoach] = useState<{ step: number; q: string; a: string }[]>([]);
-  const [feedOpen, setFeedOpen] = useState(false);
   const [coachBusy, setCoachBusy] = useState("");
   const [ask, setAsk] = useState("");
 
@@ -156,6 +154,10 @@ export default function ChapterView({ uid, notebookId, chapter, onBack, onChange
         </Card>
       )}
 
+      {/* Watch BEFORE being questioned. Ben's note: the generated clips never
+          worked, and real explainers are better than anything we could make. */}
+      {phase === "intro" && <ChapterVideos videos={chapter.videos ?? []} />}
+
       {phase === "read" && chunks.length > 0 && (
         <div>
           <div className="flex items-center gap-2 mb-3">
@@ -182,12 +184,10 @@ export default function ChapterView({ uid, notebookId, chapter, onBack, onChange
             ) : null}
           </Card>
 
-          {/* The clip for THIS beat — it follows the reading rather than living
-              in a section of its own, and is keyed by (chapter, beat) so
-              stepping through the chapter steps through the clips. */}
-          <ChapterClip uid={uid} notebookId={notebookId} chapterId={chapter.id}
-            beat={step} concept={chunks[step].teach.slice(0, 300)}
-            onOpenFeed={() => setFeedOpen(true)} />
+          {/* Still reachable mid-chapter, collapsed — if a beat doesn't land,
+              the video that explains it is one tap away rather than a scroll
+              back to the top. */}
+          <ChapterVideos videos={chapter.videos ?? []} compact />
 
           {/* steer the teaching */}
           <div className="flex flex-wrap gap-1.5 mt-2">
@@ -264,6 +264,10 @@ export default function ChapterView({ uid, notebookId, chapter, onBack, onChange
         </Card>
       )}
 
+      {/* Watch BEFORE being questioned. Ben's note: the generated clips never
+          worked, and real explainers are better than anything we could make. */}
+      {phase === "intro" && <ChapterVideos videos={chapter.videos ?? []} />}
+
       {phase === "result" && results && (
         <div>
           <Card tone={score >= 70 ? "neon" : "default"} className="text-center">
@@ -287,7 +291,6 @@ export default function ChapterView({ uid, notebookId, chapter, onBack, onChange
           </div>
         </div>
       )}
-      {feedOpen && <ClipFeed uid={uid} chapterId={chapter.id} onClose={() => setFeedOpen(false)} />}
     </div>
   );
 }

@@ -27,6 +27,9 @@ export type NBChapter = {
   title: string;
   objective: string;
   summary: string;
+  // Curated YouTube, shown BEFORE the questions. Replaces the clip generator,
+  // which never produced a finished video. Ids verified at authoring time.
+  videos: import("./curriculum").ChapterVideo[];
   pack: ChapterPack | null;
   status: string;      // active | done
   best_score: number;
