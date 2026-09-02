@@ -136,7 +136,7 @@ export const WEEK_LABELS: Record<string, string> = {
   "2026-08-31": "Syllabus week — capture every date",
   "2026-09-07": "21-day line · Habit",
   "2026-09-14": "First full-load week",
-  "2026-09-21": "Front-load the reps",
+  "2026-09-21": "Front-load the study",
   "2026-09-28": "45-day line · Identity",
   "2026-10-05": "Midterm runway",
   "2026-10-12": "Midterms — hold the core",
@@ -199,9 +199,9 @@ export function isClosed(d: GameDayRow): boolean {
 }
 
 export function bonusCount(d: GameDayRow): number {
-  const raw = (d.bonus_uber ? 1 : 0) + (d.bonus_trading ? 1 : 0)
-    + (d.bonus_dev ? 1 : 0) + (d.bonus_chess ? 1 : 0);
-  return Math.min(4, raw);
+  // chess is parked until March 1; its column stays for history but no longer scores
+  const raw = (d.bonus_uber ? 1 : 0) + (d.bonus_trading ? 1 : 0) + (d.bonus_dev ? 1 : 0);
+  return Math.min(3, raw);
 }
 
 export function dayTotal(d: GameDayRow): number {

@@ -561,7 +561,7 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
 
           {/* Bonus — things that aren't on the list but still count */}
           <div className="mt-3 rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5">
-            <Eyebrow className="mb-2">Bonus · +{bonus} of 4 max</Eyebrow>
+            <Eyebrow className="mb-2">Bonus · +{bonus} of 3 max</Eyebrow>
             <div className="flex flex-wrap gap-1.5">
               <button onClick={() => setGigOpen((v) => !v)}
                 className={`px-3 py-2 rounded-lg text-xs font-semibold active:scale-95 border ${row.bonus_uber ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-[var(--border-1)]"}`}>
@@ -569,8 +569,7 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
               </button>
 
               {([["Traded my rules", "bonus_trading", row.bonus_trading],
-                 ["Shipped code", "bonus_dev", row.bonus_dev],
-                 ["Rated chess", "bonus_chess", row.bonus_chess]] as const).map(([label, field, val]) => (
+                 ["Shipped code", "bonus_dev", row.bonus_dev]] as const).map(([label, field, val]) => (
                 <button key={field} onClick={() => patch({ [field]: !val } as Partial<GameDayRow>, field)} disabled={!!saving}
                   className={`px-3 py-2 rounded-lg text-xs font-semibold active:scale-95 border disabled:opacity-35 ${val ? "bg-[var(--neon)]/15 text-[var(--neon)] border-[var(--neon)]/40" : "bg-white/5 border-[var(--border-1)]"}`}>
                   {label}
@@ -620,7 +619,6 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
                 <p><b>Drove</b> — any DoorDash / Uber Eats shift. Records the real hours and dollars, and feeds the gig goal in Hustle.</p>
                 <p><b>Traded my rules</b> — you followed your trading rules 100%. Discipline, not profit: a losing day by the rules scores, a winning day off the rules doesn&apos;t.</p>
                 <p><b>Shipped code</b> — something is live that wasn&apos;t live this morning. &quot;Worked on it&quot; isn&apos;t shipped.</p>
-                <p><b>Rated chess</b> — at least one rated game. Win or lose.</p>
               </div>
             </details>
           </div>

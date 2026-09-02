@@ -28,11 +28,9 @@ type Step = { id: string; goal_id: string; title: string; done: boolean; sort: n
 // taps one, it fills the form, he sets the date himself. The season starter is
 // the one exception: Dec 15 is a real, already-fixed date.
 const STARTERS: { title: string; due?: string }[] = [
-  { title: "BookCrew: first paying customer" },
-  { title: "$20,000 saved" },
   { title: "Finish the season", due: SEASON_END },
   { title: "Hit 190 lbs" },
-  { title: "Semester GPA target" },
+  { title: "New project with Gavin, Thay and Oliver" },
 ];
 
 function daysUntil(due: string | null): number | null {
