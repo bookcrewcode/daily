@@ -36,6 +36,7 @@ import Tools from "@/components/Tools";
 import Affirmations from "@/components/Affirmations";
 import Board from "@/components/Board";
 import { useVoiceInput } from "@/lib/useVoiceInput";
+import { registerSw } from "@/lib/push";
 import { sfx, buzz } from "@/lib/fx";
 
 type Tab =
@@ -102,10 +103,17 @@ function LegacyGameSync() {
   return null;
 }
 
+// The one deep link: a tapped reminder opens /daily/?go=learn and the round
+// should just start. Read once at mount; the URL is cleaned so a reload
+// doesn't start it twice.
+const wantsLearn = () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("go") === "learn";
+
 function Shell({ uid }: { uid: string }) {
-  // ALWAYS open on the Card. No remembered-tab restore — that "feature" hid an
-  // entire redesign from Ben for a day.
-  const [tab, setTab] = useState<Tab>("home");
+  // ALWAYS open on the Card (no remembered-tab restore — that "feature" hid an
+  // entire redesign from Ben for a day). The reminder deep link is the one exception.
+  const [tab, setTab] = useState<Tab>(() => (wantsLearn() ? "learning" : "home"));
+  // counts up so a second notification tap while the app is open starts again
+  const [autostart, setAutostart] = useState(() => (wantsLearn() ? 1 : 0));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
 
@@ -115,7 +123,19 @@ function Shell({ uid }: { uid: string }) {
     window.scrollTo({ top: 0 });
   }
 
-  const inSpace = SPACES.some((s) => s.key === tab);
+  useEffect(() => {
+    if (wantsLearn()) history.replaceState(null, "", window.location.pathname);
+    registerSw();   // standalone only; the worker is push-only (see public/sw.js)
+    // a notification tapped while the app is open: the worker asks us to jump to Learn
+    const onMsg = (e: MessageEvent) => {
+      if (e.data?.type !== "open-learn") return;
+      setTab("learning"); setSettingsOpen(false); setAutostart((n) => n + 1);
+      window.scrollTo({ top: 0 });
+    };
+    navigator.serviceWorker?.addEventListener("message", onMsg);
+    return () => navigator.serviceWorker?.removeEventListener("message", onMsg);
+  }, []);
+
   const legacyMeta = LEGACY.find((l) => l.key === tab);
 
   return (
@@ -146,7 +166,7 @@ function Shell({ uid }: { uid: string }) {
           {tab === "home" && <TheCard uid={uid} onGoTab={(t) => go(t as Tab)} />}
           {tab === "plan" && <PlanSpace uid={uid} />}
           {tab === "body" && <Body uid={uid} />}
-          {tab === "learning" && <Notebooks uid={uid} onGoFix={() => setSettingsOpen(true)} />}
+          {tab === "learning" && <Notebooks uid={uid} autostart={autostart} onGoFix={() => setSettingsOpen(true)} />}
           {tab === "desk" && <DeskSpace uid={uid} />}
 
           {tab === "today" && <Today uid={uid} onOpenAdvisor={() => setBoardOpen(true)} onGoTab={(t) => go(t as Tab)} />}

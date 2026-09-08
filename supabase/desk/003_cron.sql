@@ -24,3 +24,11 @@ $$);
 
 -- Already scheduled in Task 9 (fills, exits, funding, marks): desk-sync at :05 and :35 every hour.
 -- select cron.schedule('desk-sync', '5,35 * * * *', $$ ... mode 'sync' ... $$);
+
+-- Retired 2026-09-08 (the Desk replaces the RegimeBot news-agent bridge). To bring one back:
+-- select cron.schedule('news-agent-run-edt', '30 1 * * *', $$ select net.http_post(url := 'https://pciljeqsrricybdnhvsu.supabase.co/functions/v1/trader', headers := '{"Content-Type":"application/json"}'::jsonb, body := jsonb_build_object('mode','run','userId','f0e1e204-aa54-4a45-bbb5-99c83114fecb','cronSecret',(select decrypted_secret from vault.decrypted_secrets where name='trader_cron_secret')), timeout_milliseconds := 150000); $$);
+-- select cron.schedule('news-agent-sync-edt', '30 20 * * 1-5', $$ ... same with 'mode','sync' ... $$);
+-- select cron.schedule('news-agent-sync-est', '30 21 * * 1-5', $$ ... same with 'mode','sync' ... $$);
+select cron.unschedule('news-agent-run-edt');
+select cron.unschedule('news-agent-sync-edt');
+select cron.unschedule('news-agent-sync-est');

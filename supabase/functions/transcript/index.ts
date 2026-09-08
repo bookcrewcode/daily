@@ -212,7 +212,10 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
     const token = (req.headers.get("Authorization") ?? "").replace("Bearer ", "");
-    const user = await getUser(token);
+    // studio's nightly prep runs in service mode (no user JWT) and passes the
+    // service key itself — that key is the authorisation, so skip the user lookup
+    const svcKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const user = token && svcKey && token === svcKey ? { id: "service" } : await getUser(token);
     if (!user?.id) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
 
     const { url = "" } = await req.json();

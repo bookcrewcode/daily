@@ -11,16 +11,14 @@
 // a double-tap guard makes sure it can never report twice. The parent decides
 // what to say about the answer (explain, why_wrong, pretest copy).
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Rating, type Grade } from "ts-fsrs";
 import { intervalPreview, type NBCard } from "@/lib/fsrs";
 import { sfx, buzz } from "@/lib/fx";
 import {
   shuffledIdx, type BlankCard, type ChoiceCard, type MatchCard, type OrderCard, type TeachCard as TeachSpec, type TeachClip, type WorkedCard as WorkedSpec,
 } from "@/lib/session";
-import type { ChapterVideo } from "@/lib/curriculum";
 import Diagram from "./Diagram";
-import ChapterVideos from "./ChapterVideos";
 
 export type InteractiveCard = ChoiceCard | BlankCard | OrderCard | MatchCard;
 export type AnswerDetail = { pick?: number; wrongStep?: number };
@@ -32,26 +30,60 @@ const MISSED = "bg-orange-500/15 border-orange-400/50";
 const IDLE = "bg-white/[0.04] border-white/12 active:scale-[0.99]";
 const SPENT = "opacity-25 border-white/10";
 const CHECK_BTN = "mt-4 w-full rounded-xl bg-[var(--neon)] text-black font-bold py-3 active:scale-95";
-const Eyebrow = ({ children }: { children: string }) => <p className="text-[10px] uppercase tracking-widest opacity-45 mb-2">{children}</p>;
+// Nothing in Learn under 12 px or under 0.7 opacity — small grey text is the
+// first thing that stops being read. Eyebrows are sentence-case verb phrases.
+const Eyebrow = ({ children }: { children: string }) => <p className="text-[13px] opacity-80 mb-2">{children}</p>;
 
-// Choices in a stored shuffled order; the answer is compared by ORIGINAL index.
-function ChoiceList({ choices, answer, seed, pick, onPick }: {
-  choices: string[]; answer: number; seed: number; pick: number | null; onPick: (k: number) => void;
+// The tap feedback keyframes, installed once into <head> the first time a
+// choice list mounts — so the Today card's inline question gets them too,
+// without a stylesheet edit: a 150 ms pop on the tapped row and a warm amber
+// pulse on a miss (never red).
+function ensureFxStyles() {
+  if (typeof document === "undefined" || document.getElementById("learn-fx")) return;
+  const st = document.createElement("style");
+  st.id = "learn-fx";
+  st.textContent = `@keyframes learnPop{0%{transform:scale(1)}40%{transform:scale(1.04)}100%{transform:scale(1)}}
+@keyframes learnMiss{0%{box-shadow:0 0 0 0 rgba(251,146,60,.55)}100%{box-shadow:0 0 0 14px rgba(251,146,60,0)}}
+.choice-pop{animation:learnPop .15s ease}
+.choice-miss{animation:learnMiss .6s ease-out}`;
+  document.head.appendChild(st);
+}
+
+// Choices as tappable rows; the answer is compared by ORIGINAL index, and
+// `onPick` reports that index. With `seed` the rows come in a stored shuffled
+// order (a re-ask gets a fresh one); without it, as written. `answer` and
+// `pick` paint the result; `disabled` freezes the list (the Today card while
+// the round opens).
+export function ChoiceList({ choices, answer, seed, pick = null, onPick, disabled }: {
+  choices: string[]; onPick: (k: number) => void; answer?: number; seed?: number; pick?: number | null; disabled?: boolean;
 }) {
-  const order = shuffledIdx(choices.length, seed);
+  useEffect(ensureFxStyles, []);
+  const order = seed === undefined ? choices.map((_, k) => k) : shuffledIdx(choices.length, seed);
   const show = pick !== null;
   return (
     <div className="space-y-2">
       {order.map((k) => {
-        const isA = k === answer, isP = pick === k;
+        const isA = answer !== undefined && k === answer, isP = pick === k;
+        const fx = isP ? `choice-pop${isA ? "" : " choice-miss"}` : "";
         return (
-          <button key={k} disabled={show} onClick={() => onPick(k)}
-            className={`w-full text-left rounded-xl px-4 py-3 border transition ${show && isA ? RIGHT : show && isP ? MISSED : IDLE}`}>
+          <button key={k} disabled={show || disabled} onClick={() => onPick(k)}
+            className={`w-full text-left rounded-xl px-4 py-3 border transition ${show && isA ? RIGHT : show && isP ? MISSED : IDLE} ${fx}`}>
             <span className="text-[0.98rem]">{show && isA ? "✓ " : show && isP ? "→ " : ""}{choices[k]}</span>
           </button>
         );
       })}
     </div>
+  );
+}
+
+// ─── "Didn't make sense" — one tap under any card or clip ────────────────────
+export function NoSense({ onTap }: { onTap: () => void }) {
+  const [noted, setNoted] = useState(false);
+  if (noted) return <p className="text-[12px] opacity-70 mt-3">Noted — this gets rewritten next time.</p>;
+  return (
+    <button onClick={() => { setNoted(true); onTap(); }} className="text-[12px] opacity-70 mt-3 underline underline-offset-2 active:scale-95">
+      Didn&apos;t make sense
+    </button>
   );
 }
 
@@ -71,7 +103,7 @@ export function QuestionCard({ card, seed, onAnswer }: {
     if (scoring.current) return;   // never report one card twice
     scoring.current = true;
     setAnswered(true);
-    if (ok) { sfx.pop(); buzz(12); } else buzz(25);
+    if (ok) { sfx.pop(); buzz(12); } else { sfx.miss(); buzz(25); }
     onAnswer(ok, detail);
   }
 
@@ -79,9 +111,10 @@ export function QuestionCard({ card, seed, onAnswer }: {
   if (card.kind !== "blank" && card.kind !== "order" && card.kind !== "match") {
     return (
       <div>
+        {card.hook && <p className="text-[12px] text-[var(--neon)] mb-2">{card.hook}</p>}
         {card.kind === "scenario" && card.situation && (
           <div className="rounded-2xl paper border p-3 mb-3">
-            <Eyebrow>Situation</Eyebrow>
+            <Eyebrow>Picture this</Eyebrow>
             <p className="study-prose text-[1rem]">{card.situation}</p>
           </div>
         )}
@@ -153,7 +186,7 @@ export function QuestionCard({ card, seed, onAnswer }: {
             <button key={`${idx}-${k}`} disabled={answered} onClick={() => setSeq((q) => q.filter((x) => x !== idx))}
               className={`w-full text-left rounded-xl px-3 py-2.5 border flex items-center gap-2 ${
                 answered ? (idx === k ? RIGHT : MISSED) : "bg-[var(--neon)]/10 border-[var(--neon)]/35"}`}>
-              <span className="text-xs opacity-50 w-4">{k + 1}</span><span className="text-sm">{card.items[idx]}</span>
+              <span className="text-xs opacity-70 w-4">{k + 1}</span><span className="text-sm">{card.items[idx]}</span>
             </button>
           ))}
         </div>
@@ -202,7 +235,7 @@ export function QuestionCard({ card, seed, onAnswer }: {
                   answered ? (ok ? RIGHT : MISSED)
                   : leftSel === li ? "bg-[var(--neon)] text-black border-transparent"
                   : paired ? "opacity-40 border-white/10" : "bg-white/[0.06] border-white/15 active:scale-95"}`}>
-                {l}{paired && <span className="opacity-60"> → {card.pairs[made[li]][1]}</span>}
+                {l}{paired && <span className="opacity-70"> → {card.pairs[made[li]][1]}</span>}
               </button>
             );
           })}
@@ -242,25 +275,25 @@ export function WorkedCard({ card, seed, onAnswer }: {
     reported.current = true;
     setFinished(true);
     const wrong = card.steps.findIndex((s, i) => s.ask && picks[i] !== s.ask.answer);
-    if (wrong === -1) { sfx.pop(); buzz(12); } else buzz(25);
+    if (wrong === -1) { sfx.pop(); buzz(12); } else { sfx.miss(); buzz(25); }
     onAnswer(wrong === -1, wrong === -1 ? {} : { wrongStep: wrong });
   }
 
   return (
     <div>
-      <Eyebrow>Worked problem — one step at a time</Eyebrow>
+      <Eyebrow>Work it one step at a time</Eyebrow>
       <div className="rounded-2xl paper border p-3 mb-3">
         <p className="study-prose text-[1rem]">{card.problem}</p>
       </div>
       <div className="space-y-3">
         {card.steps.slice(0, shown).map((s, i) => (
           <div key={i} className="rise-in">
-            <p className="text-sm"><span className="mono text-[10px] opacity-50 mr-2">step {i + 1}</span>{s.text}</p>
+            <p className="text-sm"><span className="mono text-[12px] opacity-70 mr-2">step {i + 1}</span>{s.text}</p>
             {s.ask && (
               <div className="mt-2 pl-2 border-l-2 border-[var(--neon)]/40">
                 <p className="text-[0.98rem] font-semibold mb-2">{s.ask.q}</p>
                 <ChoiceList choices={s.ask.choices} answer={s.ask.answer} seed={seed + i * 31} pick={picks[i] ?? null}
-                  onPick={(k) => { if (picks[i] !== undefined) return; setPicks((p) => ({ ...p, [i]: k })); if (k === s.ask?.answer) sfx.pop(); else buzz(25); }} />
+                  onPick={(k) => { if (picks[i] !== undefined) return; setPicks((p) => ({ ...p, [i]: k })); if (k === s.ask?.answer) sfx.pop(); else { sfx.miss(); buzz(25); } }} />
               </div>
             )}
           </div>
@@ -276,10 +309,18 @@ export function WorkedCard({ card, seed, onAnswer }: {
 // ─── clip: the same idea on a real video, before the words ───────────────────
 // A thumbnail until tapped — an iframe on every teach card would make the round
 // crawl — and youtube-nocookie, so an unwatched clip hands YouTube nothing.
+// When the clip's time is up the iframe is unmounted: what is on screen then
+// is the card's own words, never YouTube's grid of other videos.
 const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-function Clip({ clip }: { clip: TeachClip }) {
+export function Clip({ clip, onNoSense }: { clip: TeachClip; onNoSense?: () => void }) {
   const [playing, setPlaying] = useState(false);
+  const [watched, setWatched] = useState(false);
   const len = Math.max(0, clip.end - clip.start);
+  useEffect(() => {
+    if (!playing) return;
+    const t = setTimeout(() => { setPlaying(false); setWatched(true); }, (len + 1) * 1000);
+    return () => clearTimeout(t);
+  }, [playing, len]);
   return (
     <div className="mb-4">
       {playing ? (
@@ -305,25 +346,36 @@ function Clip({ clip }: { clip: TeachClip }) {
           <img src={`https://i.ytimg.com/vi/${clip.id}/hqdefault.jpg`} alt=""
             loading="lazy" className="w-full h-full object-cover opacity-80" />
           <span className="absolute inset-0 grid place-items-center">
-            <span className="rounded-full bg-black/65 border border-white/30 px-4 py-2 text-white text-sm font-semibold">▶ Watch this bit · {mmss(len)}</span>
+            <span className="rounded-full bg-black/65 border border-white/30 px-4 py-2 text-white text-sm font-semibold">▶ {watched ? "Watch again" : "Watch this bit"} · {mmss(len)}</span>
           </span>
         </button>
       )}
-      <p className="text-[13px] font-medium leading-snug mt-1.5">{clip.title} · <span className="mono text-[11px] text-[var(--text-4)]">{clip.channel}</span></p>
+      <p className="text-[13px] font-medium leading-snug mt-1.5">{clip.title} · <span className="mono text-[12px] text-[var(--text-3)]">{clip.channel}</span></p>
       <p className="text-[12px] text-[var(--text-3)] leading-relaxed mt-1">The same idea, explained on video — then the card below says it in plain words.</p>
+      {onNoSense && <NoSense onTap={onNoSense} />}
     </div>
   );
 }
 
-// ─── teach: a clip if one was verified, one idea, a diagram, the chapter's videos, and a guide to ask ─────
-export function TeachCard({ card, videos, onAsk }: {
-  card: TeachSpec; videos: ChapterVideo[]; onAsk: (ask: string) => Promise<string>;
+// One sentence per line: a wall of prose is the thing that stops a tired
+// eye; three short lines are not. Splits on sentence-ending punctuation
+// followed by a space and a capital, digit or quote — an abbreviation like
+// "e.g. this" stays whole.
+export function sentencesOf(text: string): string[] {
+  const out = text.trim().split(/(?<=[.!?…])\s+(?=["“(A-Z0-9])/).map((x) => x.trim()).filter(Boolean);
+  return out.length ? out : [text];
+}
+
+// ─── teach: a clip if one was verified, the idea one sentence at a time, a diagram, the source line behind a tap, and a guide to ask ─────
+export function TeachCard({ card, onAsk, onNoSense, onClipOff }: {
+  card: TeachSpec; onAsk: (ask: string) => Promise<string>; onNoSense?: () => void; onClipOff?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [thread, setThread] = useState<{ ask: string; reply: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [typing, setTyping] = useState(false);
   const [text, setText] = useState("");
+  const [source, setSource] = useState(false);
 
   async function ask(q: string) {
     const clean = q.trim();
@@ -336,19 +388,24 @@ export function TeachCard({ card, videos, onAsk }: {
 
   return (
     <div>
-      {card.clip && <Clip clip={card.clip} />}
-      <p className="study-prose text-[1.06rem]">{card.text}</p>
+      {card.clip && !card.clip_off && <Clip clip={card.clip} onNoSense={onClipOff} />}
+      <div className="study-prose text-[1.06rem] space-y-2">
+        {sentencesOf(card.text).map((line, i) => <p key={i}>{line}</p>)}
+      </div>
       {card.diagram && <Diagram spec={card.diagram} />}
-      {card.cite?.quote && (
+      {card.cite?.quote && (source ? (
         <p className="text-[12px] text-[var(--text-3)] italic mt-2 border-l-2 border-[var(--neon)]/40 pl-2">
           &ldquo;{card.cite.quote}&rdquo; — from your material
         </p>
-      )}
-      {/* the chapter's videos, collapsed — if the card doesn't land, the explainer is one tap away */}
-      <ChapterVideos videos={videos} compact label={card.clip ? "watch the whole video" : undefined} />
-      <button onClick={() => setOpen(true)} className="mt-4 rounded-xl border border-[var(--neon)]/40 bg-[var(--neon)]/10 px-4 py-2.5 text-sm font-semibold text-[var(--neon)] active:scale-95">
-        Ask the guide ▸
-      </button>
+      ) : (
+        <button onClick={() => setSource(true)} className="text-[12px] opacity-70 mt-2 underline underline-offset-2 active:scale-95">See the source line</button>
+      ))}
+      <div className="flex items-center gap-4 mt-4">
+        <button onClick={() => setOpen(true)} className="rounded-xl border border-[var(--neon)]/40 bg-[var(--neon)]/10 px-4 py-2.5 text-sm font-semibold text-[var(--neon)] active:scale-95">
+          Ask the guide ▸
+        </button>
+        {onNoSense && <span className="-mt-3"><NoSense onTap={onNoSense} /></span>}
+      </div>
 
       {open && (
         <div className="fixed inset-x-0 bottom-0 z-[60] max-h-[80vh] flex flex-col rounded-t-3xl border-t border-[var(--border-1)] bg-[var(--card)] shadow-2xl">
@@ -357,7 +414,7 @@ export function TeachCard({ card, videos, onAsk }: {
               <p className="font-semibold">Learning Guide</p>
               <p className="text-[12px] text-[var(--text-3)] leading-snug">Asks before it tells. Tap &ldquo;Just tell me&rdquo; when you want the answer.</p>
             </div>
-            <button onClick={() => setOpen(false)} className="text-sm opacity-50 active:scale-90 px-2">✕</button>
+            <button onClick={() => setOpen(false)} className="text-sm opacity-70 active:scale-90 px-2">✕</button>
           </div>
           <div className="flex-1 overflow-y-auto px-4 space-y-3">
             {thread.map((t, i) => (
@@ -366,7 +423,7 @@ export function TeachCard({ card, videos, onAsk }: {
                 <p className="study-prose text-[0.98rem]">{t.reply}</p>
               </div>
             ))}
-            {busy && <p className="text-sm opacity-60">thinking…</p>}
+            {busy && <p className="text-sm opacity-70">thinking…</p>}
           </div>
           <div className="px-4 pt-3 pb-5">
             <div className="flex flex-wrap gap-2">
@@ -383,7 +440,7 @@ export function TeachCard({ card, videos, onAsk }: {
                   className="rounded-xl bg-[var(--neon)] text-black px-4 text-sm font-bold active:scale-95 disabled:opacity-50">Ask</button>
               </div>
             ) : (
-              <button onClick={() => setTyping(true)} className="mt-3 text-[12px] opacity-50 active:scale-95">or type your own question</button>
+              <button onClick={() => setTyping(true)} className="mt-3 text-[12px] opacity-70 active:scale-95">or type your own question</button>
             )}
           </div>
         </div>
@@ -398,20 +455,22 @@ export function ReviewCard({ card, onRate }: { card: NBCard; onRate: (rating: Gr
   const [flipped, setFlipped] = useState(false);
   const rated = useRef(false);
   const iv = intervalPreview(card);
+  // "Missed" is warm orange, not red: a miss is the card doing its job. Its
+  // time is the real one FSRS schedules — minutes, not "tomorrow".
   const buttons: { label: string; sub: string; rating: Grade; ok: boolean; hue: string }[] = [
-    { label: "Missed", sub: "back tomorrow", rating: Rating.Again, ok: false, hue: "#f87171" },
+    { label: "Missed", sub: iv.again ? `in ${iv.again}` : "again soon", rating: Rating.Again, ok: false, hue: "#fb923c" },
     { label: "Barely", sub: `in ${iv.hard || "a bit"}`, rating: Rating.Hard, ok: true, hue: "#fbbf24" },
     { label: "Got it", sub: `in ${iv.good || "a while"}`, rating: Rating.Good, ok: true, hue: "#38bdf8" },
   ];
   function rate(b: (typeof buttons)[number]) {
     if (rated.current) return;
     rated.current = true;
-    if (b.ok) { sfx.pop(); buzz(12); } else buzz(25);
+    if (b.ok) { sfx.pop(); buzz(12); } else { sfx.miss(); buzz(25); }
     onRate(b.rating, b.ok);
   }
   return (
     <div>
-      <Eyebrow>Spaced review — say how it felt; the time under each button is when it comes back</Eyebrow>
+      <Eyebrow>Say how it felt — the time under each button is when it comes back</Eyebrow>
       <div className="rounded-2xl paper border p-4">
         <p className="study-prose text-[1.08rem]">{card.front}</p>
         {flipped && (
@@ -430,7 +489,7 @@ export function ReviewCard({ card, onRate }: { card: NBCard; onRate: (rating: Gr
               className="rounded-xl border px-2 py-2.5 text-center active:scale-95"
               style={{ borderColor: `${b.hue}66`, background: `${b.hue}1a` }}>
               <span className="block text-sm font-bold" style={{ color: b.hue }}>{b.label}</span>
-              <span className="block text-[11px] opacity-60 mono">{b.sub}</span>
+              <span className="block text-[12px] opacity-70 mono">{b.sub}</span>
             </button>
           ))}
         </div>

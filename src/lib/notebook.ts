@@ -67,12 +67,14 @@ export type MindMap = { root: string; branches: { label: string; children: strin
 export const PDF_FN = `${SUPABASE_URL}/functions/v1/pdf`;
 export const TRANSCRIPT_FN = `${SUPABASE_URL}/functions/v1/transcript`;
 
-// Which edge function answers which mode. `learn` keeps the lesson loop small
-// enough to redeploy safely; `studio` takes the heavier one-off generators;
-// anything else is a legacy advisor persona.
+// Which edge function answers which mode. `learn` keeps only the lesson loop
+// (lesson · coach · tutor) so it stays under the deploy size cap; `studio`
+// takes the one-off generators, syllabus and grading included; anything else
+// is a legacy advisor persona.
 export const MODE_FN: Record<string, string> = {
-  syllabus: LEARN_FN, lesson: LEARN_FN, coach: LEARN_FN, tutor: LEARN_FN, grade: LEARN_FN,
-  exam: STUDIO_FN, flashcards: STUDIO_FN, mindmap: STUDIO_FN, "study-guide": STUDIO_FN, podcast: STUDIO_FN, videos: STUDIO_FN,
+  lesson: LEARN_FN, coach: LEARN_FN, tutor: LEARN_FN,
+  syllabus: STUDIO_FN, grade: STUDIO_FN, videos: STUDIO_FN, prep: STUDIO_FN,
+  exam: STUDIO_FN, flashcards: STUDIO_FN, mindmap: STUDIO_FN, "study-guide": STUDIO_FN, podcast: STUDIO_FN,
 };
 
 // One call into an edge function. Returns the parsed JSON, which is either

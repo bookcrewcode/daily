@@ -1,13 +1,17 @@
 // Studio edge function — the notebook's study tools: exam · flashcards ·
-// mindmap · study-guide · podcast. The teaching modes (syllabus / lesson /
-// coach / tutor / grade) live in `learn`; the two files share the same helpers,
-// copied rather than imported, because deploy pastes ONE file.
+// mindmap · study-guide · podcast · syllabus · grade, plus `videos` (real
+// explainers for a chapter) and `prep` (the cron job that writes runs ahead
+// of time). The round itself (lesson / coach / tutor) lives in `learn`; the
+// helpers are copied, not imported, because deploy pastes ONE file (≤ 44 KB).
 //
 // GROUNDING: every prompt sees an OUTLINE of all his sources plus passages
-// pulled from two regions of the material (RPCs notebook_outline /
-// search_chunks, run with the user's token so RLS applies). Passage numbers
-// are for the model's reference only — none of these outputs show citations,
+// from two regions of the material (RPCs notebook_outline / search_chunks,
+// run with the user's token so RLS applies). No output here shows citations,
 // so any [n] marker is stripped before parsing.
+//
+// SERVICE MODE: pg_cron calls `prep` with {secret, userId}; the secret is
+// checked against the vault, every call then runs with the service key and
+// the RPCs are scoped by p_user_id. `prep` calls `learn` the same way.
 //
 // verify_jwt=false at the gateway; the JWT is validated here by hand.
 
@@ -30,19 +34,23 @@ const okModel = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9._-]+\/[A-Z
 const D_SMART = "google/gemini-3.7-flash";
 const D_FAST = "google/gemini-2.5-flash-lite";
 
-let ck = "", ca = 0;
-async function apiKey(): Promise<string> {
-  if (ck && Date.now() - ca < 60_000) return ck;
+// vault secrets via the service-role-only get_secret RPC, cached a minute; a
+// missing secret is "" and can never match a caller's
+const sc = new Map<string, { v: string; at: number }>();
+async function secretOf(name: string): Promise<string> {
+  const c = sc.get(name);
+  if (c && Date.now() - c.at < 60_000) return c.v;
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_secret`, {
       method: "POST",
       headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ secret_name: "anthropic_api_key" }),
+      body: JSON.stringify({ secret_name: name }),
     });
-    if (r.ok) { const v = ((await r.json()) as string | null) ?? ""; if (v) { ck = v; ca = Date.now(); return v; } }
+    if (r.ok) { const v = ((await r.json()) as string | null) ?? ""; if (v) { sc.set(name, { v, at: Date.now() }); return v; } }
   } catch { /* fall through */ }
-  return ENV_KEY || ck;
+  return c?.v ?? "";
 }
+const apiKey = async () => (await secretOf("anthropic_api_key")) || ENV_KEY;
 
 async function getUser(token: string) {
   try {
@@ -51,31 +59,26 @@ async function getUser(token: string) {
   } catch { return null; }
 }
 
-async function models(token: string) {
+async function models(token: string, uid: string) {
   try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_settings?select=ai_models`, { headers: { apikey: ANON, Authorization: `Bearer ${token}` } });
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_settings?select=ai_models&user_id=eq.${uid}`, { headers: hdr(token) });
     if (!r.ok) return { smart: D_SMART, fast: D_FAST };
     const m = (await r.json())?.[0]?.ai_models ?? {};
     return { smart: okModel(m.smart) ? m.smart : D_SMART, fast: okModel(m.fast) ? m.fast : D_FAST };
   } catch { return { smart: D_SMART, fast: D_FAST }; }
 }
 
-// ONE call path for every mode. Reasoning off, generous budget, one retry with
+// ONE call path for every mode. A small thinking allowance on top of the
+// answer budget (OpenRouter needs max_tokens to EXCEED it), one retry with
 // more room, and every upstream failure logged with its real body.
+const THINK = 1024;
 async function ask(model: string, sys: string, msgs: { role: string; content: unknown }[], maxTokens: number, key: string, tag: string): Promise<string> {
-  const once = async (budget: number, withReasoning: boolean): Promise<string> => {
+  const once = async (budget: number, reasoning: Record<string, unknown>): Promise<string> => {
     if (isOR(key)) {
-      const body: Record<string, unknown> = {
-        model, max_tokens: budget,
-        messages: [{ role: "system", content: sys }, ...msgs],
-      };
-      // Some models reject effort:"none" outright; when that happens we retry
-      // without the field rather than failing the user's request.
-      if (withReasoning) body.reasoning = { effort: "none", exclude: true };
       const r = await fetch(`${OR_BASE}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ model, max_tokens: budget + THINK, reasoning: { ...reasoning, exclude: true }, messages: [{ role: "system", content: sys }, ...msgs] }),
       });
       const raw = await r.text();
       if (!r.ok) {
@@ -84,10 +87,12 @@ async function ask(model: string, sys: string, msgs: { role: string; content: un
       }
       const d = JSON.parse(raw);
       const text = String(d?.choices?.[0]?.message?.content ?? "");
+      const u = d?.usage ?? {};
       if (!text.trim()) {
-        console.error(`[studio:${tag}] empty content model=${model} finish=${d?.choices?.[0]?.finish_reason} usage=${JSON.stringify(d?.usage ?? {})}`);
+        console.error(`[studio:${tag}] empty content model=${model} finish=${d?.choices?.[0]?.finish_reason} usage=${JSON.stringify(u)}`);
         throw new Error("EMPTY");
       }
+      console.error(`[studio:${tag}] usage prompt=${u.prompt_tokens ?? "?"} completion=${u.completion_tokens ?? "?"} reasoning=${u.completion_tokens_details?.reasoning_tokens ?? 0}`);
       return text;
     }
     const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -100,14 +105,17 @@ async function ask(model: string, sys: string, msgs: { role: string; content: un
     const d = JSON.parse(raw);
     const t = (d.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
     if (!t.trim()) throw new Error("EMPTY");
+    console.error(`[studio:${tag}] usage prompt=${d.usage?.input_tokens ?? "?"} completion=${d.usage?.output_tokens ?? "?"}`);
     return t;
   };
-  try { return await once(maxTokens, true); }
+  const think = { max_tokens: THINK };
+  try { return await once(maxTokens, think); }
   catch (e) {
     const m = e instanceof Error ? e.message : "";
-    // a 4xx often means the reasoning field itself was rejected — drop it
-    if (m.startsWith("HTTP_4")) { console.error(`[studio:${tag}] retrying without reasoning field`); return await once(maxTokens, false); }
-    if (m === "EMPTY") { console.error(`[studio:${tag}] retrying with ${maxTokens * 2} tokens`); return await once(maxTokens * 2, false); }
+    // a 4xx usually means this model refuses a token-counted thinking budget —
+    // ask for low effort instead; the field itself is never dropped
+    if (m.startsWith("HTTP_4")) { console.error(`[studio:${tag}] retrying with effort=low`); return await once(maxTokens, { effort: "low" }); }
+    if (m === "EMPTY") { console.error(`[studio:${tag}] retrying with ${maxTokens * 2} tokens`); return await once(maxTokens * 2, think); }
     throw e;
   }
 }
@@ -130,10 +138,14 @@ type C = Record<string, unknown>;
 type Chunk = { id: string; text: string };
 const S = (v: unknown, n: number) => String(v ?? "").trim().slice(0, n);
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
-const hdr = (token: string) => ({ apikey: ANON, Authorization: `Bearer ${token}`, "Content-Type": "application/json" });
+const strs = (v: unknown, n: number) => arr(v).map((x) => S(x, n)).filter(Boolean);
+// the gateway wants the apikey that matches the bearer: the service key in service mode, else anon
+const hdr = (token: string) => ({ apikey: SERVICE_KEY && token === SERVICE_KEY ? SERVICE_KEY : ANON, Authorization: `Bearer ${token}`, "Content-Type": "application/json" });
 
-async function rpc<T>(token: string, fn: string, args: C): Promise<T | null> {
+// `uid` is set only in service mode: the RPCs then scope to that user themselves
+async function rpc<T>(token: string, fn: string, args: C, uid = ""): Promise<T | null> {
   try {
+    if (uid) args.p_user_id = uid;
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, { method: "POST", headers: hdr(token), body: JSON.stringify(args) });
     if (!r.ok) { console.error(`[studio] rpc ${fn} ${r.status} ${(await r.text()).slice(0, 200)}`); return null; }
     return await r.json() as T;
@@ -142,9 +154,9 @@ async function rpc<T>(token: string, fn: string, args: C): Promise<T | null> {
 
 // One line per source, every source survives; headings get half the budget,
 // the opening fills the rest.
-async function outline(token: string, nbId: string): Promise<{ text: string; sources: number; chunks: number; failed: boolean }> {
+async function outline(token: string, nbId: string, uid = ""): Promise<{ text: string; sources: number; chunks: number; failed: boolean }> {
   type Row = { title: string; kind: string; week: number | null; page_count: number; chunk_count: number; headings: string[] | null; opening: string | null };
-  const rows = await rpc<Row[]>(token, "notebook_outline", { p_notebook_id: nbId });
+  const rows = await rpc<Row[]>(token, "notebook_outline", { p_notebook_id: nbId }, uid);
   if (!rows) return { text: "", sources: 0, chunks: 0, failed: true };
   const per = Math.floor(24000 / Math.max(1, rows.length));
   const lines = rows.map((s) => {
@@ -160,14 +172,14 @@ async function outline(token: string, nbId: string): Promise<{ text: string; sou
 
 // Passages numbered [1]..[n]. Whole-notebook tools pass two positions so the
 // padding comes from two regions of the material instead of just the start.
-async function retrieve(token: string, nbId: string, query: string, limit = 24, positions: (number | null)[] = [null]): Promise<{ text: string; chunks: Chunk[]; failed: boolean }> {
+async function retrieve(token: string, nbId: string, query: string, limit = 24, positions: (number | null)[] = [null], uid = ""): Promise<{ text: string; chunks: Chunk[]; failed: boolean }> {
   type Row = { id: string; source_title: string; heading: string | null; page_no: number | null; text: string };
   const seen = new Set<string>();
   const rows: Row[] = [];
   for (const pos of positions) {
     const args: C = { p_notebook_id: nbId, p_query: query.slice(0, 400), p_limit: Math.ceil(limit / positions.length) };
     if (pos != null) args.p_pos = Math.max(0, Math.min(1, pos));
-    const got = await rpc<Row[]>(token, "search_chunks", args);
+    const got = await rpc<Row[]>(token, "search_chunks", args, uid);
     if (!got) return { text: "", chunks: [], failed: true };
     for (const r of got) if (!seen.has(r.id)) { seen.add(r.id); rows.push(r); }
   }
@@ -184,9 +196,9 @@ async function retrieve(token: string, nbId: string, query: string, limit = 24, 
 }
 
 // Everything a prompt needs about the notebook. A notebook whose chunker
-// hasn't run yet still gets its raw text.
-async function material(token: string, nbId: string, query: string, limit = 24, positions: (number | null)[] = [null]): Promise<{ text: string; sources: number; failed: boolean }> {
-  const o = await outline(token, nbId);
+// hasn't run yet still gets its raw text. limit 0 = the outline alone.
+async function material(token: string, nbId: string, query: string, limit = 24, positions: (number | null)[] = [null], uid = ""): Promise<{ text: string; sources: number; failed: boolean }> {
+  const o = await outline(token, nbId, uid);
   if (o.failed) return { text: "", sources: 0, failed: true };
   if (!o.sources) return { text: "(no sources in this notebook yet)", sources: 0, failed: false };
   if (!o.chunks) {
@@ -197,7 +209,7 @@ async function material(token: string, nbId: string, query: string, limit = 24, 
       return { text: `NOTE: these sources aren't indexed into passages yet, so here is the raw text.\n\n${raw}`, sources: o.sources, failed: false };
     } catch { return { text: "", sources: o.sources, failed: true }; }
   }
-  const r = await retrieve(token, nbId, query, limit, positions);
+  const r = limit > 0 ? await retrieve(token, nbId, query, limit, positions, uid) : { text: "", failed: false };
   if (r.failed) return { text: "", sources: o.sources, failed: true };
   return { text: `OUTLINE OF HIS SOURCES:\n${o.text}${r.text ? `\n\nPASSAGES:\n${r.text}` : ""}`, sources: o.sources, failed: false };
 }
@@ -235,13 +247,14 @@ const cands = (v: unknown): Cand[] => {
 async function verify(c: Cand): Promise<{ v: Cand | null; reached: boolean }> {
   try {
     const r = await fetch(`https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D${c.id}&format=json`, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return { v: null, reached: true };
+    if (!r.ok) { console.error(`[studio:videos] rejected ${c.id} "${c.title}": oEmbed ${r.status}`); return { v: null, reached: true }; }
     const j = (await r.json()) as { title?: unknown; author_name?: unknown };
     const title = S(j.title, 160), channel = S(j.author_name, 80);
-    if (!title) return { v: null, reached: true };
     const want = sig(c.title);
     const shared = [...sig(title)].filter((w) => want.has(w)).length;
-    const same = shared >= 2 || (!!channel && channel.toLowerCase() === c.channel.toLowerCase());
+    const same = !!title && (shared >= 2 || (!!channel && channel.toLowerCase() === c.channel.toLowerCase()));
+    // a retitled or mistaken id shows up here, with what YouTube actually serves
+    if (!same) console.error(`[studio:videos] rejected ${c.id}: model said "${c.title}" (${c.channel}), YouTube says "${title}" (${channel})`);
     // YouTube's own title/channel, never the model's
     return { v: same ? { id: c.id, title, channel, why: c.why } : null, reached: true };
   } catch { return { v: null, reached: false }; }
@@ -254,7 +267,7 @@ Deno.serve(async (req) => {
   const friendly = (e: unknown, fallback: string) => {
     const m = e instanceof Error ? e.message : "";
     if (m.startsWith("BADJSON")) return `The model returned something unparseable — try again. (${m.slice(8, 90)})`;
-    if (m === "EMPTY") return "The model returned nothing twice — switch the Smart model in Settings and try again.";
+    if (m === "EMPTY") return "The model came back empty — tap to try again.";
     if (m.startsWith("HTTP_402") || m.includes("credit")) return "Your OpenRouter credits are out — top up and try again.";
     if (m.startsWith("HTTP_401")) return "OpenRouter rejected the key — re-paste it in Settings → AI key.";
     if (m.startsWith("HTTP_")) return `The model provider errored (${m.slice(0, 60)}) — try again.`;
@@ -262,69 +275,73 @@ Deno.serve(async (req) => {
   };
 
   try {
-    const token = (req.headers.get("Authorization") ?? "").replace("Bearer ", "");
-    const user = await getUser(token);
+    const body = await req.json();
+    // service mode: {secret, userId} from pg_cron / prep → act as that user with the service key
+    const svc = typeof body.secret === "string" && body.secret && isUuid(String(body.userId ?? "")) && body.secret === await secretOf("learn_prep_secret") ? String(body.userId) : "";
+    const token = svc ? SERVICE_KEY : (req.headers.get("Authorization") ?? "").replace("Bearer ", "");
+    const user = svc ? { id: svc } : await getUser(token);
     if (!user?.id) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const key = await apiKey();
     if (!key) return err("No AI key set — open Settings → AI key and paste your OpenRouter key.");
 
-    const body = await req.json();
     const mode = String(body.advisor ?? body.mode ?? "");
     const nbId = isUuid(String(body.topicId ?? "")) ? String(body.topicId) : "";
-    if (!["exam", "flashcards", "mindmap", "study-guide", "podcast", "videos"].includes(mode)) return err(`Unknown mode "${mode}".`);
-    if (!nbId) return err("Which notebook?");
-    const M = await models(token);
+    if (!["exam", "flashcards", "mindmap", "study-guide", "podcast", "videos", "syllabus", "grade", "prep"].includes(mode)) return err(`Unknown mode "${mode}".`);
+    // grade judges answers it is handed; prep walks every notebook
+    if (!nbId && mode !== "grade" && mode !== "prep") return err("Which notebook?");
+    const M = await models(token, user.id);
     const title = S(body.title, 120) || "this notebook";
 
     // Every tool is grounded in his material; a failed read is reported, never
     // dressed up as "no sources".
-    const ground = async (query: string, positions: (number | null)[]) => {
-      const m = await material(token, nbId, query, 24, positions);
+    const ground = async (query: string, positions: (number | null)[], limit = 24) => {
+      const m = await material(token, nbId, query, limit, positions, svc);
       if (m.failed) return { text: "", error: "Couldn't read your sources just now — try again in a moment." };
       if (!m.sources) return { text: "", error: "Add sources to this notebook first — everything here is built from your own material." };
       return { text: m.text, error: "" };
     };
     const run = async <T,>(sys: string, user: string, budget: number, tag: string) => parseJson<T>(noCites(await ask(M.smart, sys, [{ role: "user", content: user }], budget, key, tag)), tag);
 
-    // ── videos: real explainers for one chapter, verified against YouTube,
-    // transcripts cached so `learn` can cut clips from them ──────────────
-    if (mode === "videos") {
-      const chapterId = isUuid(String(body.chapterId ?? "")) ? String(body.chapterId) : "";
-      const ct = S(body.chapterTitle, 120), co = S(body.chapterObjective, 240), cs = S(body.chapterSummary, 300);
-      if (!chapterId || !ct) return err("Which chapter?");
+    // ── videos for one chapter: model candidates → verified against YouTube →
+    // transcripts cached so `learn` can cut clips → chapter row updated.
+    // Shared by the `videos` mode and `prep`.
+    type Ch = { id: string; title: string; objective: string; summary: string; videos: unknown };
+    const findVideos = async (ch: Ch): Promise<{ videos: Cand[]; withTranscripts: number; ready: boolean; error: string }> => {
+      const fail = (error: string) => ({ videos: [] as Cand[], withTranscripts: 0, ready: false, error });
       const suggest = async (): Promise<Cand[]> => {
-        const sys = `Suggest up to 8 REAL YouTube videos that teach EXACTLY this idea to a complete beginner — chapter "${ct}": ${co}${cs ? ` (${cs})` : ""}. Prefer well-known teaching channels: 3Blue1Brown, Khan Academy, CrashCourse, Professor Leonard, Veritasium, MinutePhysics, Marginal Revolution University, The Organic Chemistry Tutor, Kurzgesagt, TED-Ed. Only videos you are confident exist, with their exact title and channel name; "why" is one plain sentence on what the video explains.
+        const sys = `Suggest up to 8 REAL YouTube videos that teach EXACTLY this idea to a complete beginner — chapter "${ch.title}": ${ch.objective}${ch.summary ? ` (${ch.summary})` : ""}. Prefer these channels in order: 3Blue1Brown, Veritasium, Kurzgesagt, TED-Ed, CrashCourse, Stated Clearly, Marginal Revolution University, Khan Academy, TED. Only videos you are confident exist, with their exact title and channel name; "why" is one plain sentence on what the video explains.
 
 Return ONLY JSON: {"videos":[{"id":"the 11-character YouTube id","title":"…","channel":"…","why":"…"}]}`;
-        return cands((await run<{ videos?: unknown }>(sys, "Suggest the videos.", 2000, "videos")).videos).slice(0, 8);
+        return cands((await run<{ videos?: unknown }>(sys, "Suggest the videos.", 3000, "videos")).videos).slice(0, 8);
       };
       const check = async (list: Cand[]) => {
         const rs = await Promise.all(list.map(verify));
         return { kept: rs.map((r) => r.v).filter((v): v is Cand => !!v).slice(0, 4), reached: !list.length || rs.some((r) => r.reached) };
       };
       try {
-        const existing = cands(body.existing);
+        const existing = cands(ch.videos);
         let list = existing, fromModel = false;
         if (!list.length) { list = await suggest(); fromModel = true; }
         let { kept, reached } = await check(list);
         // hand-picked ids YouTube no longer serves → ask the model rather than save nothing
         if (!kept.length && reached && !fromModel) { list = await suggest(); ({ kept, reached } = await check(list)); }
-        if (!reached) return err("Couldn't reach YouTube to check the videos — try again in a moment.");
-        console.error(`[studio:videos] kept ${kept.length}/${list.length} for "${ct}"`);
+        if (!reached) return fail("Couldn't reach YouTube to check the videos — try again in a moment.");
+        console.error(`[studio:videos] kept ${kept.length}/${list.length} for "${ch.title}"`);
 
         // transcripts: reuse the shared cache; fetch what's missing (or failed
-        // more than a week ago) through the transcript function as this user
-        let withTranscripts = 0;
+        // more than a day ago) through the transcript function as this user
+        let withTranscripts = 0, ready = false;
         if (kept.length) {
           type TRow = { video_id: string; segments: unknown; error: string | null; fetched_at: string | null };
           const tr = await fetch(`${SUPABASE_URL}/rest/v1/video_transcripts?video_id=in.(${kept.map((v) => v.id).join(",")})&select=video_id,segments,error,fetched_at`, { headers: hdr(token) });
           if (!tr.ok) console.error(`[studio:videos] transcript cache read ${tr.status}`);
           const rows = tr.ok ? ((await tr.json()) as TRow[]) : [];
-          const stale = (r: TRow | undefined) => !r || (!arr(r.segments).length && (!r.error || !r.fetched_at || Date.now() - Date.parse(r.fetched_at) > 7 * 86400_000));
-          const pass = { Authorization: req.headers.get("Authorization") ?? "", apikey: req.headers.get("apikey") ?? ANON, "Content-Type": "application/json" };
-          const got = await Promise.all(kept.map(async (v) => {
+          const stale = (r: TRow | undefined) => !r || (!arr(r.segments).length && (!r.error || !r.fetched_at || Date.now() - Date.parse(r.fetched_at) > 86400_000));
+          const pass = { Authorization: `Bearer ${token}`, apikey: svc ? SERVICE_KEY : req.headers.get("apikey") ?? ANON, "Content-Type": "application/json" };
+          // cue count per kept video (0 = no usable transcript)
+          const cues = await Promise.all(kept.map(async (v): Promise<number> => {
             const row = rows.find((r) => r.video_id === v.id);
-            if (!stale(row)) return arr(row?.segments).length > 0;
+            if (!stale(row)) return arr(row?.segments).length;
             let segments: unknown[] = [], error = "";
             try {
               const r = await fetch(`${SUPABASE_URL}/functions/v1/transcript`, { method: "POST", headers: pass, body: JSON.stringify({ url: v.id }), signal: AbortSignal.timeout(25_000) });
@@ -338,28 +355,164 @@ Return ONLY JSON: {"videos":[{"id":"the 11-character YouTube id","title":"…","
                 method: "POST", headers: { ...hdr(token), Prefer: "resolution=merge-duplicates,return=minimal" },
                 body: JSON.stringify({ video_id: v.id, title: v.title, channel: v.channel, duration_s: Math.round(Number(last?.s ?? 0) + Number(last?.d ?? 0)), segments, error, fetched_at: new Date().toISOString() }),
               });
-              if (!up.ok) { console.error(`[studio:videos] transcript cache write ${up.status} ${(await up.text()).slice(0, 200)}`); return false; }
-            } catch (e) { console.error("[studio:videos] transcript cache write", e instanceof Error ? e.message : e); return false; }
-            return segments.length > 0;
+              if (!up.ok) { console.error(`[studio:videos] transcript cache write ${up.status} ${(await up.text()).slice(0, 200)}`); return 0; }
+            } catch (e) { console.error("[studio:videos] transcript cache write", e instanceof Error ? e.message : e); return 0; }
+            return segments.length;
           }));
-          withTranscripts = got.filter(Boolean).length;
+          withTranscripts = cues.filter((n) => n > 0).length;
+          // a clip needs a real transcript: ≥10 cues on at least one video
+          ready = cues.some((n) => n >= 10);
         }
 
-        // clips_ready even when transcripts failed — a lesson simply attaches no
-        // clip from that video. Nothing verified never wipes hand-picked videos.
-        const p = await fetch(`${SUPABASE_URL}/rest/v1/notebook_chapters?id=eq.${chapterId}&select=id`, {
+        // clips_ready only with a usable transcript; otherwise videos_tried_at
+        // lets the client retry this step once a day. Nothing verified never
+        // wipes hand-picked videos.
+        const p = await fetch(`${SUPABASE_URL}/rest/v1/notebook_chapters?id=eq.${ch.id}&select=id`, {
           method: "PATCH", headers: { ...hdr(token), Prefer: "return=representation" },
-          body: JSON.stringify({ videos: kept.length ? kept : existing, clips_ready: true }),
+          body: JSON.stringify({ videos: kept.length ? kept : existing, clips_ready: ready, ...(ready ? {} : { videos_tried_at: new Date().toISOString() }) }),
         });
         if (!p.ok || !((await p.json()) as unknown[]).length) {
           console.error(`[studio:videos] chapter PATCH ${p.status}`);
-          return err("Found the videos but couldn't save them to the chapter — try again.");
+          return fail("Found the videos but couldn't save them to the chapter — try again.");
         }
-        return ok({ videos: kept, withTranscripts, ready: true });
-      } catch (e) { return err(friendly(e, "Couldn't find videos for this chapter — try again.")); }
+        return { videos: kept, withTranscripts, ready, error: "" };
+      } catch (e) { return fail(friendly(e, "Couldn't find videos for this chapter — try again.")); }
+    };
+
+    if (mode === "videos") {
+      const chapterId = isUuid(String(body.chapterId ?? "")) ? String(body.chapterId) : "";
+      const ct = S(body.chapterTitle, 120);
+      if (!chapterId || !ct) return err("Which chapter?");
+      const v = await findVideos({ id: chapterId, title: ct, objective: S(body.chapterObjective, 240), summary: S(body.chapterSummary, 300), videos: body.existing });
+      return v.error ? err(v.error) : ok({ videos: v.videos, withTranscripts: v.withTranscripts, ready: v.ready });
     }
 
-    // ── exam: whole-notebook free recall ─────────────────────────────────
+    // ── prep: the nightly job — write the next runs so every notebook opens
+    // instantly. Sequential, ≤150s a chapter, honest per-chapter errors. ──
+    if (mode === "prep") {
+      if (!svc) return err("Prep runs from the nightly job only.");
+      const max = Math.max(1, Math.min(10, Math.floor(Number(body.max) || 3)));
+      const get = async <T,>(q: string): Promise<T[] | null> => {
+        try { const r = await fetch(`${SUPABASE_URL}/rest/v1/${q}`, { headers: hdr(token) }); if (!r.ok) console.error(`[studio:prep] read ${q.split("?")[0]} ${r.status}`); return r.ok ? (await r.json()) as T[] : null; } catch { return null; }
+      };
+      const nbs = await get<{ id: string }>(`notebooks?select=id&user_id=eq.${svc}&archived=eq.false&order=created_at.asc`);
+      if (!nbs) return err("Couldn't read the notebooks — try again.");
+      if (!nbs.length) return ok({ done: [], remaining: 0 });
+      const inNb = `notebook_id=in.(${nbs.map((n) => n.id).join(",")})`;
+      type Row = { id: string; notebook_id: string; idx: number; title: string; objective: string; summary: string; fade: number; quant: boolean; attempts: number; clips_ready: boolean; videos: unknown; run_at: string | null };
+      // a chapter is CLAIMED (run_at stamped) before it's built, so a parallel
+      // pass, or the next 6h of passes after a failed build, leave it alone;
+      // refresh: runs older than 21 days count as missing
+      const iso = (ago: number) => new Date(Date.now() - ago).toISOString();
+      const unclaimed = `or(run_at.is.null,run_at.lt.${iso(6 * 3600_000)})`;
+      const due = body.refresh === true ? `or=(and(run.is.null,${unclaimed}),run_at.lt.${iso(21 * 86400_000)})` : `run=is.null&${unclaimed.replace("or(", "or=(")}`;
+      const [list, all, st, done] = await Promise.all([
+        get<Row>(`notebook_chapters?select=id,notebook_id,idx,title,objective,summary,fade,quant,attempts,clips_ready,videos,run_at&${inNb}&${due}`),
+        get<{ notebook_id: string }>(`notebook_chapters?select=notebook_id&${inNb}`),
+        get<{ learn: C | null }>(`user_settings?select=learn&user_id=eq.${svc}`),
+        get<{ notebook_ids: string[] | null }>(`study_sessions?select=notebook_ids&user_id=eq.${svc}&status=eq.done`),
+      ]);
+      if (!list || !all || !done) return err("Couldn't read the chapters — try again.");
+      const interests = strs(st?.[0]?.learn?.interests, 80).slice(0, 6);
+      // a notebook he has never finished a round in opens on the teach card, not a pretest
+      const studied = new Set(done.flatMap((s) => s.notebook_ids ?? []));
+      const order = new Map(nbs.map((n, i) => [n.id, i]));
+      // never-tried first, in notebook order; anything claimed before goes to the back
+      const at = (r: Row) => (r.run_at ? Date.parse(r.run_at) : 0);
+      list.sort((a, b) => at(a) - at(b) || (order.get(a.notebook_id)! - order.get(b.notebook_id)!) || a.idx - b.idx);
+      const out: C[] = [];
+      for (const ch of list.slice(0, max)) {
+        const t0 = Date.now();
+        const row: C = { chapter_id: ch.id, title: ch.title, clips: "0/0", ms: 0 };
+        try {
+          await fetch(`${SUPABASE_URL}/rest/v1/notebook_chapters?id=eq.${ch.id}`, { method: "PATCH", headers: { ...hdr(token), Prefer: "return=minimal" }, body: JSON.stringify({ run_at: new Date().toISOString() }) });
+          if (!ch.clips_ready) { const v = await findVideos(ch); if (v.error) console.error(`[studio:prep] videos "${ch.title}": ${v.error}`); }
+          const left = 150_000 - (Date.now() - t0);
+          if (left < 5000) throw new Error("finding videos used the whole 150s");
+          const r = await fetch(`${SUPABASE_URL}/functions/v1/learn`, {
+            method: "POST", headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" }, signal: AbortSignal.timeout(left),
+            body: JSON.stringify({
+              secret: body.secret, userId: svc, advisor: "lesson", force: true, topicId: ch.notebook_id, chapterId: ch.id, chapterTitle: ch.title, chapterObjective: ch.objective, chapterSummary: ch.summary,
+              chapterPos: Math.min(1, ch.idx / Math.max(1, all.filter((c) => c.notebook_id === ch.notebook_id).length)), fade: ch.fade ?? 0, quant: !!ch.quant, n: 12,
+              interests, noPretest: !ch.attempts && !studied.has(ch.notebook_id),
+            }),
+          });
+          const j = r.ok ? (await r.json()) as { cards?: unknown; error?: string; cached?: boolean } : { error: `learn answered HTTP ${r.status}` };
+          const cards = arr(j.cards) as C[];
+          if (j.error || !cards.length) throw new Error(j.error || "no cards came back");
+          row.clips = `${cards.filter((c) => c.clip).length}/${cards.filter((c) => c.kind === "teach").length}`;
+          if (j.cached === false) row.error = "cards built but not saved to the chapter";
+        } catch (e) { row.error = e instanceof Error && e.name === "TimeoutError" ? "timed out after 150s" : e instanceof Error ? e.message : "failed"; }
+        row.ms = Date.now() - t0;
+        console.error(`[studio:prep] "${ch.title}" clips=${row.clips} ms=${row.ms}${row.error ? ` error=${row.error}` : ""}`);
+        out.push(row);
+      }
+      // remaining is re-read, not inferred; null says the count itself failed
+      const left = await get<{ id: string }>(`notebook_chapters?select=id&${inNb}&run=is.null`);
+      return ok({ done: out, remaining: left ? left.length : null });
+    }
+
+    // ── syllabus: design the chapters from the outline
+    if (mode === "syllabus") {
+      const kind = body.kind === "class" ? "class" : "personal";
+      const existing = strs(body.existing, 90);
+      const g = await ground("", [null], 0);
+      if (g.error) return err(g.error);
+      const sys = `You design the chapters of Ben's notebook "${title}" from an outline of HIS OWN sources. He has ADHD: concrete titles, one clear objective each.
+
+KIND: ${kind === "class" ? "class — 8 to 16 chapters organised by week/topic in the order the course teaches them (use the source weeks and headings); set \"week\" when the sources say it" : "personal — 5 to 8 chapters, trunk first: chapter 1 is the root idea everything hangs on, each later chapter depends only on earlier ones"}.
+- title: 2-6 words, concrete, no numbering. objective: ONE sentence starting with a verb — what he'll be able to DO. summary: one sentence on what it covers.
+- ${PLAIN} Titles in plain words; the objective explains any technical word it uses.
+- quant: true when the objective involves computing, deriving, solving or graphing.
+- trunk: one sentence — the root idea of the whole notebook.
+- Cover what is actually IN his material; never invent topics it doesn't support.${existing.length ? `\n- These chapters already exist — never reuse or rephrase them: ${existing.map((t) => `"${t}"`).join(", ")}` : ""}
+
+Return ONLY JSON: {"trunk":"…","chapters":[{"title":"…","objective":"…","summary":"…","week":3,"quant":false}]}
+
+HIS MATERIAL:
+${g.text}`;
+      try {
+        const p = await run<{ trunk?: string; chapters?: C[] }>(sys, "Design the chapters.", 5000, "syllabus");
+        const seen = new Set(existing.map((t) => t.toLowerCase()));
+        const chapters: C[] = [];
+        for (const c of arr(p.chapters) as C[]) {
+          const t = S(c?.title, 90);
+          if (!t || seen.has(t.toLowerCase())) continue;
+          seen.add(t.toLowerCase());
+          const week = Number(c.week);
+          chapters.push({
+            title: t, objective: S(c.objective, 220), summary: S(c.summary, 300), quant: c.quant === true,
+            ...(Number.isInteger(week) && week > 0 && week < 40 ? { week } : {}),
+          });
+        }
+        if (chapters.length < 2) return err("That came back too thin — try again.");
+        return ok({ trunk: S(p.trunk, 300), chapters: chapters.slice(0, kind === "class" ? 16 : 8) });
+      } catch (e) { return err(friendly(e, "Couldn't design the chapters — try again.")); }
+    }
+
+    // ── grade: judge free recall generously, on substance
+    if (mode === "grade") {
+      const items = arr(body.items).slice(0, 12);
+      if (!items.length) return err("Nothing to grade.");
+      const sys = `You grade Ben's free-recall answers. Grade on SUBSTANCE, not wording — if he has the idea, he gets it. Be generous but honest; 70 or above counts as correct.
+
+For each item return: score 0-100, correct (score >= 70), feedback (one warm sentence — what he got right, then the gap), missed (the key thing he left out, or "").
+
+Return ONLY JSON: {"results":[{"score":0,"correct":false,"feedback":"…","missed":"…"}]}
+Return exactly ${items.length} results, in order.`;
+      try {
+        const p = await run<{ results?: C[] }>(sys, JSON.stringify(items), 3000, "grade");
+        const results = arr(p.results).slice(0, items.length).map((r) => {
+          const score = Math.max(0, Math.min(100, Math.round(Number((r as C)?.score) || 0)));
+          return { score, correct: score >= 70, feedback: S((r as C)?.feedback, 400), missed: S((r as C)?.missed, 300) };
+        });
+        // score -1 = not graded; clients leave it out of averages
+        while (results.length < items.length) results.push({ score: -1, correct: false, feedback: "Not graded — try again", missed: "" });
+        return ok({ results });
+      } catch (e) { return err(friendly(e, "Couldn't grade that — try again.")); }
+    }
+
+    // ── exam: whole-notebook free recall
     if (mode === "exam") {
       const n = Math.max(4, Math.min(10, Number(body.n) || 8));
       const focus = S(body.focus, 200);
@@ -383,7 +536,7 @@ ${g.text}
       } catch (e) { return err(friendly(e, "Couldn't write the exam — try again.")); }
     }
 
-    // ── flashcards: whole notebook, one chapter, or a focus ──────────────
+    // ── flashcards: whole notebook, one chapter, or a focus
     if (mode === "flashcards") {
       const n = Math.max(8, Math.min(24, Number(body.n) || 16));
       const chapterId = isUuid(String(body.chapterId ?? "")) ? String(body.chapterId) : "";
@@ -415,7 +568,7 @@ ${g.text}
       } catch (e) { return err(friendly(e, "Couldn't write the cards — try again.")); }
     }
 
-    // ── mindmap ──────────────────────────────────────────────────────────
+    // ── mindmap
     if (mode === "mindmap") {
       const g = await ground(title, SPREAD);
       if (g.error) return err(g.error);
@@ -438,7 +591,7 @@ ${g.text}
       } catch (e) { return err(friendly(e, "Couldn't build the map — try again.")); }
     }
 
-    // ── study guide ──────────────────────────────────────────────────────
+    // ── study guide
     if (mode === "study-guide") {
       const g = await ground(title, SPREAD);
       if (g.error) return err(g.error);
@@ -474,7 +627,7 @@ ${g.text}
       } catch (e) { return err(friendly(e, "Couldn't build the study guide — try again.")); }
     }
 
-    // ── podcast: two-host audio overview, rendered on-device ─────────────
+    // ── podcast: two-host audio overview, rendered on-device
     if (mode === "podcast") {
       const focus = S(body.chapterTitle, 200);
       const g = await ground(focus, focus ? [null] : SPREAD);

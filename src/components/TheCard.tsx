@@ -38,13 +38,15 @@ import WorldBriefing from "./WorldBriefing";
 type Gig = { id: string; platform: string; hours: number; earnings: number };
 type Ev = { time: string; what: string };
 type GoalDue = { id: string; title: string };
-type LearnPlan = { state?: string; why?: string; count?: number; minutes?: number; at?: string | number };
+type LearnPlan = { state?: string; why?: string; count?: number; minutes?: number; at?: string | number; first?: { stem?: string } };
 
-// "Learn · 14 items · ~6 min · ECON quiz Fri" — one chip, no promise the
-// plan can't keep: it only says what the Learn home last computed, and only
-// if that was today — yesterday's count and reason would be a stale promise.
+// "Learn · What does a tariff do to the price you pay?" — one chip, no promise
+// the plan can't keep: it only says what the Learn home last computed, and only
+// if that was today — yesterday's question and reason would be a stale promise.
+// The first question beats the item count: a question pulls, a number doesn't.
 function learnChipText(p: LearnPlan): string {
   if (!p.at || studyDay(new Date(p.at)) !== studyDay(new Date())) return "Learn · open today's round";
+  if ((p.state === "ready" || p.state === "resume") && p.first?.stem) return `Learn · ${p.first.stem}`;
   const base = p.state === "resume" ? "Learn · pick up where you left off"
     : p.state === "done-today" ? "Learn · done for today ✓"
     : p.state === "ready" && p.count ? `Learn · ${p.count} item${p.count === 1 ? "" : "s"}${p.minutes ? ` · ~${p.minutes} min` : ""}`

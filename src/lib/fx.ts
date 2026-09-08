@@ -40,8 +40,40 @@ function tone(freq: number, start: number, dur: number, type: OscillatorType = "
   o.stop(a.currentTime + start + dur + 0.02);
 }
 
+// iPhone ringer switch: with the switch on silent, Web Audio is muted unless
+// the page is treated as media playback — which happens once an <audio>
+// element has played. So the first tap of a round plays a looping silent
+// clip through one element (the "unmute-ios-audio" pattern) and resumes the
+// context; every tone after that comes through. Web Audio's ctx.destination
+// stays the output — the element only flips the audio session category.
+let unlocked: HTMLAudioElement | null = null;
+function silentWav(): string {
+  // 0.1 s of 8 kHz 8-bit mono silence, header included — 844 bytes, no asset
+  const n = 800, bytes = new Uint8Array(44 + n);
+  const w = (o: number, v: string) => { for (let i = 0; i < v.length; i++) bytes[o + i] = v.charCodeAt(i); };
+  const u32 = (o: number, v: number) => { bytes[o] = v & 255; bytes[o + 1] = (v >> 8) & 255; bytes[o + 2] = (v >> 16) & 255; bytes[o + 3] = (v >> 24) & 255; };
+  const u16 = (o: number, v: number) => { bytes[o] = v & 255; bytes[o + 1] = (v >> 8) & 255; };
+  w(0, "RIFF"); u32(4, 36 + n); w(8, "WAVE"); w(12, "fmt "); u32(16, 16); u16(20, 1); u16(22, 1); u32(24, 8000); u32(28, 8000); u16(32, 1); u16(34, 8);
+  w(36, "data"); u32(40, n); bytes.fill(128, 44);
+  let bin = ""; bytes.forEach((b) => { bin += String.fromCharCode(b); });
+  return `data:audio/wav;base64,${btoa(bin)}`;
+}
+export function unlockAudio() {
+  if (typeof document === "undefined" || !soundOn()) return;
+  try {
+    if (!unlocked) {
+      unlocked = document.createElement("audio");
+      unlocked.src = silentWav(); unlocked.loop = true;   // the file is silence; a lowered volume could read as "not playing"
+      unlocked.setAttribute("playsinline", ""); unlocked.preload = "auto";
+    }
+    unlocked.play().catch(() => { /* not from a user gesture yet — the next tap tries again */ });
+    audio();
+  } catch { /* no audio on this device — the visual feedback still runs */ }
+}
+
 export const sfx = {
   pop() { tone(880, 0, 0.08, "triangle", 0.08); },                     // habit tap
+  miss() { tone(200, 0, 0.09, "triangle", 0.06); },                    // wrong answer: low and soft, never a buzzer
   coin() { tone(988, 0, 0.07, "square", 0.06); tone(1319, 0.07, 0.12, "square", 0.06); }, // quest claim / XP
   chest() { [659, 784, 988, 1319].forEach((f, i) => tone(f, i * 0.06, 0.1, "triangle", 0.07)); }, // bonus drop
   fanfare() { [523, 659, 784, 1047].forEach((f, i) => tone(f, i * 0.09, 0.22, "triangle", 0.1)); }, // day won

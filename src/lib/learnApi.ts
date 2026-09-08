@@ -10,18 +10,21 @@ import { supabase } from "./supabase";
 import { advisorCall } from "./notebook";
 import { emptyCardState, isDue, reviewCard, type NBCard } from "./fsrs";
 import {
-  buildSession, localDay, planFromRow, scoreSession, stemOf, studyDay, PASS_PCT,
-  type ChapterLite, type LearnHome, type NotebookLite, type RunCard, type SessionItem, type SessionPlan, type SessionResult,
-  type SessionScore, type StudySessionRow, type TodayState,
+  addDays, buildSession, isColdNotebook, localDay, planFromRow, planOpener, scoreSession, stemOf, studyDay, PASS_PCT,
+  type ChapterLite, type LearnHome, type LearnSettings, type NotebookLite, type PlanFirst, type RunCard, type SessionItem, type SessionPlan,
+  type SessionResult, type SessionScore, type StudySessionRow, type TodayState,
 } from "./session";
 
 const CARD_COLS = "id,notebook_id,chapter_id,front,back,hint,suspended,due,stability,difficulty,elapsed_days,scheduled_days,learning_steps,reps,lapses,state,last_review";
 const STEP_MS = 8000;         // no single finish step may hold the done screen longer than this
 const SESSION_XP = 15;        // showing up
-const RIGHT_XP = 3;           // per first-try right answer
+export const RIGHT_XP = 3;    // per first-try right answer (shown on the tap, banked once at the end)
 const CHAPTER_DONE_XP = 40;   // once per chapter, when its retention check holds
 const MAX_NEW_MISS_CARDS = 5;
 const MAX_CHAPTER_MISSES = 12;
+const VIDEOS_RETRY_MS = 24 * 3600_000;   // a failed video hunt is tried again after a day, not on every open
+const WEEK_GOAL_DEFAULT = 4;
+const NUDGE_TEXT_MAX = 140;
 
 // ─── localStorage keys (templates — swap {uid} for the user id) ─────────────
 export const PENDING_KEY = "learn:pending:{uid}";
@@ -30,14 +33,20 @@ const keyFor = (tpl: string, uid: string) => tpl.replace("{uid}", uid);
 
 // One summary, one writer (the Learn home after every reconcile), two readers:
 // the Learn home's instant render and TheCard's Learn chip. `nb` is the picked
-// notebook's title, for the "ECON 201 · 14 items" line.
-export type PlanCache = { state: TodayState; why: string; count: number; minutes: number; at: string; deadline?: string; nb?: string };
-export function cachePlan(uid: string, plan: SessionPlan, nb?: string): void {
+// notebook's title, for the "ECON 201 · 14 items" line. `first` is the
+// opening question — stem, choices and answer — so the Today card can ask it
+// before the network answers; a tap on it starts the round with that answer
+// counted (Session's `initialResult`).
+export type { PlanFirst };
+export type PlanCache = { state: TodayState; why: string; count: number; minutes: number; at: string; deadline?: string; nb?: string; first?: PlanFirst };
+export function cachePlan(uid: string, plan: SessionPlan, nb?: string, answered?: string[]): void {
   const d = plan.nextDeadline;
+  const first = planOpener(plan, nb ?? "", answered ?? []);
   const summary: PlanCache = {
     state: plan.state, why: plan.why, count: plan.items.length, minutes: plan.minutes, at: new Date().toISOString(),
     ...(d ? { deadline: `${d.course || ""} ${d.kind} ${new Date(d.due_at).toLocaleDateString("en-US", { weekday: "short" })}`.trim() } : {}),
     ...(nb ? { nb } : {}),
+    ...(first ? { first } : {}),
   };
   try { localStorage.setItem(keyFor(PLAN_CACHE_KEY, uid), JSON.stringify(summary)); } catch { /* storage full or private mode — the cache is a nicety */ }
 }
@@ -121,24 +130,66 @@ export async function fetchRun(chapterId: string): Promise<RunCard[] | null> {
   } catch { return null; }
 }
 
-type RunOpts = { misses?: string[]; force?: boolean };
+// `onNote` gets one honest line when the cards came back but their save did
+// not — the caller shows it wherever it shows progress.
+type RunOpts = { misses?: string[]; force?: boolean; onNote?: (note: string) => void };
+async function readLearn(uid: string): Promise<LearnSettings> {
+  const { data } = await supabase.from("user_settings").select("learn").eq("user_id", uid).maybeSingle();
+  return ((data as { learn?: LearnSettings } | null)?.learn ?? {}) as LearnSettings;
+}
+// Read-modify-write of user_settings.learn (a jsonb blob): callers run these
+// one after another, never side by side, or the second read would clobber
+// the first write.
+async function patchLearn(uid: string, patch: Partial<LearnSettings>): Promise<LearnSettings | null> {
+  const learn = { ...(await readLearn(uid)), ...patch };
+  const { error } = await supabase.from("user_settings").update({ learn }).eq("user_id", uid);
+  return error ? null : learn;
+}
+
+// The videos step is worth one try a day: it costs ~30 s and, when the
+// transcripts are not there, it fails the same way on every open.
+async function videosDue(ch: ChapterLite): Promise<boolean> {
+  if (ch.clips_ready) return false;
+  let tried = ch.videos_tried_at;
+  if (tried === undefined) {
+    const { data } = await supabase.from("notebook_chapters").select("clips_ready,videos_tried_at").eq("id", ch.id).maybeSingle();
+    const row = data as { clips_ready: boolean; videos_tried_at: string | null } | null;
+    if (row?.clips_ready) return false;
+    tried = row?.videos_tried_at ?? null;
+  }
+  return !tried || Date.now() - Date.parse(tried) > VIDEOS_RETRY_MS;
+}
+
 async function generateRun(nb: NotebookLite, ch: ChapterLite, opts: RunOpts): Promise<RunCard[] | null> {
   // Clips first: the lesson picks them from transcripts this call caches on
   // the chapter. If it fails the round simply carries no clips — never no round.
-  if (!ch.clips_ready) {
+  if (await videosDue(ch)) {
     await advisorCall({
       advisor: "videos", topicId: nb.id, chapterId: ch.id, chapterTitle: ch.title, chapterObjective: ch.objective, chapterSummary: ch.summary,
       existing: ch.videos,
     });
   }
-  const { count } = await supabase.from("notebook_chapters").select("id", { count: "exact", head: true }).eq("notebook_id", nb.id);
+  const [{ count }, uid] = await Promise.all([
+    supabase.from("notebook_chapters").select("id", { count: "exact", head: true }).eq("notebook_id", nb.id), currentUid(),
+  ]);
+  const interests = uid ? (await readLearn(uid)).interests ?? [] : [];
   const total = count ?? 0;
-  const json = await advisorCall<{ cards?: RunCard[] }>({
+  const json = await advisorCall<{ cards?: RunCard[]; cached?: boolean }>({
     advisor: "lesson", topicId: nb.id, chapterId: ch.id, chapterTitle: ch.title, chapterObjective: ch.objective, chapterSummary: ch.summary,
     chapterPos: total > 0 ? Math.min(1, Math.max(0, ch.idx / total)) : 0,
     misses: opts.misses ?? ch.misses ?? [], fade: ch.fade ?? 0, quant: !!ch.quant, n: 12, force: !!opts.force,
+    interests: interests.slice(0, 6),
+    // a first-ever round opens on the clip or the teach card, not on a guess
+    ...(isColdNotebook(nb, ch) ? { noPretest: true } : {}),
   });
   if (json.error || !Array.isArray(json.cards) || !json.cards.length) return null;
+  // The function writes the run to the chapter itself; when that PATCH failed
+  // the cards would be regenerated tomorrow (and differ). One more try from
+  // here, then say so — the round still runs on what came back.
+  if (json.cached === false) {
+    const { error } = await supabase.from("notebook_chapters").update({ run: json.cards, run_at: new Date().toISOString() }).eq("id", ch.id);
+    if (error) opts.onNote?.("Cards written but not saved — tomorrow may rewrite them.");
+  }
   return json.cards;
 }
 
@@ -374,15 +425,23 @@ function weekStart(day: string): string {
   dt.setDate(dt.getDate() - ((dt.getDay() + 6) % 7)); // Monday
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
 }
-async function bumpBestWeek(uid: string, now: Date): Promise<void> {
-  const { data } = await supabase.from("study_sessions").select("day").eq("user_id", uid).eq("status", "done").gte("day", weekStart(studyDay(now)));
+// The week so far: days studied, the goal he picked (3–6, default 4) and
+// whether this is the most days he has ever done in a week. A new best is
+// stored; the done screen says it. Never a streak, never a zero.
+export type WeekProgress = { days: number; goal: number; best: number; isBest: boolean };
+export const weekGoalOf = (learn: LearnSettings): number => Math.max(3, Math.min(6, Math.round(Number(learn.week_goal) || WEEK_GOAL_DEFAULT)));
+async function bumpBestWeek(uid: string, now: Date): Promise<WeekProgress | null> {
+  const { data, error } = await supabase.from("study_sessions").select("day").eq("user_id", uid).eq("status", "done").gte("day", weekStart(studyDay(now)));
+  if (error) return null;
   const days = new Set((data ?? []).map((r) => (r as { day: string }).day)).size;
-  const { data: s } = await supabase.from("user_settings").select("learn").eq("user_id", uid).maybeSingle();
-  const learn = ((s as { learn?: Record<string, unknown> } | null)?.learn ?? {}) as { best_week?: number };
-  if (days > (learn.best_week ?? 0)) await supabase.from("user_settings").update({ learn: { ...learn, best_week: days } }).eq("user_id", uid);
+  const learn = await readLearn(uid);
+  const prev = learn.best_week ?? 0;
+  const isBest = days > prev && prev >= 2;
+  if (days > prev) await patchLearn(uid, { best_week: days });
+  return { days, goal: weekGoalOf(learn), best: Math.max(prev, days), isBest };
 }
 
-export type Finished = { xp: number; note: string; chapter: ChapterOutcome | null };
+export type Finished = { xp: number; note: string; chapter: ChapterOutcome | null; week: WeekProgress | null };
 
 // THE finish path. A tapped Finish, a quit during the retry slots and a stale
 // row being settled all land here, so no way of ending a round can score
@@ -405,7 +464,8 @@ async function settle(
 
   const stats = {
     asked: score.asked, right: score.right, pct: score.pct, chapter_pct: score.chapterPct, misses: score.misses.length,
-    sure_but_wrong: score.sureButWrong, retention: score.retention, chapter_status: chapter?.status ?? null,
+    sure_but_wrong: score.sureButWrong, retention: score.retention, retention_asked: score.retention.asked, retention_ok: score.retention.right,
+    chapter_asked: score.chapterAsked, chapter_right: score.chapterRight, chapter_status: chapter?.status ?? null,
   };
   const closed = await step(closeSession(uid, id, plan, results, stats, now, day), false);
   if (closed) {
@@ -419,8 +479,9 @@ async function settle(
   const budget: NewCardBudget = { left: MAX_NEW_MISS_CARDS };
   await step(Promise.all(score.misses.filter((m) => m.kind !== "review").map((m) => recordMiss(uid, m, undefined, budget))), []);
 
-  const sessionXp = SESSION_XP + score.right * RIGHT_XP;
-  const banked = await step(claimXp(uid, day, `nb_sess_${id || now.getTime()}`, sessionXp), "failed");
+  // a quick feed pays per right answer only — showing up was already banked by the round
+  const sessionXp = (plan.scope === "quick" ? 0 : SESSION_XP) + score.right * RIGHT_XP;
+  const banked = sessionXp > 0 ? await step(claimXp(uid, day, `nb_sess_${id || now.getTime()}`, sessionXp), "failed") : "already";
   if (banked === "ok") xp += sessionXp;
   else if (banked === "failed") notes.push("Couldn't bank the XP this time.");
   if (chapter?.becameDone && plan.chapterId) {
@@ -429,9 +490,9 @@ async function settle(
   }
 
   await step(Promise.all(plan.notebookIds.map((nid) => supabase.from("notebooks").update({ last_studied_at: now.toISOString() }).eq("id", nid))), []);
-  await step(bumpBestWeek(uid, now), undefined);
+  const week = await step(bumpBestWeek(uid, now), null);
 
-  return { xp, note: notes.join(" · "), chapter };
+  return { xp, note: notes.join(" · "), chapter, week };
 }
 
 export function finishSession(uid: string, id: string, plan: SessionPlan, results: SessionResult[], score: SessionScore): Promise<Finished> {
@@ -465,10 +526,63 @@ export function predictNext(home: LearnHome, runs: Record<string, RunCard[]>, no
   return { chapter, cached: !!chapter && !plan.prepare };
 }
 
-// Write tomorrow's run now so the Today card never has to say "preparing".
-export async function prefetchNext(home: LearnHome, runs: Record<string, RunCard[]>, now: Date): Promise<void> {
+// What tomorrow's round opens with, from its (now cached) run: the chapter
+// and the first question's stem. Null when nothing is queued or the run is
+// not there yet. The push notification and the feed's closing line read it.
+export async function tomorrowOpener(home: LearnHome, now: Date): Promise<{ chapter: ChapterLite; nb: NotebookLite; stem: string } | null> {
+  const { chapter } = predictNext(home, {}, now);
+  const nb = chapter ? home.notebooks.find((n) => n.id === chapter.notebook_id) : null;
+  if (!chapter || !nb) return null;
+  const run = await fetchRun(chapter.id);
+  if (!run) return null;
+  const plan = buildSession(home, { [chapter.id]: run }, { now: new Date(now.getTime() + 86400000), scope: "today" });
+  const first = planOpener(plan, nb.title);
+  return first ? { chapter, nb, stem: first.stem.slice(0, NUDGE_TEXT_MAX) } : null;
+}
+
+// Write tomorrow's run now so the Today card never has to say "preparing",
+// then leave the opening question in user_settings.learn.nudge — the push
+// notification's body, so it can quote the real first question, never a nag.
+// Resolves to tomorrow's opening stem (null when nothing is queued yet) so the
+// done screen can show the open loop without a second read.
+export async function prefetchNext(home: LearnHome, runs: Record<string, RunCard[]>, now: Date, onNote?: (note: string) => void): Promise<string | null> {
   const { chapter, cached } = predictNext(home, runs, now);
-  if (!chapter || cached) return;
-  const nb = home.notebooks.find((n) => n.id === chapter.notebook_id);
-  if (nb) await ensureRun(nb, chapter);
+  if (chapter && !cached) {
+    const nb = home.notebooks.find((n) => n.id === chapter.notebook_id);
+    if (nb) await ensureRun(nb, chapter, { onNote });
+  }
+  try {
+    const [opener, uid] = await Promise.all([tomorrowOpener(home, now), currentUid()]);
+    if (!opener) return null;
+    if (uid) await patchLearn(uid, { nudge: { day: addDays(studyDay(now), 1), text: opener.stem, chapter_id: opener.chapter.id, nb: opener.nb.title } });
+    return opener.stem;
+  } catch { return null; /* the nudge falls back to its generic line */ }
+}
+
+// ─── "Didn't make sense" ────────────────────────────────────────────────────
+// One tap, no typing. A clip is switched off on its card for good (a patch to
+// the cached run — his own row); any card's stem joins chapter.misses so the
+// next regeneration rewrites it. Returns false only when nothing could be saved.
+export async function noSense(what: { chapterId: string; stem: string; clipK?: number }): Promise<boolean> {
+  const kind = what.clipK !== undefined ? "clip" : "card";
+  console.log(`[learn] no-sense ${what.chapterId} ${kind}`);
+  try {
+    if (what.clipK !== undefined) {
+      const run = await fetchRun(what.chapterId);
+      const card = run?.[what.clipK];
+      if (run && card && card.kind === "teach") {
+        run[what.clipK] = { ...card, clip_off: true };
+        const { error } = await supabase.from("notebook_chapters").update({ run }).eq("id", what.chapterId);
+        if (error) return false;
+      }
+    }
+    const front = what.stem.trim().slice(0, 600);
+    if (!front) return kind === "clip";
+    const { data, error } = await supabase.from("notebook_chapters").select("misses").eq("id", what.chapterId).maybeSingle();
+    if (error) return false;
+    const misses: string[] = Array.isArray(data?.misses) ? data.misses.map(String) : [];
+    if (misses.includes(front)) return true;
+    const { error: e2 } = await supabase.from("notebook_chapters").update({ misses: [...misses, front].slice(-MAX_CHAPTER_MISSES) }).eq("id", what.chapterId);
+    return !e2;
+  } catch { return false; }
 }
