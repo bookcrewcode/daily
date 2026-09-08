@@ -43,3 +43,6 @@ select cron.schedule('desk-tick', '1-59/5 * * * *', $$
       'cronSecret',(select decrypted_secret from vault.decrypted_secrets where name='desk_cron_secret')),
     timeout_milliseconds := 140000);
 $$);
+
+-- 2026-09-08, phase 6: the coach became the daily macro review (with the standard applied first).
+--   select cron.alter_job(job_id := 12, schedule := '5 5 * * *');   -- desk-coach, 01:05 ET every day

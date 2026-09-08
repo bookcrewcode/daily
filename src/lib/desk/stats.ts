@@ -113,3 +113,52 @@ export function tradesToDetect(hitRate: number, base = 0.5, z = 1.96): number {
   if (!(diff > 0)) return Infinity;
   return Math.ceil(((z * Math.sqrt(base * (1 - base))) / diff) ** 2);
 }
+
+/* ── the standard: perform or be replaced ──────────────────────────────── */
+// A seat on either jury is kept by performing. Once a juror has the sample, it
+// is cut when any one bar is missed and put on notice half way to a bar.
+export type CutRules = {
+  min_trades: number;    // scored shadow trades before a nightly juror is judged
+  min_sits: number;      // scored sit ballots before a sit juror is judged
+  max_loss_pct: number;  // shadow book this far below its start → cut
+  min_r: number;         // shrunk mean R per trade at or below this → cut
+  max_brier: number;     // Brier at or above this → cut (0.25 is a coin flip)
+  min_elo: number;       // Elo at or below this → cut
+  min_sit_right: number; // share of sit ballots on the right side, at or below this → cut
+};
+export const DEFAULT_CUT_RULES: CutRules = { min_trades: 12, min_sits: 30, max_loss_pct: 10, min_r: -0.15, max_brier: 0.3, min_elo: 1440, min_sit_right: 0.4 };
+export type StandingInput = {
+  seat: "nightly" | "sit"; elo: number; n_trades: number; sum_r: number; brier_sum: number; brier_n: number;
+  n_sits: number; n_sit_right: number; equity: number | null; start?: number;
+};
+export type Standing = { label: "fresh" | "meeting the standard" | "on notice" | "cut"; reasons: string[]; sample: number; needed: number };
+
+export function standingOf(x: StandingInput, rules: CutRules = DEFAULT_CUT_RULES): Standing {
+  const nightly = x.seat === "nightly";
+  const sample = nightly ? x.n_trades : x.n_sits;
+  const needed = nightly ? rules.min_trades : rules.min_sits;
+  if (sample < needed) return { label: "fresh", reasons: [`${sample} of ${needed} scored ${nightly ? "trades" : "sits"} before the standard applies`], sample, needed };
+  const cut: string[] = [], notice: string[] = [];
+  const test = (v: number | null, cutAt: number, noticeAt: number, worseIsHigher: boolean, text: (v: number) => string) => {
+    if (v === null || !Number.isFinite(v)) return;
+    const bad = worseIsHigher ? v >= cutAt : v <= cutAt;
+    const warn = worseIsHigher ? v >= noticeAt : v <= noticeAt;
+    if (bad) cut.push(text(v)); else if (warn) notice.push(text(v));
+  };
+  if (nightly) {
+    const start = x.start ?? 100000;
+    const loss = x.equity === null ? null : (1 - x.equity / start) * 100;
+    test(loss, rules.max_loss_pct, rules.max_loss_pct / 2, true, (v) => `book ${v.toFixed(1)}% below its start`);
+    const meanR = x.n_trades ? shrink(x.sum_r / x.n_trades, x.n_trades) : null;
+    test(meanR, rules.min_r, rules.min_r / 2, false, (v) => `shrunk R ${v.toFixed(2)} per trade`);
+  } else {
+    const right = x.n_sits ? x.n_sit_right / x.n_sits : null;
+    test(right, rules.min_sit_right, (rules.min_sit_right + 0.5) / 2, false, (v) => `right on ${(v * 100).toFixed(0)}% of its sits`);
+  }
+  const brier = x.brier_n > 0 ? x.brier_sum / x.brier_n : null;
+  test(brier, rules.max_brier, (rules.max_brier + 0.25) / 2, true, (v) => `Brier ${v.toFixed(2)} (0.25 is a coin flip)`);
+  test(x.elo, rules.min_elo, (rules.min_elo + 1500) / 2, false, (v) => `Elo ${Math.round(v)}`);
+  if (cut.length) return { label: "cut", reasons: cut, sample, needed };
+  if (notice.length) return { label: "on notice", reasons: notice, sample, needed };
+  return { label: "meeting the standard", reasons: [], sample, needed };
+}

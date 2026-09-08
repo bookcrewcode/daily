@@ -7,7 +7,7 @@
 import { supabase, SUPABASE_URL, SUPABASE_ANON, todayStr } from "@/lib/supabase";
 import type { PresetKey, Rules, Trade, TradeStatus } from "./types";
 import type { Tally } from "./vote";
-import type { CalibBin } from "./stats";
+import type { CalibBin, CutRules, Standing } from "./stats";
 
 export const TAPE_FN = `${SUPABASE_URL}/functions/v1/tape`;
 export const DESK_FN = `${SUPABASE_URL}/functions/v1/desk`;
@@ -39,6 +39,7 @@ export type Account = {
   preset: PresetKey; rules: Partial<Rules>; halted_until: string | null; halt_reason: string;
   roster: string[]; judge: string; budget_usd_per_run: number; ladder: Record<string, unknown>; leverage_cap_override: number | null;
   sit_roster: string[]; sit_budget_usd: number; cooldown_hours: number; strategies_off: string[];
+  bench: string[]; sit_bench: string[]; cut_rules: Partial<CutRules>;
 };
 
 const n = (v: unknown, d = 0) => { const x = Number(v); return Number.isFinite(x) ? x : d; };
@@ -53,6 +54,8 @@ function toAccount(row: Record<string, unknown>): Account {
     ladder: (row.ladder as Record<string, unknown>) ?? {}, leverage_cap_override: nul(row.leverage_cap_override),
     sit_roster: Array.isArray(row.sit_roster) ? (row.sit_roster as string[]) : [], sit_budget_usd: n(row.sit_budget_usd, 3), cooldown_hours: n(row.cooldown_hours, 4),
     strategies_off: Array.isArray(row.strategies_off) ? (row.strategies_off as string[]) : [],
+    bench: Array.isArray(row.bench) ? (row.bench as string[]) : [], sit_bench: Array.isArray(row.sit_bench) ? (row.sit_bench as string[]) : [],
+    cut_rules: (row.cut_rules as Partial<CutRules>) ?? {},
   };
 }
 
@@ -174,6 +177,7 @@ export const fmtR = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}R`;
 export type Rating = {
   model: string; elo: number; n_matches: number; n_trades: number; n_wins: number; sum_r: number;
   brier: number | null; brier_n: number; calib: CalibBin[]; n_abstain: number; n_sits: number; n_sit_right: number; updated_at: string;
+  status: string; standing: Record<string, Standing & { as_of?: string }>; cut_at: string | null; cut_reason: string;
 };
 export async function loadRatings(uid: string): Promise<{ ratings: Rating[]; error: string }> {
   const { data, error } = await supabase.from("desk_ratings").select("*").eq("user_id", uid);
@@ -183,6 +187,7 @@ export async function loadRatings(uid: string): Promise<{ ratings: Rating[]; err
       model: String(r.model), elo: n(r.elo, 1500), n_matches: n(r.n_matches), n_trades: n(r.n_trades), n_wins: n(r.n_wins), sum_r: n(r.sum_r),
       brier: n(r.brier_n) > 0 ? n(r.brier_sum) / n(r.brier_n) : null, brier_n: n(r.brier_n), calib: Array.isArray(r.calib) ? (r.calib as CalibBin[]) : [],
       n_abstain: n(r.n_abstain), n_sits: n(r.n_sits), n_sit_right: n(r.n_sit_right), updated_at: String(r.updated_at ?? ""),
+      status: String(r.status ?? "active"), standing: (r.standing as Rating["standing"]) ?? {}, cut_at: r.cut_at ? String(r.cut_at) : null, cut_reason: String(r.cut_reason ?? ""),
     })),
     error: "",
   };
@@ -216,18 +221,39 @@ export async function loadLessons(uid: string): Promise<{ lessons: Lesson[]; err
 }
 
 export type CoachCell = { n: number; hit: number | null; mean_r: number | null; shrunk_r: number | null; profit_factor: number | null; t: number | null; label: string };
-export type CoachCard = { week_start: string; card: { as_of?: string; desk?: Record<string, Record<string, CoachCell> | CoachCell>; models?: Record<string, CoachCell & { elo?: number; brier?: number | null; matches?: number }> }; review: string; created_at: string };
-export async function loadCards(uid: string, limit = 4): Promise<{ cards: CoachCard[]; error: string }> {
-  const { data, error } = await supabase.from("desk_cards").select("*").eq("user_id", uid).order("week_start", { ascending: false }).limit(limit);
-  if (error) return { cards: [], error: "Couldn't load the coach's cards." };
+export type TradeSummary = { symbol: string; side: string; source: string; strategy: string; timeframe: string; r: number; pnl: number; exit: string; closed: string; quadrant: string; grade: string; lesson: string; why: string };
+export type RosterChange = { seat: string; action: string; model: string; replaced_by: string; reason: string };
+export type StandingRow = Standing & { model: string; seat: string };
+export type CoachModel = CoachCell & { elo?: number; brier?: number | null; matches?: number; sits?: number; sit_right?: number | null; status?: string; standing?: string };
+export type CoachCard = {
+  day: string; week_start: string;
+  card: {
+    as_of?: string; desk?: Record<string, Record<string, CoachCell> | CoachCell>; models?: Record<string, CoachModel>; strategies?: Record<string, CoachCell>;
+    strategy_rules?: Record<string, { size_mult?: number; benched_until?: string | null; label?: string }>; trades?: TradeSummary[]; open?: string[];
+    sits_week?: { n: number; taken: number }; standing?: StandingRow[]; roster_changes?: RosterChange[];
+  };
+  review: string; created_at: string;
+};
+export async function loadCards(uid: string, limit = 7): Promise<{ cards: CoachCard[]; error: string }> {
+  const { data, error } = await supabase.from("desk_cards").select("*").eq("user_id", uid).order("day", { ascending: false }).limit(limit);
+  if (error) return { cards: [], error: "Couldn't load the reviews." };
   return {
-    cards: ((data ?? []) as Record<string, unknown>[]).map((r) => ({ week_start: String(r.week_start), card: (r.card as CoachCard["card"]) ?? {}, review: String(r.review ?? ""), created_at: String(r.created_at ?? "") })),
+    cards: ((data ?? []) as Record<string, unknown>[]).map((r) => ({ day: String(r.day ?? r.week_start), week_start: String(r.week_start), card: (r.card as CoachCard["card"]) ?? {}, review: String(r.review ?? ""), created_at: String(r.created_at ?? "") })),
+    error: "",
+  };
+}
+export type RosterLogRow = { id: string; at: string; seat: string; action: string; model: string; replaced_by: string; reason: string };
+export async function loadRosterLog(uid: string, limit = 20): Promise<{ log: RosterLogRow[]; error: string }> {
+  const { data, error } = await supabase.from("desk_roster_log").select("*").eq("user_id", uid).order("at", { ascending: false }).limit(limit);
+  if (error) return { log: [], error: "Couldn't load the roster log." };
+  return {
+    log: ((data ?? []) as Record<string, unknown>[]).map((r) => ({ id: String(r.id), at: String(r.at ?? ""), seat: String(r.seat ?? ""), action: String(r.action ?? ""), model: String(r.model ?? ""), replaced_by: String(r.replaced_by ?? ""), reason: String(r.reason ?? "") })),
     error: "",
   };
 }
 
 /* ── settings ───────────────────────────────────────────────────────────── */
-export type AccountPatch = { preset?: PresetKey; roster?: string[]; judge?: string; budget_usd_per_run?: number; leverage_cap_override?: number | null; rules?: Partial<Rules>; sit_roster?: string[]; sit_budget_usd?: number; cooldown_hours?: number; strategies_off?: string[] };
+export type AccountPatch = { preset?: PresetKey; roster?: string[]; judge?: string; budget_usd_per_run?: number; leverage_cap_override?: number | null; rules?: Partial<Rules>; sit_roster?: string[]; sit_budget_usd?: number; cooldown_hours?: number; strategies_off?: string[]; bench?: string[]; sit_bench?: string[] };
 export async function updateAccount(uid: string, patch: AccountPatch): Promise<{ error: string }> {
   const { error } = await supabase.from("desk_accounts").update(patch).eq("user_id", uid);
   return { error: error ? "Couldn't save the desk settings." : "" };
@@ -350,4 +376,15 @@ export async function loadStrategies(uid: string): Promise<{ strategies: Strateg
     })),
     error: "",
   };
+}
+
+/* ── the juries behind a trade: what each model said when it was taken ──── */
+export type SitVotes = { votes: SitRow["votes"]; decision: Record<string, unknown> };
+export async function loadSitVotes(ids: string[]): Promise<{ votes: Record<string, SitVotes>; error: string }> {
+  if (!ids.length) return { votes: {}, error: "" };
+  const { data, error } = await supabase.from("desk_sits").select("id,votes,decision").in("id", ids.slice(0, 200));
+  if (error) return { votes: {}, error: "Couldn't load the juries." };
+  const out: Record<string, SitVotes> = {};
+  for (const r of (data ?? []) as Record<string, unknown>[]) out[String(r.id)] = { votes: Array.isArray(r.votes) ? (r.votes as SitRow["votes"]) : [], decision: (r.decision as Record<string, unknown>) ?? {} };
+  return { votes: out, error: "" };
 }

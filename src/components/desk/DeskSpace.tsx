@@ -3,7 +3,8 @@
 // The Desk — the space. Six gears: Now (the desk this minute, and the
 // nightly verdict under it), Feed (the news funnel), Debate (the sits and the
 // nightly argument), Book (the ledger), League (models and strategies against
-// each other), Learn (the strategies and the lessons). Paper money on every
+// each other, and against the standard), Learn (the journal, the macro review,
+// the strategies and the lessons). Paper money on every
 // screen, said plainly.
 //
 // This shell owns the account row and the live marks; the gears render.
@@ -18,10 +19,9 @@ import Book from "./Book";
 import Tonight from "./Tonight";
 import Debate from "./Debate";
 import League from "./League";
-import Lessons from "./Lessons";
+import Learn from "./Learn";
 import DeskSettings from "./DeskSettings";
 import Feed from "./Feed";
-import Strategies from "./Strategies";
 import Now from "./Now";
 
 type Gear = "now" | "feed" | "debate" | "book" | "league" | "lessons";
@@ -142,13 +142,8 @@ export default function DeskSpace({ uid }: { uid: string }) {
         {gear === "feed" && <Feed />}
         {gear === "debate" && <Debate uid={uid} />}
         {gear === "book" && <Book uid={uid} account={account} curve={curve} live={live} today={today} onRefresh={() => { load(); refreshLive(); }} />}
-        {gear === "league" && <League uid={uid} account={account} live={live} />}
-        {gear === "lessons" && (
-          <>
-            <Strategies uid={uid} account={account} onSaved={load} />
-            <Lessons uid={uid} />
-          </>
-        )}
+        {gear === "league" && <League uid={uid} account={account} live={live} onChanged={load} />}
+        {gear === "lessons" && <Learn uid={uid} account={account} live={live} onSaved={load} />}
       </div>
     </div>
   );
