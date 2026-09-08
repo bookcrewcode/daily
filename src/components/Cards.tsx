@@ -1,20 +1,32 @@
 "use client";
 
-// 🃏 Flashcards + spaced repetition (FSRS). Cards are built from your material;
-// FSRS decides WHEN each one comes back so it actually sticks — the reason to
-// return daily. A review session flips a card, you rate how it felt (Again/
-// Hard/Good/Easy), and the schedule updates. This is the retention engine the
-// old learning loop was missing.
+// 🃏 Flashcards + spaced review (FSRS). Cards are built from your material or
+// born from a question you missed in a session; the scheduler decides WHEN
+// each one comes back so it actually sticks. A review flips a card, you say
+// how it felt (Missed / Barely / Got it), and the next date updates — the real
+// interval sits under each button so the choice is never a guess.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { advisorCall } from "@/lib/notebook";
-import { emptyCardState, reviewCard, intervalPreview, isDue, RATINGS, type CardState, type NBCard as CardRow } from "@/lib/fsrs";
+import { emptyCardState, reviewCard, intervalPreview, isDue, RATINGS, type CardState, type NBCard } from "@/lib/fsrs";
 import { sfx, buzz } from "@/lib/fx";
 import { Card } from "./ui";
 
-const CARD_COLS = "id,notebook_id,chapter_id,front,back,hint,suspended,due,stability,difficulty,elapsed_days,scheduled_days,learning_steps,reps,lapses,state,last_review";
+const CARD_COLS = "id,notebook_id,chapter_id,front,back,hint,suspended,origin,due,stability,difficulty,elapsed_days,scheduled_days,learning_steps,reps,lapses,state,last_review";
 const SESSION_MAX = 30;
+
+type CardRow = NBCard & { origin?: string };
+const fromMiss = (c: CardRow) => c.origin === "miss";
+
+// Three honest buttons. "Easy" is gone: on a phone he taps fast and a fourth
+// option only splits the good/easy hair; FSRS gets Again/Hard/Good.
+const REVIEW_BUTTONS: { label: string; key: string }[] = [
+  { label: "Missed", key: "again" },
+  { label: "Barely", key: "hard" },
+  { label: "Got it", key: "good" },
+];
+const ratingOf = (key: string) => RATINGS.find((r) => r.key === key)!;
 
 export default function Cards({ uid, notebookId }: { uid: string; notebookId: string }) {
   const [cards, setCards] = useState<CardRow[]>([]);
@@ -41,10 +53,12 @@ export default function Cards({ uid, notebookId }: { uid: string; notebookId: st
   }, [uid, notebookId]);
   useEffect(() => { load(); }, [load]);
 
-  // recompute "due" as wall-clock passes, so a long-open deck updates on its own
-  const [tick, setTick] = useState(0);
+  // recompute "due" as wall-clock passes, so a long-open deck updates on its
+  // own: the interval forces a render every 45s and the filter runs per render
+  // (it reads the clock, so memoising on `cards` alone would freeze it)
+  const [, setTick] = useState(0);
   useEffect(() => { const t = setInterval(() => setTick((n) => n + 1), 45000); return () => clearInterval(t); }, []);
-  const dueCards = useMemo(() => cards.filter((c) => isDue(c)), [cards, tick]);
+  const dueCards = cards.filter((c) => isDue(c));
 
   async function generate() {
     if (busy) return;
@@ -71,16 +85,17 @@ export default function Cards({ uid, notebookId }: { uid: string; notebookId: st
     setQueue(q); setQi(0); setFlipped(false); setDone(0); setErr(""); setMode("review");
   }
 
-  async function rate(gradeIdx: number) {
+  async function rate(key: string) {
     if (rating.current) return;
     const cardRow = queue[qi];
     if (!cardRow) return;
     rating.current = true; setErr("");
     try {
-      const next: CardState = reviewCard(cardRow, RATINGS[gradeIdx].rating);
+      const r = ratingOf(key);
+      const next: CardState = reviewCard(cardRow, r.rating);
       const { error } = await supabase.from("notebook_cards").update(next).eq("id", cardRow.id);
-      if (error) { setErr("Couldn't save that rating — try again."); return; } // stay on card; it's still due
-      if (RATINGS[gradeIdx].rating === 1) buzz(20); else sfx.pop();
+      if (error) { setErr("Couldn't save that — try again."); return; } // stay on card; it's still to review
+      if (r.rating === 1) buzz(20); else sfx.pop();
       setDone((d) => d + 1);
       // advance
       if (qi + 1 < queue.length) { setQi(qi + 1); setFlipped(false); }
@@ -129,6 +144,7 @@ export default function Cards({ uid, notebookId }: { uid: string; notebookId: st
             <div className="flip-face">
               <Card tone="paper" className="min-h-[12rem] h-full grid place-items-center text-center">
                 <div>
+                  {fromMiss(cardRow) && <MissBadge />}
                   <p className="study-prose text-[1.15rem]">{cardRow.front}</p>
                   {cardRow.hint && <p className="text-xs opacity-50 mt-3">hint: {cardRow.hint}</p>}
                   <p className="text-[10px] uppercase tracking-widest opacity-40 mt-4">tap to flip</p>
@@ -144,15 +160,22 @@ export default function Cards({ uid, notebookId }: { uid: string; notebookId: st
         </button>
 
         {flipped ? (
-          <div className="grid grid-cols-4 gap-1.5 mt-3">
-            {RATINGS.map((r, i) => (
-              <button key={r.key} onClick={() => rate(i)} disabled={rating.current}
-                className="rounded-xl py-2.5 active:scale-95 disabled:opacity-50 flex flex-col items-center border"
-                style={{ borderColor: `${r.hue}55`, background: `${r.hue}18` }}>
-                <span className="text-sm font-bold" style={{ color: r.hue }}>{r.label}</span>
-                <span className="text-[10px] opacity-50">{previews?.[r.key] ?? ""}</span>
-              </button>
-            ))}
+          <div className="grid grid-cols-3 gap-1.5 mt-3">
+            {REVIEW_BUTTONS.map((b) => {
+              const r = ratingOf(b.key);
+              // "Missed" is due again within minutes (FSRS relearning). This
+              // deck doesn't re-serve it in the same sitting, but it's back the
+              // next time the deck opens — so never promise "tomorrow".
+              const when = b.key === "again" ? "again soon" : previews?.[b.key] ? `in ${previews[b.key]}` : "";
+              return (
+                <button key={b.key} onClick={() => rate(b.key)} disabled={rating.current}
+                  className="rounded-xl py-2.5 active:scale-95 disabled:opacity-50 flex flex-col items-center border"
+                  style={{ borderColor: `${r.hue}55`, background: `${r.hue}18` }}>
+                  <span className="text-sm font-bold" style={{ color: r.hue }}>{b.label}</span>
+                  <span className="text-[10px] opacity-50">{when}</span>
+                </button>
+              );
+            })}
           </div>
         ) : (
           <p className="text-center text-xs opacity-40 mt-3">Answer it in your head, then flip.</p>
@@ -169,7 +192,7 @@ export default function Cards({ uid, notebookId }: { uid: string; notebookId: st
         <div className="flex items-center gap-4">
           <div className="text-center">
             <p className="font-display text-3xl font-black leading-none" style={{ color: dueCards.length ? "var(--neon)" : undefined }}>{dueCards.length}</p>
-            <p className="text-[10px] uppercase tracking-widest opacity-40 mt-1">due now</p>
+            <p className="text-[10px] uppercase tracking-widest opacity-40 mt-1">to review</p>
           </div>
           <div className="w-px self-stretch bg-white/10" />
           <div className="text-center">
@@ -193,7 +216,7 @@ export default function Cards({ uid, notebookId }: { uid: string; notebookId: st
       {err && <p className="text-xs text-orange-400">{err}</p>}
 
       {cards.length === 0 && !busy && (
-        <p className="text-sm opacity-40">No cards yet — generate a set from your sources and FSRS handles the rest.</p>
+        <p className="text-sm opacity-40">No cards yet — generate a set from your sources, or miss a question in a session and it lands here on its own. Spaced review decides when each one comes back.</p>
       )}
 
       {cards.length > 0 && (
@@ -202,10 +225,10 @@ export default function Cards({ uid, notebookId }: { uid: string; notebookId: st
           {cards.map((c) => (
             <div key={c.id} className="rounded-lg bg-white/[0.03] border border-white/10 px-3 py-2 flex items-start gap-2">
               <div className="min-w-0 flex-1">
-                <p className="text-sm truncate">{c.front}</p>
+                <p className="text-sm truncate">{fromMiss(c) && <span className="text-[9px] uppercase tracking-wider text-orange-300 font-semibold mr-1.5">from a miss</span>}{c.front}</p>
                 <p className="text-xs opacity-40 truncate">{c.back}</p>
               </div>
-              {isDue(c) ? <span className="text-[9px] text-[var(--neon)] shrink-0 mt-1">due</span> : null}
+              {isDue(c) ? <span className="text-[9px] text-[var(--neon)] shrink-0 mt-1">to review</span> : null}
               <button onClick={() => removeCard(c.id)} className="opacity-30 text-xs shrink-0 active:scale-90">✕</button>
             </div>
           ))}
@@ -213,4 +236,10 @@ export default function Cards({ uid, notebookId }: { uid: string; notebookId: st
       )}
     </div>
   );
+}
+
+// A card that exists because a session question went wrong. Said plainly, once,
+// so the deck never looks like it invented a question he never saw.
+function MissBadge() {
+  return <p className="text-[9px] uppercase tracking-wider text-orange-300 font-semibold mb-2">from a miss — a question you got wrong in a session</p>;
 }

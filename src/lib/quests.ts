@@ -47,7 +47,7 @@ export const QUEST_POOL: Quest[] = [
     progress: (c) => ({ done: c.gigShiftsToday >= 1, now: Math.min(c.gigShiftsToday, 1), total: 1 }) },
   { key: "deepwork", emoji: "⏱️", label: "Finish a focus block", xp: 30,
     progress: (c) => ({ done: c.focusToday >= 1, now: Math.min(c.focusToday, 1), total: 1 }) },
-  { key: "scholar", emoji: "🌳", label: "Save a learning session", xp: 30,
+  { key: "scholar", emoji: "🌳", label: "Finish a study session in Learn", xp: 30,
     progress: (c) => ({ done: c.learningSessionsToday >= 1, now: Math.min(c.learningSessionsToday, 1), total: 1 }) },
   { key: "frames", emoji: "💫", label: "Morning + night affirmations", xp: 25,
     progress: (c) => ({ done: c.affirmMorning && c.affirmNight, now: (c.affirmMorning ? 1 : 0) + (c.affirmNight ? 1 : 0), total: 2 }) },
@@ -100,7 +100,8 @@ export async function loadQuestCtx(uid: string, proteinGoal: number): Promise<Qu
     supabase.from("gig_shifts").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("day", day),
     supabase.from("focus_sessions").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("day", day),
     supabase.from("affirmations").select("period").eq("user_id", uid).eq("day", day),
-    supabase.from("learning_sessions").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("day", day),
+    // a finished Learn session (study_sessions) — the legacy learning_sessions table is never written any more
+    supabase.from("study_sessions").select("id", { count: "exact", head: true }).eq("user_id", uid).eq("day", day).eq("status", "done"),
     supabase.from("nights").select("top3").eq("user_id", uid).eq("day", dateStr(tmrw)).maybeSingle(),
   ]);
   const periods = new Set((affirm.data ?? []).map((a) => a.period as string));

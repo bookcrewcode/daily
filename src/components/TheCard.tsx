@@ -28,6 +28,8 @@ import {
 } from "@/lib/theGame";
 import { splitsFor } from "@/lib/dayList";
 import { burstConfetti } from "@/lib/confetti";
+import { readPlanCache } from "@/lib/learnApi";
+import { studyDay } from "@/lib/session";
 import { sfx, buzz } from "@/lib/fx";
 import { Num, Eyebrow, SegRing, ProgressCircle } from "./ui";
 import WorldBriefing from "./WorldBriefing";
@@ -35,6 +37,19 @@ import WorldBriefing from "./WorldBriefing";
 type Gig = { id: string; platform: string; hours: number; earnings: number };
 type Ev = { time: string; what: string };
 type GoalDue = { id: string; title: string };
+type LearnPlan = { state?: string; why?: string; count?: number; minutes?: number; at?: string | number };
+
+// "Learn · 14 items · ~6 min · ECON quiz Fri" — one chip, no promise the
+// plan can't keep: it only says what the Learn home last computed, and only
+// if that was today — yesterday's count and reason would be a stale promise.
+function learnChipText(p: LearnPlan): string {
+  if (!p.at || studyDay(new Date(p.at)) !== studyDay(new Date())) return "Learn · open today's round";
+  const base = p.state === "resume" ? "Learn · pick up where you left off"
+    : p.state === "done-today" ? "Learn · done for today ✓"
+    : p.state === "ready" && p.count ? `Learn · ${p.count} item${p.count === 1 ? "" : "s"}${p.minutes ? ` · ~${p.minutes} min` : ""}`
+    : "Learn · open today's round";
+  return p.why ? `${base} · ${p.why}` : base;
+}
 
 const GD_COLS = "day,r_launch,r_shutdown,b,s,bonus_uber,bonus_trading,bonus_dev,bonus_chess,frozen,learn_line,splits,items_done,items_total";
 
@@ -80,6 +95,15 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   const [gHours, setGHours] = useState("");
   const [gEarn, setGEarn] = useState("");
 
+  // last Learn plan summary, written by the Learn home (learnApi PLAN_CACHE_KEY)
+  const [learnPlan, setLearnPlan] = useState<LearnPlan | null>(null);
+  useEffect(() => {
+    const read = () => { setLearnPlan(readPlanCache(uid)); };
+    read();
+    document.addEventListener("visibilitychange", read);
+    return () => document.removeEventListener("visibilitychange", read);
+  }, [uid]);
+
   const fxRef = useRef<{ day: string; fx: FxStore }>({ day: "", fx: { closed: false, ten: false, gold: false } });
   const dayRef = useRef(todayStr());
   const pulledGoals = useRef("");   // the day whose due-goals were already pulled in
@@ -104,7 +128,11 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
       const [gd, ni, gl, cb, gg] = await Promise.all([
         supabase.from("game_days").select(GD_COLS).eq("user_id", uid).gte("day", SEASON_START),
         supabase.from("nights").select("items").eq("user_id", uid).eq("day", today).maybeSingle(),
-        supabase.from("goals").select("id,title").eq("user_id", uid).eq("status", "active").eq("due", today),
+        // due today or up to a week overdue, nearest due first, at most 3 — an
+        // unfinished deadline keeps showing up until it's checked off, but a
+        // stale backlog must never bury the day's real list
+        supabase.from("goals").select("id,title").eq("user_id", uid).eq("status", "active")
+          .gte("due", addDays(today, -7)).lte("due", today).order("due", { ascending: true }).limit(3),
         supabase.from("class_blocks").select("label,location,start_t").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
         supabase.from("gig_shifts").select("id,platform,hours,earnings").eq("user_id", uid).eq("day", today).order("created_at"),
       ]);
@@ -315,6 +343,9 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
       await supabase.from("goals")
         .update({ status: nextDone ? "done" : "active", updated_at: new Date().toISOString() })
         .eq("id", it.goal_id);
+      // a goal mirrored from a Canvas/syllabus deadline: keep the deadline in
+      // step so the Classes card and the next sync agree with the tick
+      await supabase.from("deadlines").update({ done: nextDone }).eq("goal_id", it.goal_id);
     }
   }
 
@@ -558,6 +589,15 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
               </div>
             )}
           </div>
+
+          {learnPlan && (
+            <button onClick={() => onGoTab("learning")}
+              className="w-full mt-2 rounded-xl border border-[var(--neon)]/30 bg-[var(--neon)]/[0.08] px-3.5 py-2.5 text-left flex items-center gap-2 active:scale-[0.99]">
+              <span className="shrink-0">📚</span>
+              <p className="text-[12px] font-semibold text-[var(--neon)] flex-1 min-w-0 truncate">{learnChipText(learnPlan)}</p>
+              <span className="text-[10px] opacity-45">→</span>
+            </button>
+          )}
 
           {/* Bonus — things that aren't on the list but still count */}
           <div className="mt-3 rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5">

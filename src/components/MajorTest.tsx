@@ -20,6 +20,7 @@ export default function MajorTest({ uid, notebookId, onClose, onChanged }: {
   const [answers, setAnswers] = useState<string[]>([]);
   const [results, setResults] = useState<GradeResult[] | null>(null);
   const [score, setScore] = useState(0);
+  const [ungraded, setUngraded] = useState(0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -42,19 +43,23 @@ export default function MajorTest({ uid, notebookId, onClose, onChanged }: {
     const json = await advisorCall<{ results?: GradeResult[]; error?: string }>({ advisor: "grade", topicId: notebookId, items });
     if (json.error || !json.results?.length) { setBusy(false); setErr(json.error || "Couldn't grade the exam — try again."); return; }
     const res = json.results.slice(0, questions.length);
-    const avg = res.length ? Math.round(res.reduce((s, r) => s + r.score, 0) / res.length) : 0;
+    // score < 0 = the grader padded a missing result ("Not graded"); it is
+    // neither right nor wrong, so it stays out of the average and the weak spots.
+    const graded = res.filter((r) => r.score >= 0);
+    const avg = graded.length ? Math.round(graded.reduce((s, r) => s + r.score, 0) / graded.length) : 0;
 
     // meaningful write: the attempt record. If it fails, bail before logging.
-    const { error } = await supabase.from("notebook_quiz_attempts").insert({ user_id: uid, notebook_id: notebookId, chapter_id: null, scope: "exam", score: avg, total: res.length, detail: res });
+    const { error } = await supabase.from("notebook_quiz_attempts").insert({ user_id: uid, notebook_id: notebookId, chapter_id: null, scope: "exam", score: avg, total: graded.length, detail: res });
     if (error) { setBusy(false); setErr("Graded it, but couldn't save the result — submit again."); return; }
 
     // best-effort: reps + weak spots
     res.forEach((r, i) => {
+      if (r.score < 0) return;
       supabase.from("notebook_retrieval").insert({ user_id: uid, notebook_id: notebookId, chapter_id: null, question: questions[i].q.slice(0, 400), got_it: r.correct }).then(() => {});
       if (!r.correct && r.missed.trim()) supabase.from("notebook_weak_spots").insert({ user_id: uid, notebook_id: notebookId, chapter_id: null, text: r.missed.slice(0, 300) }).then(() => {});
     });
 
-    setResults(res); setScore(avg); setBusy(false); setPhase("result");
+    setResults(res); setScore(avg); setUngraded(res.length - graded.length); setBusy(false); setPhase("result");
     if (avg >= 70) { sfx.coin(); buzz(30); } else buzz(20);
     onChanged?.();
   }
@@ -101,13 +106,16 @@ export default function MajorTest({ uid, notebookId, onClose, onChanged }: {
             <div className="text-center py-3">
               <div className="text-4xl mb-1">{score >= 70 ? "🎉" : "💪"}</div>
               <p className="text-3xl font-extrabold">{score}%</p>
-              <p className="text-sm opacity-70 mt-1">{score >= 70 ? "Strong — it's sticking." : "Below 70% — the misses are now weak spots the Tutor will loop back."}</p>
+              <p className="text-sm opacity-70 mt-1">{score >= 70 ? "Strong — it's sticking." : "Below 70% — the misses are listed below. The guide reads what you miss in rounds, not the exam."}</p>
+              {ungraded > 0 && <p className="text-xs opacity-50 mt-1">{ungraded} not graded — the grader skipped {ungraded === 1 ? "it" : "them"}; {ungraded === 1 ? "it doesn't" : "they don't"} count either way.</p>}
             </div>
             <div className="space-y-2 mt-1">
               {results.map((r, i) => (
                 <div key={i} className="rounded-xl bg-white/[0.03] border border-white/10 p-3">
                   <p className="text-sm font-medium">{questions[i]?.q}</p>
-                  <p className={`text-xs mt-1 ${r.correct ? "text-green-400" : "text-orange-400"}`}>{r.correct ? "✓" : "✗"} {r.score}% — {r.feedback}</p>
+                  {r.score < 0
+                    ? <p className="text-xs mt-1 opacity-50">not graded — {r.feedback}</p>
+                    : <p className={`text-xs mt-1 ${r.correct ? "text-green-400" : "opacity-70"}`}>{r.correct ? "✓" : "→"} {r.score}% — {r.feedback}</p>}
                   {r.missed && <p className="text-xs opacity-50 mt-0.5">Missed: {r.missed}</p>}
                 </div>
               ))}

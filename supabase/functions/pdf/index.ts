@@ -49,9 +49,13 @@ Deno.serve(async (req: Request) => {
 
     try {
       const pdf = await getDocumentProxy(bytes);
-      const { text, totalPages } = await extractText(pdf, { mergePages: true });
-      // strip stray NUL bytes pdf.js can leak, collapse runaway blank lines — KEEP spaces
-      const clean = String(text ?? "").replace(/\u0000/g, "").replace(/\n{3,}/g, "\n\n").trim();
+      const { text: pageTexts, totalPages } = await extractText(pdf, { mergePages: false });
+      // strip stray NUL bytes pdf.js can leak, collapse runaway blank lines — KEEP spaces.
+      // Pages are joined with "[[page N]]" markers so the notebook's passage index
+      // can cite a page ("Lecture 7, p. 9") instead of just a source title.
+      const pages = (Array.isArray(pageTexts) ? pageTexts : [String(pageTexts ?? "")])
+        .map((t) => String(t ?? "").replace(/\u0000/g, "").replace(/\n{3,}/g, "\n\n").trim());
+      const clean = pages.map((t, i) => (t ? `[[page ${i + 1}]]\n\n${t}` : "")).filter(Boolean).join("\n\n").trim();
       if (!clean) return json({ error: "No selectable text in that PDF — it may be scanned images. Paste the text instead." }, 200);
       return json({ text: clean, pages: totalPages ?? 0 });
     } catch {

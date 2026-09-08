@@ -11,6 +11,8 @@ export const ADVISOR_FN = `${URL}/functions/v1/advisor`;
 export const CLIPS_FN = `${URL}/functions/v1/clips`;
 export const PLAN_FN = `${URL}/functions/v1/plan`;
 export const LEARN_FN = `${URL}/functions/v1/learn`;
+export const STUDIO_FN = `${URL}/functions/v1/studio`;
+export const DEADLINES_FN = `${URL}/functions/v1/deadlines`;
 export const NEWS_FN = `${URL}/functions/v1/news`;
 export const KALSHI_FN = `${URL}/functions/v1/kalshi`;
 

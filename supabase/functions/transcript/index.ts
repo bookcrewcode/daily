@@ -112,34 +112,62 @@ function pickTrack(tracks: Track[]): Track | null {
   return en.find((t) => t.kind !== "asr") ?? en[0] ?? tracks.find((t) => t.kind !== "asr") ?? tracks[0];
 }
 
+// One caption cue: start + duration in seconds (1 decimal). Learn picks video
+// clips by matching a quoted sentence against the cues inside a time window,
+// so timing has to survive alongside the flat text.
+type Seg = { s: number; d: number; text: string };
+type Captions = { text: string; segments: Seg[] };
+const tenth = (n: number) => Math.round(n * 10) / 10;
+const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+
 // timedtext returns JSON (events/segs) OR XML (<p>/<text>) regardless of the
 // fmt param, so sniff the payload and parse whichever actually arrived.
-function parseCaptions(raw: string): string {
+// `text` is built exactly as before (NotebookSources reads it); `segments`
+// carries the same words with timing.
+function parseCaptions(raw: string): Captions {
   const trimmed = raw.trim();
   if (trimmed.startsWith("{")) {
     try {
-      const data = JSON.parse(trimmed) as { events?: { segs?: { utf8?: string }[] }[] };
-      const text = (data.events ?? []).flatMap((e) => e.segs ?? []).map((s) => s.utf8 ?? "").join("");
-      if (text.trim()) return text;
+      const data = JSON.parse(trimmed) as { events?: { tStartMs?: number; dDurationMs?: number; segs?: { utf8?: string }[] }[] };
+      const events = (data.events ?? []).filter((e) => e.segs?.length);
+      const text = events.flatMap((e) => e.segs ?? []).map((s) => s.utf8 ?? "").join("");
+      if (text.trim()) {
+        const segments = events
+          .map((e) => ({ s: tenth((e.tStartMs ?? 0) / 1000), d: tenth((e.dDurationMs ?? 0) / 1000), text: oneLine((e.segs ?? []).map((s) => s.utf8 ?? "").join("")) }))
+          .filter((g) => g.text);
+        return { text, segments };
+      }
     } catch { /* fall through to XML */ }
   }
-  const nodes = [...trimmed.matchAll(/<(?:p|text)\b[^>]*>([\s\S]*?)<\/(?:p|text)>/g)];
-  return nodes.map((m) => decodeEntities(m[1].replace(/<[^>]+>/g, ""))).join(" ");
+  // <p t="ms" d="ms"> (json3-era XML) or <text start="s" dur="s"> (classic)
+  const nodes = [...trimmed.matchAll(/<(?:p|text)\b([^>]*)>([\s\S]*?)<\/(?:p|text)>/g)];
+  const attr = (attrs: string, name: string) => { const m = attrs.match(new RegExp(`\\b${name}="([^"]*)"`)); return m ? Number(m[1]) : NaN; };
+  const cues = nodes.map((m) => {
+    const ms = attr(m[1], "t"), secs = attr(m[1], "start");
+    const s = Number.isFinite(ms) ? ms / 1000 : secs;
+    const d = Number.isFinite(ms) ? attr(m[1], "d") / 1000 : attr(m[1], "dur");
+    return { s, d, text: decodeEntities(m[2].replace(/<[^>]+>/g, "")) };
+  });
+  return {
+    text: cues.map((c) => c.text).join(" "),
+    segments: cues.filter((c) => Number.isFinite(c.s) && oneLine(c.text)).map((c) => ({ s: tenth(c.s), d: tenth(Number.isFinite(c.d) ? c.d : 0), text: oneLine(c.text) })),
+  };
 }
 
-async function fetchCaptionText(baseUrl: string): Promise<string> {
+async function fetchCaptionText(baseUrl: string): Promise<Captions | null> {
   for (const url of [`${baseUrl}&fmt=json3`, baseUrl]) {
     try {
       const r = await fetch(url, { headers: { "User-Agent": UA_WEB, "Accept-Language": "en-US,en;q=0.9" } });
       if (!r.ok) continue;
-      const cleaned = parseCaptions(await r.text()).replace(/\s+/g, " ").trim();
-      if (cleaned) return cleaned;
+      const parsed = parseCaptions(await r.text());
+      const cleaned = oneLine(parsed.text);
+      if (cleaned) return { text: cleaned, segments: parsed.segments };
     } catch { /* try the next form */ }
   }
-  return "";
+  return null;
 }
 
-async function fetchTranscript(videoId: string): Promise<{ text: string; title: string }> {
+async function fetchTranscript(videoId: string): Promise<{ text: string; title: string; segments: Seg[] }> {
   const attempts: string[] = [];
   let title = "";
   let lastStatus = "";
@@ -152,8 +180,8 @@ async function fetchTranscript(videoId: string): Promise<{ text: string; title: 
     if (!res.tracks.length) { attempts.push(`${client}: 0 tracks (${res.status})`); continue; }
     const track = pickTrack(res.tracks);
     if (!track?.baseUrl) { attempts.push(`${client}: no usable track`); continue; }
-    const text = await fetchCaptionText(track.baseUrl);
-    if (text) return { text, title: title || videoId };
+    const got = await fetchCaptionText(track.baseUrl);
+    if (got) return { ...got, title: title || videoId };
     attempts.push(`${client}: track found but empty`);
   }
 
@@ -162,8 +190,8 @@ async function fetchTranscript(videoId: string): Promise<{ text: string; title: 
     if (scraped.title && !title) title = scraped.title;
     const track = pickTrack(scraped.tracks);
     if (track?.baseUrl) {
-      const text = await fetchCaptionText(track.baseUrl);
-      if (text) return { text, title: title || videoId };
+      const got = await fetchCaptionText(track.baseUrl);
+      if (got) return { ...got, title: title || videoId };
       attempts.push("html: track found but empty");
     } else {
       attempts.push("html: 0 tracks");
@@ -191,8 +219,8 @@ Deno.serve(async (req) => {
     const videoId = extractVideoId(url);
     if (!videoId) return new Response(JSON.stringify({ error: "Couldn't find a YouTube video ID in that link." }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
 
-    const { text, title } = await fetchTranscript(videoId);
-    return new Response(JSON.stringify({ text, title }), { headers: { ...cors, "Content-Type": "application/json" } });
+    const { text, title, segments } = await fetchTranscript(videoId);
+    return new Response(JSON.stringify({ text, title, segments }), { headers: { ...cors, "Content-Type": "application/json" } });
   } catch (e) {
     return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), { status: 200, headers: { ...cors, "Content-Type": "application/json" } });
   }

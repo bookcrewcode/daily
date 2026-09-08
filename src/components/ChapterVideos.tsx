@@ -20,7 +20,9 @@ import { useState } from "react";
 import type { ChapterVideo } from "@/lib/curriculum";
 import { Card } from "./ui";
 
-export default function ChapterVideos({ videos, compact }: { videos: ChapterVideo[]; compact?: boolean }) {
+// `label` replaces the compact toggle's text — a teach card that already shows
+// a clip says "watch the whole video" instead of counting the list.
+export default function ChapterVideos({ videos, compact, label }: { videos: ChapterVideo[]; compact?: boolean; label?: string }) {
   const [playing, setPlaying] = useState<string | null>(null);
   const [open, setOpen] = useState(!compact);
   if (!videos?.length) return null;
@@ -45,7 +47,9 @@ export default function ChapterVideos({ videos, compact }: { videos: ChapterVide
               aria-label={`Play ${v.title}`}
               className="w-full text-left rounded-xl overflow-hidden relative active:scale-[0.99] bg-black"
               style={{ aspectRatio: "16 / 9" }}>
-              {/* hqdefault exists for every video; maxres does not */}
+              {/* hqdefault exists for every video; maxres does not. Plain <img>:
+                  static export (images.unoptimized) — next/image adds nothing here. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={`https://i.ytimg.com/vi/${v.id}/hqdefault.jpg`} alt=""
                 loading="lazy" className="w-full h-full object-cover opacity-80" />
               <span className="absolute inset-0 grid place-items-center">
@@ -68,7 +72,7 @@ export default function ChapterVideos({ videos, compact }: { videos: ChapterVide
       <div className="mt-2">
         <button onClick={() => setOpen((o) => !o)}
           className="mono text-[10px] text-[var(--neon)] active:scale-95">
-          {open ? "▴ hide the videos" : `▾ ${videos.length} video${videos.length === 1 ? "" : "s"} for this chapter`}
+          {open ? "▴ hide the videos" : `▾ ${label ?? `${videos.length} video${videos.length === 1 ? "" : "s"} for this chapter`}`}
         </button>
         {open && <div className="mt-2">{list}</div>}
       </div>
