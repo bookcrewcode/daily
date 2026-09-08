@@ -2,22 +2,15 @@
 // tutor. (syllabus / grade / videos / prep and the study tools live in
 // `studio`, so each file stays small enough to redeploy by paste.)
 //
-// WHY THIS EXISTS: generation used to fail silently inside the 100KB `advisor`
-// monolith — OpenRouter requires max_tokens to EXCEED the reasoning budget, so
-// a thinking model handed a small ceiling returned nothing. Every call here
-// budgets a small, explicit thinking allowance ON TOP of the answer budget,
-// retries once with more room, and LOGS the upstream failure and the token
-// usage so a silent failure can never happen again.
+// Every model call budgets a small thinking allowance ON TOP of the answer
+// budget (OpenRouter needs max_tokens to exceed it), retries once with more
+// room, and logs the upstream failure and the token usage.
 //
-// SERVICE MODE: the nightly prep job (studio `prep`) names the user with
-// {secret, userId}; the secret is checked against the vault and every call
-// then runs with the service key, the RPCs scoped by p_user_id.
-//
-// GROUNDING: prompts see an OUTLINE of every source plus the passages that
-// match the chapter (RPCs notebook_outline / search_chunks, run with the
-// user's own token so RLS applies). Passages are numbered [1]..[n] in the
-// prompt; replies are mapped back to [chunk:<uuid>] here, and a number the
-// model invents is simply dropped.
+// SERVICE MODE: studio `prep` sends {secret, userId} (vault-checked); the call
+// then runs with the service key and the RPCs are scoped by p_user_id.
+// GROUNDING: an outline of every source plus the passages matching the chapter
+// (RPCs notebook_outline / search_chunks under RLS), numbered [1]..[n] and
+// mapped back to [chunk:<uuid>] here; a number the model invents is dropped.
 //
 // verify_jwt=false at the gateway; the JWT is validated here by hand.
 
@@ -40,8 +33,7 @@ const okModel = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9._-]+\/[A-Z
 const D_SMART = "google/gemini-3.7-flash";
 const D_FAST = "google/gemini-2.5-flash-lite";
 
-// vault secrets via the service-role-only get_secret RPC, cached a minute; a
-// missing secret is "" and can never match a caller's
+// vault secrets via get_secret (service role), cached a minute; missing = ""
 const sc = new Map<string, { v: string; at: number }>();
 async function secretOf(name: string): Promise<string> {
   const c = sc.get(name);
@@ -158,8 +150,7 @@ async function rpc<T>(token: string, fn: string, args: C, uid = ""): Promise<T |
   } catch (e) { console.error(`[learn] rpc ${fn}`, e instanceof Error ? e.message : e); return null; }
 }
 
-// One line per source, every source survives; headings get half the budget,
-// the opening fills the rest.
+// One line per source; headings get half the budget, the opening the rest.
 async function outline(token: string, nbId: string, uid = ""): Promise<{ text: string; sources: number; chunks: number; failed: boolean }> {
   type Row = { title: string; kind: string; week: number | null; page_count: number; chunk_count: number; headings: string[] | null; opening: string | null };
   const rows = await rpc<Row[]>(token, "notebook_outline", { p_notebook_id: nbId }, uid);
@@ -274,7 +265,7 @@ function clipOf(raw: unknown, videos: Video[]): { id: string; title: string; cha
   return ` ${heard} `.includes(` ${quote} `) ? { id: v.id, title: v.title, channel: v.channel, start, end } : null;
 }
 
-// "[V1 @ 02:10] words…" per ~25s window, capped at 9,000 chars
+// "[V1 @ 02:10] words…" per ~25s window, capped at 24,000 chars (a 20-minute talk fits whole)
 function timedBlock(v: Video, n: number): string {
   const lines = [`[V${n}] "${v.title}" (${v.channel}, ${mmss(v.duration_s)} long)`];
   let at = -1, words: string[] = [];
@@ -282,7 +273,7 @@ function timedBlock(v: Video, n: number): string {
   for (const g of v.segments) { if (at < 0 || g.s - at >= 25) { flush(); at = g.s; } words.push(g.text); }
   flush();
   let out = "";
-  for (const l of lines) { if (out.length + l.length > 9000) break; out += `${l}\n`; }
+  for (const l of lines) { if (out.length + l.length > 24000) break; out += `${l}\n`; }
   return out;
 }
 
@@ -309,8 +300,7 @@ function cleanCard(c: C, fade: number, chunks: Chunk[], videos: Video[]): C | nu
   if (kind === "teach") {
     const text = V(c.text, 460);
     if (!text) return null;
-    // plain-words checks are log-only: an acronym with no "(…)" is probably
-    // undefined; a sentence over 24 words is one he'll skim
+    // plain-words checks, log-only
     if (/\b[A-Z]{2,}\b/.test(text) && !text.includes("(")) console.error(`[learn:lesson] undefined acronym? "${text.slice(0, 80)}"`);
     if (text.split(/(?<=[.!?])\s+/).some((s) => s.split(/\s+/).length > 24)) console.error(`[learn:lesson] long sentence: "${text.slice(0, 80)}"`);
     const d = c.diagram as C | undefined;
@@ -378,10 +368,12 @@ function cleanCard(c: C, fade: number, chunks: Chunk[], videos: Video[]): C | nu
 }
 
 // Raw model cards → a run the renderer can trust. `ok` = hard invariants
-// (regenerate if false); `soft` = the quant "≥2 worked" ask; `clips` = "kept/proposed" for the log.
-// `noPretest` (a cold notebook) keeps card 0 as the first teach card.
+// (regenerate if false); `soft` = the quant "≥2 worked" ask; `noPretest` keeps card 0 as the first teach card.
 function assemble(raw: unknown[], n: number, fade: number, quant: boolean, chunks: Chunk[], videos: Video[], noPretest = false): { cards: C[]; ok: boolean; soft: boolean; clips: string } {
   const kept = raw.map((c, i) => ({ c: cleanCard((c ?? {}) as C, fade, chunks, videos), i })).filter((x) => x.c) as { c: C; i: number }[];
+  // which shapes the model keeps getting wrong: the tuning signal for the prompt
+  const rejected = raw.map((c, i) => (kept.some((k) => k.i === i) ? "" : String((c as C)?.kind ?? "?"))).filter(Boolean);
+  if (rejected.length) console.error(`[learn:lesson] rejected ${rejected.length} malformed card(s): ${rejected.join(", ")}`);
   const proposed = raw.filter((c) => (c as C)?.kind === "teach" && (c as C)?.clip).length;
   // pretest: the first question aimed at the first teach card, else the first question
   const t0 = kept.find((x) => !isQ(x.c))?.i;
@@ -410,6 +402,33 @@ function assemble(raw: unknown[], n: number, fade: number, quant: boolean, chunk
   const cards = groups.flat();
   const teachAlone = cards.some((c, i) => !isQ(c) && (i === cards.length - 1 || !isQ(cards[i + 1])));
   return { cards, ok: !teachAlone && qs(cards) >= 7, soft: !quant || cards.filter((c) => c.kind === "worked").length >= 2, clips: `${cards.filter((c) => c.clip).length}/${proposed}` };
+}
+
+// Second, focused pass: the generator places about one clip per run however
+// it's asked, so the teach cards still without one are matched card by card
+// against the same transcripts — the same validator decides what survives.
+async function clipPass(cards: C[], videos: Video[], model: string, key: string): Promise<number> {
+  const want = cards.map((c, i) => ({ c, i })).filter((x) => x.c.kind === "teach" && !x.c.clip);
+  if (!videos.length || !want.length) return 0;
+  const sys = `For EACH card below, find the ONE place in these video transcripts where the speaker explains that card's idea, and return a 30–150 second window around it. "quote" must be 8-20 words copied VERBATIM from the transcript inside that window. Skip a card only when no video teaches its idea — a wrong clip is worse than none.
+
+CARDS
+${want.map((x) => `[card ${x.i}] ${x.c.text}`).join("\n")}
+
+VIDEOS
+${videos.map((v, i) => timedBlock(v, i + 1)).join("")}
+Return ONLY JSON: {"clips":[{"card":0,"v":1,"start":"02:10","end":"03:25","quote":"…"}]}`;
+  try {
+    const list = arr(parseJson<{ clips?: unknown[] }>(await ask(model, sys, [{ role: "user", content: "Find the clips." }], 2000, key, "clips"), "clips").clips) as C[];
+    let added = 0;
+    for (const p of list) {
+      const x = want.find((w) => w.i === Math.floor(Number(p?.card)));
+      const clip = x && !x.c.clip ? clipOf(p, videos) : null;
+      if (clip) { x!.c.clip = clip; added++; }
+    }
+    console.error(`[learn:lesson] clip pass added ${added}/${list.length} for ${want.length} card(s)`);
+    return added;
+  } catch (e) { console.error("[learn:lesson] clip pass", e instanceof Error ? e.message : e); return 0; }
 }
 
 Deno.serve(async (req) => {
@@ -499,7 +518,7 @@ WORDS — this matters more than anything else:
 - Questions and their "explain" lines follow the same rules — no unexplained term in a question.
 
 SHAPE OF THE RUN
-- Exactly ${n} cards: at least 7 question cards, the rest teach cards. Never two teach cards in a row — every teach card is followed by at least one question about it, and the LAST card is a question.
+- Between ${n} and ${n + 3} cards: at least ${Math.ceil(n * 0.75)} question cards, the rest teach cards. Never two teach cards in a row — every teach card is followed by at least one question about it, and the LAST card is a question.
 - Card 0 is a teach card. Every question card carries "pretest_of": the 0-based index in this array of the teach card that answers it.
 - Mix the question kinds; never the same kind twice in a row.${quant ? "\n- This is a quantitative chapter: include at least 2 \"worked\" cards." : ""}${interests.length ? `\n- HIS INTERESTS: ${interests.map((x) => `"${x}"`).join(", ")}. At least one scenario card is set in one of HIS interests with real quantities (e.g. a $6.50 DoorDash order, 4 miles); give that card "hook".` : ""}
 
@@ -523,9 +542,9 @@ ${m.text}
 ${videos.length ? `
 VIDEOS — timed transcripts of real explainers for this chapter:
 ${videos.map((v, i) => timedBlock(v, i + 1)).join("")}
-CLIP RULE: on a teach card, if one of these videos explains the SAME idea as the card, add
+CLIP RULE: Ben learns best from a short clip, so put a clip on EVERY teach card whose idea one of these videos explains — when the videos cover the chapter, most teach cards should carry one:
 "clip": {"v": 1, "start": "02:10", "end": "03:25", "quote": "8-20 words copied verbatim from the transcript inside that window"}.
-The clip must run 30–150 seconds, start where that explanation starts, and cover only that idea. If no video segment teaches exactly this card's idea, OMIT clip — a wrong clip is worse than none. Never invent timestamps.
+The clip must run 30–150 seconds, start where that explanation starts, and cover only that idea; use a different window for each card. Only when NO window teaches the card's idea, omit clip — a wrong clip is worse than none. Never invent timestamps.
 ` : ""}
 (${CITE_RULE})`;
       try {
@@ -540,7 +559,8 @@ The clip must run 30–150 seconds, start where that explanation starts, and cov
           if (r2.ok) r = r2;
           else if (!r.ok) return err("That run came back too thin twice — try again in a minute.");
         }
-        console.error(`[learn:lesson] clips kept ${r.clips}`);
+        if (videos.length) await clipPass(r.cards, videos, M.smart, key);
+        console.error(`[learn:lesson] clips kept ${r.clips}; final ${r.cards.filter((c) => c.clip).length}/${r.cards.filter((c) => c.kind === "teach").length} teach cards have a clip`);
         // cache on the chapter so today's and tomorrow's rounds are instant
         let cached = false;
         if (chapterId) {
