@@ -93,15 +93,15 @@ async function callModel(key: string, model: string, system: string, user: strin
 }
 
 /* ── ratings ───────────────────────────────────────────────────────────── */
-type Rating = { model: string; elo: number; n_matches: number; n_trades: number; n_wins: number; sum_r: number; brier_sum: number; brier_n: number; calib: CalibBin[]; n_abstain: number; preds: { p: number; won: boolean }[] };
+type Rating = { model: string; elo: number; n_matches: number; n_trades: number; n_wins: number; sum_r: number; brier_sum: number; brier_n: number; calib: CalibBin[]; n_abstain: number; n_sits: number; n_sit_right: number; preds: { p: number; won: boolean }[] };
 async function loadRating(uid: string, model: string): Promise<Rating> {
   const r = await rest(`desk_ratings?user_id=eq.${uid}&model=eq.${encodeURIComponent(model)}&select=*`);
   const x = (r.ok ? (r.json as J[]) : [])[0];
   const calib = Array.isArray(x?.calib) ? (x!.calib as CalibBin[]) : [];
-  return { model, elo: num(x?.elo, 1500), n_matches: num(x?.n_matches), n_trades: num(x?.n_trades), n_wins: num(x?.n_wins), sum_r: num(x?.sum_r), brier_sum: num(x?.brier_sum), brier_n: num(x?.brier_n), calib, n_abstain: num(x?.n_abstain), preds: [] };
+  return { model, elo: num(x?.elo, 1500), n_matches: num(x?.n_matches), n_trades: num(x?.n_trades), n_wins: num(x?.n_wins), sum_r: num(x?.sum_r), brier_sum: num(x?.brier_sum), brier_n: num(x?.brier_n), calib, n_abstain: num(x?.n_abstain), n_sits: num(x?.n_sits), n_sit_right: num(x?.n_sit_right), preds: [] };
 }
 async function saveRating(uid: string, r: Rating): Promise<boolean> {
-  const row = { user_id: uid, model: r.model, elo: r.elo, n_matches: r.n_matches, n_trades: r.n_trades, n_wins: r.n_wins, sum_r: r.sum_r, brier_sum: r.brier_sum, brier_n: r.brier_n, calib: r.calib, n_abstain: r.n_abstain, updated_at: new Date().toISOString() };
+  const row = { user_id: uid, model: r.model, elo: r.elo, n_matches: r.n_matches, n_trades: r.n_trades, n_wins: r.n_wins, sum_r: r.sum_r, brier_sum: r.brier_sum, brier_n: r.brier_n, calib: r.calib, n_abstain: r.n_abstain, n_sits: r.n_sits, n_sit_right: r.n_sit_right, updated_at: new Date().toISOString() };
   return (await rest("desk_ratings?on_conflict=user_id,model", { method: "POST", headers: { Prefer: "resolution=merge-duplicates" }, body: JSON.stringify(row) })).ok;
 }
 // Calibration bins are kept as counts so they can be updated one trade at a time.
@@ -126,6 +126,15 @@ async function settle(uid: string, tradeId: string, key: string): Promise<J> {
   const r = num(t.r_multiple);
   let ratingsDone = review.settled === true;
   const out: J = { trade_id: tradeId, owner: t.owner, won, r };
+
+  // A strategy's shadow trade is the pure execution of a setup. When it closes, the sit that judged
+  // that setup is scored against it, and the strategy's own record decides the size it earns.
+  const owner = String(t.owner);
+  if (!ratingsDone && owner.startsWith("strat:")) {
+    out.sit = await scoreSit(uid, t, won);
+    out.strategy = await rateStrategy(uid, owner.slice(6));
+    ratingsDone = true;
+  }
 
   if (!ratingsDone && t.owner !== "desk") {
     const model = String(t.owner);
@@ -173,6 +182,61 @@ async function settle(uid: string, tradeId: string, key: string): Promise<J> {
   return { ...out, review: merged };
 }
 
+// Every juror's confidence on the sit is a Brier and calibration entry; every taker plays every
+// passer for Elo, the taker winning if the setup won. A model that passes on winners loses rating too.
+async function scoreSit(uid: string, t: J, won: boolean): Promise<J> {
+  const sR = await rest(`desk_setups?shadow_trade_id=eq.${t.id}&select=id,sit_id`);
+  const setup = (sR.ok ? (sR.json as J[]) : [])[0];
+  if (!setup?.sit_id) return { scored: 0, why: "no sit judged this setup" };
+  const oR = await rest(`desk_opinions?sit_id=eq.${setup.sit_id}&round=eq.sit&select=model,content,error`);
+  const ballots = (oR.ok ? (oR.json as J[]) : [])
+    .filter((o) => !o.error)
+    .map((o) => ({ model: String(o.model), stance: String((o.content as J)?.stance ?? ""), p: Math.min(0.99, Math.max(0.01, num((o.content as J)?.confidence, 0.5))) }))
+    .filter((b) => b.stance === "take" || b.stance === "pass");
+  if (!ballots.length) return { scored: 0, why: "no ballots" };
+  const ratings = new Map<string, Rating>();
+  for (const b of ballots) if (!ratings.has(b.model)) ratings.set(b.model, await loadRating(uid, b.model));
+  for (const b of ballots) {
+    const me = ratings.get(b.model)!;
+    me.n_sits++; if ((b.stance === "take") === won) me.n_sit_right++;
+    me.brier_sum += (b.p - (won ? 1 : 0)) ** 2; me.brier_n++;
+    me.calib = addToCalib(me.calib, b.p, won);
+  }
+  let matches = 0;
+  for (const a of ballots.filter((b) => b.stance === "take")) {
+    for (const c of ballots.filter((b) => b.stance === "pass")) {
+      if (a.model === c.model) continue;
+      const me = ratings.get(a.model)!, other = ratings.get(c.model)!;
+      const k = eloK(Math.min(me.n_matches, other.n_matches));
+      const res = eloUpdate(me.elo, other.elo, won ? 1 : 0, k);
+      me.elo = res.ra; other.elo = res.rb; me.n_matches++; other.n_matches++; matches++;
+    }
+  }
+  for (const r of ratings.values()) await saveRating(uid, r);
+  return { scored: ballots.length, matches, won };
+}
+
+// A strategy earns size from its own shadow book, never from a story: twenty closed trades and a
+// positive shrunk R is worth 1.5x, forty and +0.2R worth 2x; twenty and a negative R is a week on the bench.
+async function rateStrategy(uid: string, id: string): Promise<J> {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const r = await rest(`desk_trades?user_id=eq.${uid}&owner=eq.${encodeURIComponent(`strat:${id}`)}&status=eq.closed&select=pnl,r_multiple&order=exit_at.desc&limit=300`);
+  const rows = r.ok ? (r.json as J[]) : [];
+  const rs = rows.map((x) => num(x.r_multiple));
+  const n = rs.length, wins = rows.filter((x) => num(x.pnl) > 0).length;
+  const mean = n ? rs.reduce((a, b) => a + b, 0) / n : 0;
+  const sh = shrink(mean, n);
+  const last20 = rs.slice(0, 20);
+  const recent = last20.length ? last20.reduce((a, b) => a + b, 0) / last20.length : 0;
+  let size_mult = 1, benched_until: string | null = null, label = n < 20 ? "learning" : "flat";
+  if (n >= 40 && sh > 0.2) { size_mult = 2; label = "promoted"; }
+  else if (n >= 20 && sh > 0.1) { size_mult = 1.5; label = "earning size"; }
+  else if (n >= 20 && sh < -0.1) { size_mult = 0.5; benched_until = new Date(Date.parse(today + "T12:00:00Z") + 7 * 86_400_000).toISOString().slice(0, 10); label = "benched a week"; }
+  const stats = { n, wins, hit: n ? wins / n : null, mean_r: mean, shrunk_r: sh, recent_r: recent, label, as_of: today };
+  const up = await rest("desk_strategies?on_conflict=user_id,id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates" }, body: JSON.stringify({ user_id: uid, id, size_mult, benched_until, stats, updated_at: new Date().toISOString() }) });
+  return { id, ...stats, size_mult, benched_until, ok: up.ok };
+}
+
 /* ── post-mortem ───────────────────────────────────────────────────────── */
 const PM_SCHEMA: J = {
   type: "object", additionalProperties: false,
@@ -190,7 +254,7 @@ async function postmortem(uid: string, t: J, key: string): Promise<J> {
   const pct = (v: unknown) => `${(num(v) * 100).toFixed(1)}%`;
   const spy = num(t.spy_entry) > 0 && num(t.spy_exit) > 0 ? `SPY moved ${pct(num(t.spy_exit) / num(t.spy_entry) - 1)} over the same days.` : "";
   const system = `You are writing the post-mortem on a closed PAPER trade for Ben, 19, who is learning markets by watching this desk. Separate WAS THE REASONING SOUND from DID IT MAKE MONEY: a winner on a broken thesis is luck; a loser on a sound thesis is variance. Grade the PROCESS (A–F) on its own: was the thesis specific and falsifiable, did the stop and target follow the rules, was the size right, did the exit follow the plan. "quadrant": earned = good process, good outcome; bad_luck = good process, bad outcome; dumb_luck = bad process, good outcome; deserved = bad process, bad outcome. "lesson": one transferable rule in the form "when X, do Y" — no tickers, no dates. "lesson_key": a short kebab-case slug for that rule so repeats can be counted. "text": under 130 words, blunt and concrete, no hedging, no disclaimers. Return ONLY JSON matching the schema.`;
-  const user = `${t.symbol} ${t.side}${t.instrument === "crypto_perp" ? ` ${t.leverage}x perp` : ""} · template ${t.template ? `${t.template} ${templateName(num(t.template))}` : "none"} · regime ${t.regime}
+  const user = `${t.symbol} ${t.side}${t.instrument === "crypto_perp" ? ` ${t.leverage}x perp` : ""} · template ${t.template ? `${t.template} ${templateName(num(t.template))}` : "none"} · regime ${t.regime} · from ${t.source === "sit" ? "an intraday sit" : "the nightly jury"}${t.strategy ? ` on a ${t.strategy} setup` : ""} · a ${t.timeframe ?? "swing"} trade${t.horizon_hours ? ` on a ${t.horizon_hours}-hour clock` : ""}
 Entry ${t.entry_price} → exit ${t.exit_price} (${t.exit_reason}${t.ambiguous_bar ? ", both stop and target touched in one bar — stop assumed" : ""}). Stop ${t.stop}, target ${t.target}, horizon ${t.horizon_days}d, confidence stated ${pct(t.confidence)}.
 P/L ${num(t.pnl).toFixed(2)} (${pct(t.pnl_pct)}), ${num(t.r_multiple).toFixed(2)}R. Worst excursion ${num(t.mae_r).toFixed(2)}R, best ${num(t.mfe_r).toFixed(2)}R. Fees ${num(t.fees).toFixed(2)}${t.instrument === "crypto_perp" ? `, funding ${num(t.funding).toFixed(2)}` : ""}. ${spy}
 Catalyst: ${t.catalyst}
@@ -207,7 +271,7 @@ It would have been wrong if: ${t.falsifier}`;
     tags, lesson: str(j.lesson, 300), lesson_key: str(j.lesson_key, 60).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, ""),
     text: str(j.text, 1200) || (res.error ? `The post-mortem could not be written (${res.error}).` : ""), model, cost: res.cost,
   };
-  if (review.lesson && review.lesson_key) await recordLesson(uid, String(review.lesson_key), String(review.lesson), { template: num(t.template), instrument: String(t.instrument) }, String(t.id));
+  if (review.lesson && review.lesson_key) await recordLesson(uid, String(review.lesson_key), String(review.lesson), { template: num(t.template), instrument: String(t.instrument), strategy: str(t.strategy, 40), timeframe: str(t.timeframe, 12), source: str(t.source, 12) }, String(t.id));
   return review;
 }
 
@@ -235,9 +299,9 @@ function cellStats(c: Cell) {
   return { n: c.n, hit: c.n ? c.wins / c.n : null, mean_r: mean, shrunk_r: sh, profit_factor: c.gross_loss > 0 ? c.gross_win / c.gross_loss : null, t, label };
 }
 async function coach(uid: string, key: string, today: string): Promise<J> {
-  const r = await rest(`desk_trades?user_id=eq.${uid}&status=eq.closed&select=owner,template,instrument,regime,pnl,r_multiple,confidence,exit_reason,review&order=exit_at.asc&limit=5000`);
+  const r = await rest(`desk_trades?user_id=eq.${uid}&status=eq.closed&select=owner,template,instrument,regime,pnl,r_multiple,confidence,exit_reason,review,strategy,timeframe,source&order=exit_at.asc&limit=5000`);
   const rows = (r.ok ? (r.json as J[]) : []);
-  const groups: Record<string, Record<string, Cell>> = { template: {}, instrument: {}, regime: {}, model: {}, exit: {} };
+  const groups: Record<string, Record<string, Cell>> = { template: {}, instrument: {}, regime: {}, model: {}, exit: {}, strategy: {}, timeframe: {}, source: {}, shadow: {} };
   const add = (g: string, k: string, x: J) => {
     const c = (groups[g][k] ??= { n: 0, wins: 0, rs: [], gross_win: 0, gross_loss: 0 });
     const pnl = num(x.pnl), rr = num(x.r_multiple);
@@ -250,16 +314,23 @@ async function coach(uid: string, key: string, today: string): Promise<J> {
       add("instrument", String(x.instrument), x);
       add("regime", String(x.regime || "unknown"), x);
       add("exit", String(x.exit_reason || "?"), x);
-    } else add("model", owner, x);
+      add("strategy", String(x.strategy || "jury only"), x);
+      add("timeframe", String(x.timeframe || "swing"), x);
+      add("source", String(x.source || "nightly"), x);
+    } else if (owner.startsWith("strat:")) add("shadow", owner.slice(6), x);
+    else add("model", owner, x);
   }
-  const card: J = { as_of: today, desk: {} as J, models: {} as J };
-  for (const g of ["template", "instrument", "regime", "exit"]) {
+  const card: J = { as_of: today, desk: {} as J, models: {} as J, strategies: {} as J };
+  for (const g of ["template", "instrument", "regime", "exit", "strategy", "timeframe", "source"]) {
     (card.desk as J)[g] = Object.fromEntries(Object.entries(groups[g]).map(([k, c]) => [k, cellStats(c)]));
   }
-  const ratR = await rest(`desk_ratings?user_id=eq.${uid}&select=model,elo,n_trades,n_wins,sum_r,brier_sum,brier_n,n_matches`);
+  // Each strategy's own book: the pure rule, no jury. Read against desk.strategy to see what the jury adds or costs.
+  card.strategies = Object.fromEntries(Object.entries(groups.shadow).map(([k, c]) => [k, cellStats(c)]));
+  const ratR = await rest(`desk_ratings?user_id=eq.${uid}&select=model,elo,n_trades,n_wins,sum_r,brier_sum,brier_n,n_matches,n_sits,n_sit_right`);
   for (const m of (ratR.ok ? (ratR.json as J[]) : [])) {
+    if (String(m.model).startsWith("strat:")) continue;
     const c = groups.model[String(m.model)];
-    (card.models as J)[String(m.model)] = { ...(c ? cellStats(c) : { n: 0 }), elo: num(m.elo, 1500), brier: num(m.brier_n) ? num(m.brier_sum) / num(m.brier_n) : null, matches: num(m.n_matches) };
+    (card.models as J)[String(m.model)] = { ...(c ? cellStats(c) : { n: 0 }), elo: num(m.elo, 1500), brier: num(m.brier_n) ? num(m.brier_sum) / num(m.brier_n) : null, matches: num(m.n_matches), sits: num(m.n_sits), sit_right: num(m.n_sits) ? num(m.n_sit_right) / num(m.n_sits) : null };
   }
   const deskAll: Cell = { n: 0, wins: 0, rs: [], gross_win: 0, gross_loss: 0 };
   for (const x of rows.filter((y) => y.owner === "desk")) { const pnl = num(x.pnl); deskAll.n++; if (pnl > 0) { deskAll.wins++; deskAll.gross_win += pnl; } else deskAll.gross_loss += -pnl; deskAll.rs.push(num(x.r_multiple)); }
@@ -269,7 +340,7 @@ async function coach(uid: string, key: string, today: string): Promise<J> {
   let cost = 0;
   if (deskAll.n > 0 || Object.keys(card.models as J).length) {
     const model = await smartModel();
-    const system = `You are the weekly coach for a paper-trading desk run by Ben, 19, who is learning markets. You are handed the measured track record (hit rates, mean R shrunk toward zero for small samples, profit factors, t-stats, per model Brier scores). Write about 200 words: what is working, what is not, what is still too thin to judge, and the one thing to watch next week. Numbers, not adjectives. Say "too few to trust" where the label says so. No advice framing, no hedging boilerplate.`;
+    const system = `You are the weekly coach for a paper-trading desk run by Ben, 19, who is learning markets. You are handed the measured track record (hit rates, mean R shrunk toward zero for small samples, profit factors, t-stats, per model Brier scores). "strategies" is each coded rule's own shadow book (the pure rule, no jury); desk.strategy is the juried trades that came from that rule, so the gap between the two is what the jury adds or costs. desk.timeframe splits scalps (hours), swings (days) and positions (weeks); desk.source splits intraday sits from the nightly jury. A model's "sits" are its intraday take-or-pass votes, "sit_right" how often it was on the right side. Write about 200 words: what is working, what is not, what is still too thin to judge, and the one thing to watch next week. Numbers, not adjectives. Say "too few to trust" where the label says so. No advice framing, no hedging boilerplate.`;
     const res = await callModel(key, model, system, JSON.stringify(card).slice(0, 12000), 1200);
     review = res.text || (res.error ? `The coach could not write this week (${res.error}).` : "");
     cost = res.cost;

@@ -325,6 +325,18 @@ Deno.serve(async (req) => {
       const r = await dailyBars(s.symbol, instrument);
       return r.bars.length ? ok({ bars: r.bars, source: r.source, ...(r.error ? { warning: r.error } : {}) }) : err(r.error ?? "no bars");
     }
+    // Many perps, four intervals, one invocation: the scan reads the top forty this way.
+    if (mode === "perp_bars") {
+      const syms = ((body.symbols ?? []) as unknown[]).map((x) => String(x).toUpperCase()).filter((x) => /^[A-Z0-9]+-USDT$/.test(x)).slice(0, 12);
+      const want = (Array.isArray(body.intervals) ? (body.intervals as string[]) : ["1D", "4H", "1H", "5m"]).filter((i): i is BloBar => ["5m", "15m", "1H", "4H", "1D"].includes(i));
+      const limits: Record<string, number> = { "1D": 320, "4H": 150, "1H": 120, "15m": 120, "5m": 120 };
+      const out: Record<string, Record<string, Bar[]>> = {};
+      await mapLimit(syms, 4, async (sym) => {
+        const rows = await Promise.all(want.map((iv) => blofinCandles(sym, iv, Math.min(limits[iv] ?? 120, Number(body.limit) || 400))));
+        out[sym] = Object.fromEntries(want.map((iv, i) => [iv, rows[i]]));
+      });
+      return ok({ bars: out });
+    }
     if (mode === "quotes") {
       const list = ((body.symbols ?? []) as J[]).map(normSym).filter((s): s is Sym => !!s).slice(0, 80);
       const quotes: Record<string, { price: number; at: number; source: string } | { error: string }> = {};

@@ -5,7 +5,9 @@ export type TradeStatus = "pending" | "open" | "closed" | "cancelled";
 export type ExitReason = "stop" | "target" | "time" | "thesis_broke" | "liquidated" | "halt" | "cancelled";
 export type Owner = string; // "desk" or a model id such as "anthropic/claude-sonnet-5"
 export type Bar = { t: number; o: number; h: number; l: number; c: number; v: number }; // t = epoch ms of the bar's OPEN
-export type PresetKey = "aggressive" | "very_aggressive" | "moderate";
+export type PresetKey = "aggressive" | "very_aggressive" | "moderate" | "no_limits";
+export type Timeframe = "scalp" | "swing" | "position"; // hours, days, weeks
+export type TradeSource = "nightly" | "sit" | "shadow";
 export type Rules = {
   risk_pct: number;          // % of equity at risk per trade (entry → stop)
   max_notional_pct: number;  // % of equity, notional per position
@@ -19,16 +21,19 @@ export type Rules = {
   min_rr: number;            // reward:risk floor
   min_stop_atr: number;      // stop at least this many ATRs from entry
   liq_buffer: number;        // perps: |entry − liq| ≥ |entry − stop| × (1 + buffer)
+  max_per_theme?: number;    // open positions riding one theme (sector, "crypto", "Index"); default 2
 };
 export type Plan = {
   venue: Venue; instrument: Instrument; symbol: string; side: Side; leverage: number;
   template: number; thesis: string; catalyst: string; falsifier: string; confidence: number;
   entry_ref: number; stop: number; target: number; horizon_days: number; risk_pct: number;
   evidence: number[]; key_risks: string[]; crosses_event: boolean;
+  timeframe?: Timeframe; horizon_hours?: number; strategy?: string;
 };
 export type InstrumentMeta = { max_leverage: number; contract_value: number; lot_size: number; tick_size: number };
 export type Trade = {
   id: string; owner: Owner; session_id: string | null; proposal_id: string;
+  source?: TradeSource; strategy?: string; timeframe?: Timeframe; sit_id?: string | null; horizon_hours?: number | null; size_mult?: number;
   venue: Venue; instrument: Instrument; symbol: string; name: string; side: Side; status: TradeStatus;
   template: number; thesis: string; catalyst: string; falsifier: string; confidence: number;
   evidence: number[]; regime: string; decided_at: string;

@@ -11,6 +11,7 @@ import { loadTrades, callFn, REVIEW_FN, fmtMoney, fmtPct, fmtPrice, fmtR, type A
 import { unrealized, COSTS } from "@/lib/desk/ledger";
 import { tradeStats, curveStats, tradesToDetect } from "@/lib/desk/stats";
 import { templateName } from "@/lib/desk/playbook";
+import { STRATEGIES } from "@/lib/desk/scan";
 import type { Trade } from "@/lib/desk/types";
 import type { LiveMarks } from "./DeskSpace";
 
@@ -18,6 +19,9 @@ const VENUE: Record<string, string> = { robinhood: "Robinhood", blofin: "BloFin"
 const INSTR: Record<string, string> = { stock: "stock", etf: "ETF", crypto_spot: "spot", crypto_perp: "perp" };
 const QUADRANT: Record<string, string> = { earned: "earned it: good process, good outcome", bad_luck: "bad luck: good process, bad outcome", dumb_luck: "dumb luck: bad process, good outcome", deserved: "deserved: bad process, bad outcome" };
 const EXIT: Record<string, string> = { stop: "stopped out", target: "hit target", time: "time stop", thesis_broke: "thesis broke", liquidated: "liquidated", halt: "halted", cancelled: "never filled" };
+const SOURCE: Record<string, string> = { sit: "from a sit", nightly: "from the nightly jury", shadow: "shadow book" };
+const TF: Record<string, string> = { scalp: "scalp · hours", swing: "swing · days", position: "position · weeks" };
+const stratName = (id: string) => STRATEGIES.find((s) => s.id === id)?.name ?? id;
 const tone = (v: number) => (v > 0 ? "var(--ok)" : v < 0 ? "var(--bad)" : "var(--text-3)");
 const signed = (v: number, d = 0) => (v >= 0 ? "+" : "-") + fmtMoney(Math.abs(v), d);
 
@@ -82,7 +86,7 @@ export default function Book({ uid, account, curve, live, today, onRefresh }: {
       <SectionTitle>Open positions</SectionTitle>
       {open.length === 0 ? (
         <Card><p className="text-[13px] text-[var(--text-3)] leading-relaxed">
-          Nothing open. The jury sits at 9:30pm ET; a stock fills at the next open, crypto at the next hourly candle.
+          Nothing open. Sits run every five minutes on what the scan flags and the nightly jury sits at 9:30pm ET. A sit&apos;s order fills on the next 5-minute bar; a nightly stock order at the next open, nightly crypto at the next hourly candle.
         </p></Card>
       ) : (
         <div className="space-y-2.5">
@@ -104,7 +108,7 @@ export default function Book({ uid, account, curve, live, today, onRefresh }: {
                     {u !== null ? (
                       <span className="mono text-[13px] font-bold" style={{ color: tone(u) }}>{signed(u)} <span className="text-[10px]">({fmtPct(base > 0 ? u / base : 0)})</span></span>
                     ) : (
-                      <span className="mono text-[10px] text-[var(--warn)]">{t.status === "pending" ? (t.fill_rule === "next_hour" ? "fills next hour" : "fills at next open") : "no live price"}</span>
+                      <span className="mono text-[10px] text-[var(--warn)]">{t.status === "pending" ? (t.fill_rule === "next_5m" ? "fills next 5-min bar" : t.fill_rule === "next_hour" ? "fills next hour" : "fills at next open") : "no live price"}</span>
                     )}
                   </div>
                   <p className="mono text-[11px] text-[var(--text-3)] mt-1.5">
@@ -113,6 +117,7 @@ export default function Book({ uid, account, curve, live, today, onRefresh }: {
                     {t.liq_price ? <> · <span className="text-[var(--warn)]">liq {fmtPrice(t.liq_price)}{mark ? ` (${fmtPct(t.liq_price / mark - 1)})` : ""}</span></> : null}
                     {filled ? ` · ${daysLeft(t, today)}` : ""}
                   </p>
+                  <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mt-1">{SOURCE[t.source ?? "nightly"]}{t.strategy ? ` · ${stratName(t.strategy)}` : ""} · {TF[t.timeframe ?? "swing"]}{t.horizon_hours ? ` · ${t.horizon_hours}h clock` : ""}</p>
                   {t.catalyst && <p className="text-[11.5px] text-[var(--text-3)] mt-1.5 leading-snug">{t.catalyst}</p>}
                 </button>
                 {isOpen && (
@@ -164,7 +169,7 @@ export default function Book({ uid, account, curve, live, today, onRefresh }: {
         <Stat label="Max drawdown" value={curve.length ? fmtPct(-cs.maxDrawdown) : "—"} sub={cs.ddDays ? `${cs.ddDays} days under water` : ""} note="The worst peak-to-trough fall in equity so far, and the longest stretch below the previous high." />
         <Stat label="Exposure" value={fmtPct(equityNow > 0 ? gross / equityNow : 0).replace("+", "")} note="Sum of open position notionals as a share of equity. Perps count their full notional, not just the margin." />
         <Stat label="Average hold" value={ts.avgHoldDays === null ? "—" : `${ts.avgHoldDays.toFixed(1)}d`} note="Days from fill to exit, averaged over closed trades." />
-        <Stat label="Trades per week" value={closed.length ? (closed.length / weeks).toFixed(1) : "—"} note="Closed trades divided by weeks since the first fill. The desk is built to trade rarely." />
+        <Stat label="Trades per week" value={closed.length ? (closed.length / weeks).toFixed(1) : "—"} note="Closed trades divided by weeks since the first fill. Scalps, swings and positions all count, so this runs well above the old one-jury-a-night pace." />
         <Stat label="Trades to a first verdict" value={`${closed.length} of 100`} note={`About 100 closed trades before hit rate means anything; about ${tradesToDetect(0.6)} to tell 60% from a coin flip. Until then every number above is weather, not climate.`} wide />
       </div>
 
@@ -185,7 +190,7 @@ export default function Book({ uid, account, curve, live, today, onRefresh }: {
                   <button onClick={() => setOpenId(isOpen ? null : t.id)} className="w-full text-left active:scale-[0.995]">
                     <div className="flex items-baseline gap-2">
                       <span className="mono text-sm font-bold">{t.symbol}</span>
-                      <span className="mono text-[10px] uppercase tracking-wider text-[var(--text-4)]">{t.side}{t.instrument === "crypto_perp" ? ` ${t.leverage}x` : ""} · {EXIT[t.exit_reason ?? ""] ?? t.exit_reason}{t.ambiguous_bar ? " · both touched, stop assumed" : ""}</span>
+                      <span className="mono text-[10px] uppercase tracking-wider text-[var(--text-4)]">{t.side}{t.instrument === "crypto_perp" ? ` ${t.leverage}x` : ""} · {EXIT[t.exit_reason ?? ""] ?? t.exit_reason}{t.strategy ? ` · ${stratName(t.strategy)}` : t.source === "sit" ? " · sit" : ""}{t.ambiguous_bar ? " · both touched, stop assumed" : ""}</span>
                       <span className="flex-1" />
                       <span className="mono text-[13px] font-bold" style={{ color: tone(t.pnl ?? 0) }}>{signed(t.pnl ?? 0)}</span>
                       <span className="mono text-[10px]" style={{ color: tone(t.r_multiple ?? 0) }}>{fmtR(t.r_multiple ?? 0)}</span>
@@ -235,7 +240,7 @@ export default function Book({ uid, account, curve, live, today, onRefresh }: {
       <Card>
         <Eyebrow className="mb-2">The rules that keep it honest</Eyebrow>
         <ul className="text-[11.5px] text-[var(--text-2)] leading-relaxed space-y-1.5 list-disc pl-4">
-          <li>A decision made at night fills at the <b>next session&apos;s open</b> for stocks, or the <b>next hourly candle</b> for crypto. Never at the price the models saw.</li>
+          <li>A sit&apos;s order fills on the <b>next 5-minute bar</b> (a stock after hours waits for the next session&apos;s first bar). A nightly decision fills at the <b>next session&apos;s open</b> for stocks, or the <b>next hourly candle</b> for crypto. Never at the price the models saw.</li>
           <li>Slippage against you on every fill: {COSTS.slip_bps.stock_large} bps on large stocks and ETFs, {COSTS.slip_bps.stock_other} bps on smaller ones (doubled when the stock gapped more than {COSTS.gap_doubling * 100}%), {COSTS.slip_bps.crypto_major} bps on BTC/ETH/SOL perps, {COSTS.slip_bps.crypto_alt} bps on other coins, {COSTS.spread_bps.crypto_spot} bps spread on Robinhood spot crypto.</li>
           <li>Fees: $0 stock commissions but the SEC fee ({(COSTS.sec_fee * 10000).toFixed(2)} bps) and FINRA fee (${COSTS.taf_per_share}/share, capped ${COSTS.taf_cap}) on every sale; BloFin perps pay {COSTS.perp_taker * 100}% taker each way and funding every 8 hours at the live rate.</li>
           <li>Stops fill at the <b>gap price</b> when a bar opens through them. A bar that touches both the stop and the target counts as the stop.</li>

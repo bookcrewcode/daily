@@ -1,13 +1,15 @@
 "use client";
 
-// Debate — the argument, as a transcript. The news the jury saw, each
+// Debate — the argument. Two views: the sits, a fast jury before every
+// intraday trade (Sits.tsx), and the nightly transcript: the news the jury saw, each
 // juror's proposals, the rebuttals, the tally, and the judge. Jurors wear
 // anonymous letters inside the debate; here their real names are shown, with
 // one colour per lab, so Ben learns who tends to be right about what.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Card, Eyebrow } from "../ui";
+import { Card, Eyebrow, Segmented } from "../ui";
 import { loadOpinions, loadSessions, loadDeskChat, saveDeskChat, callFn, REVIEW_FN, modelLabel, labTone, fmtPrice, fmtMoney, type OpinionRow, type SessionRow, type ChatTurn } from "@/lib/desk/api";
+import Sits from "./Sits";
 import { templateName } from "@/lib/desk/playbook";
 import type { Tally } from "@/lib/desk/vote";
 
@@ -22,6 +24,7 @@ export default function Debate({ uid }: { uid: string }) {
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
   const [newsOpen, setNewsOpen] = useState(false);
+  const [view, setView] = useState<"sits" | "nightly">("sits");
 
   const load = useCallback(async () => {
     const s = await loadSessions(uid, 14);
@@ -40,15 +43,24 @@ export default function Debate({ uid }: { uid: string }) {
     return () => { live = false; };
   }, [sel]);
 
-  if (!loaded) return <div className="pt-3"><div className="skeleton h-12" /><div className="skeleton h-48 mt-3" /></div>;
+  const toggle = (
+    <div className="mt-3">
+      <Segmented value={view} onChange={setView} options={[{ key: "sits", label: "Sits · every trade" }, { key: "nightly", label: "Nightly jury" }]} />
+    </div>
+  );
+  if (view === "sits") return <div>{toggle}<Sits uid={uid} /></div>;
+  if (!loaded) return <div>{toggle}<div className="skeleton h-12 mt-3" /><div className="skeleton h-48 mt-3" /></div>;
   const session = sessions.find((s) => s.id === sel) ?? null;
 
   if (!session) {
     return (
+      <div>
+      {toggle}
       <Card className="mt-3">
         <p className="text-[13px] leading-relaxed">No debate yet. The transcript of every night lands here: proposals, rebuttals, the tally and the judge.</p>
         {err && <button onClick={load} className="mt-3 w-full rounded-lg bg-orange-500/15 text-orange-300 text-xs font-semibold py-2.5 active:scale-95">{err} — tap to retry</button>}
       </Card>
+      </div>
     );
   }
 
@@ -63,6 +75,7 @@ export default function Debate({ uid }: { uid: string }) {
 
   return (
     <div>
+      {toggle}
       {/* day picker */}
       <div className="flex gap-1.5 mt-3 overflow-x-auto no-scrollbar pb-1">
         {sessions.map((s) => (

@@ -53,7 +53,11 @@ export function scanBars(t: Pick<Trade, "side" | "stop" | "target" | "liq_price"
 }
 export function timeStopDue(t: Pick<Trade, "expires_on" | "instrument">, nowMs: number, nowEtDate: string): boolean {
   if (!t.expires_on) return false;
-  if (t.instrument === "stock" || t.instrument === "etf") return nowEtDate > t.expires_on && isNyseOpen(nowMs);
+  if (t.instrument === "stock" || t.instrument === "etf") {
+    if (t.expires_on.length === 10) return nowEtDate > t.expires_on && isNyseOpen(nowMs);
+    const at = Date.parse(t.expires_on);
+    return Number.isFinite(at) && nowMs >= at && isNyseOpen(nowMs);
+  }
   const at = Date.parse(t.expires_on);
   return Number.isFinite(at) && nowMs >= at;
 }

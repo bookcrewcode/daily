@@ -87,9 +87,10 @@ export function toTrade(x: Record<string, unknown>): Trade {
   };
 }
 
-export async function loadTrades(uid: string, opts: { owner?: string; status?: TradeStatus[]; limit?: number; sessionId?: string } = {}): Promise<{ trades: Trade[]; error: string }> {
+export async function loadTrades(uid: string, opts: { owner?: string; ownerLike?: string; status?: TradeStatus[]; limit?: number; sessionId?: string } = {}): Promise<{ trades: Trade[]; error: string }> {
   let q = supabase.from("desk_trades").select("*").eq("user_id", uid).order("created_at", { ascending: false }).limit(opts.limit ?? 200);
   if (opts.owner) q = q.eq("owner", opts.owner);
+  if (opts.ownerLike) q = q.like("owner", opts.ownerLike);
   if (opts.status?.length) q = q.in("status", opts.status);
   if (opts.sessionId) q = q.eq("session_id", opts.sessionId);
   const { data, error } = await q;
@@ -172,7 +173,7 @@ export const fmtR = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}R`;
 /* ── league, lessons, coach ─────────────────────────────────────────────── */
 export type Rating = {
   model: string; elo: number; n_matches: number; n_trades: number; n_wins: number; sum_r: number;
-  brier: number | null; brier_n: number; calib: CalibBin[]; n_abstain: number; updated_at: string;
+  brier: number | null; brier_n: number; calib: CalibBin[]; n_abstain: number; n_sits: number; n_sit_right: number; updated_at: string;
 };
 export async function loadRatings(uid: string): Promise<{ ratings: Rating[]; error: string }> {
   const { data, error } = await supabase.from("desk_ratings").select("*").eq("user_id", uid);
@@ -181,7 +182,7 @@ export async function loadRatings(uid: string): Promise<{ ratings: Rating[]; err
     ratings: ((data ?? []) as Record<string, unknown>[]).map((r) => ({
       model: String(r.model), elo: n(r.elo, 1500), n_matches: n(r.n_matches), n_trades: n(r.n_trades), n_wins: n(r.n_wins), sum_r: n(r.sum_r),
       brier: n(r.brier_n) > 0 ? n(r.brier_sum) / n(r.brier_n) : null, brier_n: n(r.brier_n), calib: Array.isArray(r.calib) ? (r.calib as CalibBin[]) : [],
-      n_abstain: n(r.n_abstain), updated_at: String(r.updated_at ?? ""),
+      n_abstain: n(r.n_abstain), n_sits: n(r.n_sits), n_sit_right: n(r.n_sit_right), updated_at: String(r.updated_at ?? ""),
     })),
     error: "",
   };
@@ -290,6 +291,62 @@ export async function loadNews(limit = 150, opts: { minImpact?: number; venue?: 
       id: String(r.id), link: String(r.link), title: String(r.title ?? ""), source: String(r.source ?? ""), published: String(r.published ?? ""), summary: String(r.summary ?? ""),
       tickers: Array.isArray(r.tickers) ? (r.tickers as string[]) : [], venue: String(r.venue ?? "none"), category: String(r.category ?? "other"), impact: n(r.impact),
       direction: String(r.direction ?? "none"), horizon: String(r.horizon ?? "none"), why: String(r.why ?? ""), tagged: r.tagged === true,
+    })),
+    error: "",
+  };
+}
+
+/* ── setups and sits ────────────────────────────────────────────────────── */
+export type SetupRow = {
+  id: string; strategy: string; symbol: string; venue: string; instrument: string; side: string; timeframe: string;
+  entry_ref: number; stop: number; target: number; leverage_hint: number; horizon_hours: number | null; horizon_days: number | null;
+  score: number; reasons: { label: string; value: string; ok: boolean; core: boolean }[]; invalidation: string; card: Record<string, unknown>;
+  status: string; sit_id: string | null; trade_id: string | null; shadow_trade_id: string | null; created_at: string; expires_at: string | null;
+};
+export async function loadSetups(uid: string, limit = 60, sinceHours = 48): Promise<{ setups: SetupRow[]; error: string }> {
+  const { data, error } = await supabase.from("desk_setups").select("*").eq("user_id", uid).gte("created_at", new Date(Date.now() - sinceHours * 3_600_000).toISOString()).order("created_at", { ascending: false }).limit(limit);
+  if (error) return { setups: [], error: "Couldn't load the setups." };
+  return {
+    setups: ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      id: String(r.id), strategy: String(r.strategy), symbol: String(r.symbol), venue: String(r.venue), instrument: String(r.instrument), side: String(r.side), timeframe: String(r.timeframe ?? "swing"),
+      entry_ref: n(r.entry_ref), stop: n(r.stop), target: n(r.target), leverage_hint: n(r.leverage_hint, 1), horizon_hours: nul(r.horizon_hours), horizon_days: nul(r.horizon_days),
+      score: n(r.score), reasons: Array.isArray(r.reasons) ? (r.reasons as SetupRow["reasons"]) : [], invalidation: String(r.invalidation ?? ""), card: (r.card as Record<string, unknown>) ?? {},
+      status: String(r.status ?? "new"), sit_id: r.sit_id ? String(r.sit_id) : null, trade_id: r.trade_id ? String(r.trade_id) : null, shadow_trade_id: r.shadow_trade_id ? String(r.shadow_trade_id) : null,
+      created_at: String(r.created_at ?? ""), expires_at: r.expires_at ? String(r.expires_at) : null,
+    })),
+    error: "",
+  };
+}
+export type SitRow = {
+  id: string; setup_id: string | null; symbol: string; strategy: string; timeframe: string; status: string; brief: Record<string, unknown>;
+  votes: { model: string; juror?: string; stance: string; confidence: number; side?: string; stop?: number; target?: number; leverage?: number; thesis?: string; what_would_prove_me_wrong?: string; tags?: string[]; error?: string }[];
+  decision: Record<string, unknown>; trade_id: string | null; cost_usd: number; error: string; created_at: string; updated_at: string;
+};
+export async function loadSits(uid: string, limit = 60, sinceHours = 72): Promise<{ sits: SitRow[]; error: string }> {
+  const { data, error } = await supabase.from("desk_sits").select("*").eq("user_id", uid).gte("created_at", new Date(Date.now() - sinceHours * 3_600_000).toISOString()).order("created_at", { ascending: false }).limit(limit);
+  if (error) return { sits: [], error: "Couldn't load the sits." };
+  return {
+    sits: ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      id: String(r.id), setup_id: r.setup_id ? String(r.setup_id) : null, symbol: String(r.symbol), strategy: String(r.strategy ?? ""), timeframe: String(r.timeframe ?? "swing"), status: String(r.status ?? ""),
+      brief: (r.brief as Record<string, unknown>) ?? {}, votes: Array.isArray(r.votes) ? (r.votes as SitRow["votes"]) : [], decision: (r.decision as Record<string, unknown>) ?? {},
+      trade_id: r.trade_id ? String(r.trade_id) : null, cost_usd: n(r.cost_usd), error: String(r.error ?? ""), created_at: String(r.created_at ?? ""), updated_at: String(r.updated_at ?? ""),
+    })),
+    error: "",
+  };
+}
+
+/* ── strategy ratings: written by desk-review when a strategy's shadow trade closes ── */
+export type StrategyRow = {
+  id: string; enabled: boolean; size_mult: number; benched_until: string | null;
+  stats: { n?: number; wins?: number; hit?: number | null; mean_r?: number; shrunk_r?: number; recent_r?: number; label?: string; as_of?: string }; updated_at: string;
+};
+export async function loadStrategies(uid: string): Promise<{ strategies: StrategyRow[]; error: string }> {
+  const { data, error } = await supabase.from("desk_strategies").select("*").eq("user_id", uid);
+  if (error) return { strategies: [], error: "Couldn't load the strategy ratings." };
+  return {
+    strategies: ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      id: String(r.id), enabled: r.enabled !== false, size_mult: n(r.size_mult, 1), benched_until: r.benched_until ? String(r.benched_until) : null,
+      stats: (r.stats as StrategyRow["stats"]) ?? {}, updated_at: String(r.updated_at ?? ""),
     })),
     error: "",
   };

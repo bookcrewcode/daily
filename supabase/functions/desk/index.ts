@@ -22,6 +22,7 @@ import { ORGANISING_RULE, playbookForPrompt, templateName } from "./lib/playbook
 import { cardLine } from "./lib/ta.ts";
 import { slippageBps } from "./lib/ledger.ts";
 import type { CalibBin } from "./lib/stats.ts";
+import { STRATEGIES } from "./lib/scan.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -133,28 +134,46 @@ type Packet = {
   day: string; regime: string; briefing: Item[]; context: string[]; cards: Record<string, string>; cardObj: Record<string, TapeCard>;
   movers: string[]; calendar: string[]; universe_note: string; book: J; card: J | null; lessons: string[]; jurors: { juror: string; model: string }[];
   rules: Rules; sectors: Record<string, string>; validated: Record<string, { instrument: Instrument; venue: Venue; name: string; meta: InstrumentMeta; largeCap: boolean; sector: string }>;
+  setups?: string[]; // phase 5: what the technical scan has on the table tonight
 };
 const ETF_THEME: Record<string, string> = { XLE: "Energy", USO: "Energy", OIH: "Energy", XOP: "Energy", BNO: "Energy", TLT: "Rates", IEF: "Rates", TBT: "Rates", SHY: "Rates", GLD: "Metals", SLV: "Metals", GDX: "Metals", SPY: "Index", QQQ: "Index", IWM: "Index", DIA: "Index", VOO: "Index", XLF: "Financials", KRE: "Financials", SMH: "Semis", SOXX: "Semis", XLK: "Tech", XLV: "Health", XLU: "Utilities", XLP: "Staples", XLY: "Discretionary", UUP: "Dollar", IBIT: "crypto", FBTC: "crypto", BITO: "crypto", ETHA: "crypto", MCHI: "China", FXI: "China", EEM: "EM" };
 
 async function buildPacket(uid: string, day: string, rules: Rules, acct: J, open: Trade[]): Promise<Packet | { error: string }> {
   const bR = await rest(`world_briefings?user_id=eq.${uid}&day=eq.${day}&select=lede,sections`);
   const brief = (bR.ok ? (bR.json as J[]) : [])[0];
-  if (!brief) return { error: `No briefing for ${day} yet — the desk reads the news the briefing gathered. Build tonight's briefing on the Card first.` };
   const items: Item[] = [];
-  for (const sec of (brief.sections as J[]) ?? []) {
+  for (const sec of ((brief?.sections as J[]) ?? [])) {
     for (const it of (sec.items as J[]) ?? []) {
       const ex = ((it.exposure as J[]) ?? []).map((e) => ({ t: str(e.ticker, 8).toUpperCase(), d: str(e.dir, 10), n: str(e.note, 140) })).filter((e) => /^[A-Z][A-Z.\-]{0,5}$/.test(e.t));
       items.push({ i: items.length, section: str(sec.key, 20), headline: str(it.headline, 220), why: str(it.why, 600), thesis: str(it.thesis, 400), url: str(((it.sources as J[]) ?? [])[0]?.url, 400), exposure: ex.map((e) => `${e.t} (${e.d}: ${e.n})`).join("; "), tickers: ex.map((e) => e.t) });
     }
   }
+  // The feed: the strongest tagged headlines of the last 24 hours, so the nightly jury reads what the sits read.
+  // With no briefing at all the feed is the whole packet; with one it adds what the briefing missed.
+  const feedR = await rest(`desk_news?tagged=eq.true&impact=gte.3&published=gte.${new Date(Date.now() - 24 * 3_600_000).toISOString()}&select=title,link,tickers,venue,category,impact,direction,horizon,why&order=impact.desc,published.desc&limit=${brief ? 25 : 45}`);
+  const seen = new Set(items.map((x) => x.headline.toLowerCase().slice(0, 60)));
+  const perpWanted: { symbol: string; venue: Venue }[] = [];
+  for (const n of (feedR.ok ? (feedR.json as J[]) : [])) {
+    const headline = str(n.title, 220);
+    const k = headline.toLowerCase().slice(0, 60);
+    if (!headline || seen.has(k)) continue;
+    seen.add(k);
+    const tickers = (Array.isArray(n.tickers) ? (n.tickers as unknown[]) : []).map((t) => String(t).toUpperCase()).filter((t) => /^[A-Z][A-Z.\-]{0,6}$/.test(t)).slice(0, 6);
+    if (n.venue === "crypto") for (const t of tickers) perpWanted.push({ symbol: `${t}-USDT`, venue: "blofin" });
+    items.push({ i: items.length, section: `feed · ${str(n.category, 20)} · impact ${num(n.impact)}/5`, headline, why: str(n.why, 600), thesis: `${str(n.direction, 10)} for ${str(n.horizon, 10) === "scalp" ? "hours" : str(n.horizon, 10) === "position" ? "weeks" : "days"}`, url: str(n.link, 400), exposure: tickers.join(", "), tickers: n.venue === "crypto" ? [] : tickers });
+  }
+  if (!items.length) return { error: `Nothing to read for ${day}: no briefing and an empty feed. Pull the feed, or build the briefing on the Card, then run again.` };
   const tickers = [...new Set(items.flatMap((x) => x.tickers))];
-  const wanted: { symbol: string; venue: Venue }[] = [...tickers.map((s) => ({ symbol: s, venue: "robinhood" as Venue })), ...open.map((t) => ({ symbol: t.symbol, venue: t.venue }))];
-  const [ctx, snap, movers, cal, instR, cardR, lessonR] = await Promise.all([
+  const wanted: { symbol: string; venue: Venue }[] = [...tickers.map((s) => ({ symbol: s, venue: "robinhood" as Venue })), ...open.map((t) => ({ symbol: t.symbol, venue: t.venue })), ...perpWanted].slice(0, 60);
+  const [ctx, snap, movers, cal, instR, cardR, lessonR, setR] = await Promise.all([
     tape(uid, { mode: "context" }), tape(uid, { mode: "snapshot", symbols: wanted }), tape(uid, { mode: "movers" }, 40000), tape(uid, { mode: "calendar", days: 7, symbols: tickers }, 60000),
     rest("desk_instruments?select=base,max_leverage&state=eq.live&order=vol_24h_usd.desc&limit=1000"),
     rest(`desk_cards?user_id=eq.${uid}&select=card,review&order=week_start.desc&limit=1`),
     rest(`desk_lessons?user_id=eq.${uid}&status=eq.active&select=text&order=applied_count.desc&limit=10`),
+    rest(`desk_setups?user_id=eq.${uid}&expires_at=gte.${new Date().toISOString()}&timeframe=in.(swing,position)&status=in.(new,held,sit,passed)&select=strategy,symbol,side,timeframe,entry_ref,stop,target,score,status&order=score.desc,created_at.desc&limit=25`),
   ]);
+  const SETUP_STATUS: Record<string, string> = { new: "fresh, no jury yet", held: "already on the book", sit: "a sit is running", passed: "the sit jury passed on it" };
+  const setups = (setR.ok ? (setR.json as J[]) : []).map((s) => `${s.symbol} ${s.side} · ${s.strategy} (${s.timeframe}) · ref ${num(s.entry_ref)} stop ${num(s.stop)} target ${num(s.target)} · confluence ${(num(s.score) * 100).toFixed(0)}% · ${SETUP_STATUS[String(s.status)] ?? String(s.status)}`);
   const cardObj: Record<string, TapeCard> = {};
   const cards: Record<string, string> = {};
   for (const c of ((ctx.cards as TapeCard[]) ?? [])) { cardObj[c.symbol] = c; }
@@ -176,7 +195,7 @@ async function buildPacket(uid: string, day: string, rules: Rules, acct: J, open
     gross: open.reduce((a, t) => a + t.notional, 0),
     positions: open.map((t) => `${t.symbol} ${t.side}${t.instrument === "crypto_perp" ? ` ${t.leverage}x` : ""} ${t.status} entry ${t.entry_price ?? t.entry_ref} stop ${t.stop} target ${t.target} notional $${t.notional.toFixed(0)}${t.expires_on ? ` until ${t.expires_on.slice(0, 10)}` : ""}`),
   };
-  return { day, regime: str(ctx.regime, 60), briefing: items, context, cards, cardObj, movers: moverLines, calendar, universe_note, book, card: cardRow ? (cardRow.card as J) : null, lessons, jurors: [], rules, sectors: {}, validated: {} };
+  return { day, regime: str(ctx.regime, 60), briefing: items, context, cards, cardObj, movers: moverLines, calendar, universe_note, book, card: cardRow ? (cardRow.card as J) : null, lessons, jurors: [], rules, sectors: {}, validated: {}, setups };
 }
 
 function rel(d: string, today: string): string {
@@ -191,7 +210,8 @@ function packetText(p: Packet): string {
   const b = p.book as { equity: number; cash: number; halted: boolean; halt_reason: string; gross: number; positions: string[] };
   const card = p.card ? `\n\nYOUR TRACK RECORD (measured, shrunk toward zero for small samples)\n${JSON.stringify(p.card).slice(0, 3000)}` : "\n\nYOUR TRACK RECORD: no closed trades yet. Every proposal tonight is scored later.";
   const lessons = p.lessons.length ? `\n\nACTIVE LESSONS (earned, not assumed)\n${p.lessons.map((l) => `- ${l}`).join("\n")}` : "";
-  return `MARKET CONTEXT (regime: ${p.regime})\n${p.context.join("\n")}\n\nTONIGHT'S NEWS (cite by [index])\n${brief}\n\nTAPE CARDS (symbols the news touches and open positions)\n${cardLines || "(none)"}\n\nCRYPTO PERPS: TOP VOLUME AND MOVERS (24h)\n${p.movers.join("\n") || "(unavailable)"}\n\nCALENDAR (next 7 days)\n${p.calendar.join("\n") || "(nothing scheduled)"}\n\nTHE BOOK\nequity $${b.equity.toFixed(0)} · cash $${b.cash.toFixed(0)} · gross notional $${b.gross.toFixed(0)}${b.halted ? ` · HALTED: ${b.halt_reason}` : ""}\n${b.positions.length ? b.positions.join("\n") : "no open positions"}${card}${lessons}`;
+  const setups = `\n\nSETUPS FROM THE TECHNICAL SCAN (coded rules on the daily and weekly tape; candidates for you too)\n${(p.setups ?? []).join("\n") || "(nothing on the table)"}`;
+  return `MARKET CONTEXT (regime: ${p.regime})\n${p.context.join("\n")}\n\nTONIGHT'S NEWS (cite by [index])\n${brief}\n\nTAPE CARDS (symbols the news touches and open positions)\n${cardLines || "(none)"}\n\nCRYPTO PERPS: TOP VOLUME AND MOVERS (24h)\n${p.movers.join("\n") || "(unavailable)"}${setups}\n\nCALENDAR (next 7 days)\n${p.calendar.join("\n") || "(nothing scheduled)"}\n\nTHE BOOK\nequity $${b.equity.toFixed(0)} · cash $${b.cash.toFixed(0)} · gross notional $${b.gross.toFixed(0)}${b.halted ? ` · HALTED: ${b.halt_reason}` : ""}\n${b.positions.length ? b.positions.join("\n") : "no open positions"}${card}${lessons}`;
 }
 
 function r1System(p: Packet, openSyms: string[]): string {
@@ -208,6 +228,7 @@ ${playbookForPrompt()}
 HOW TO PROPOSE
 - 0 to 3 proposals. "no_trade": true with a reason is a respected answer and is scored as one: when nothing has a clear mechanism from a story to a price, say so.
 - Cite evidence by [index] from the news list. A proposal with no evidence index is a guess.
+- The technical scan's setups are candidates too: take one when the news and the tape agree with it, at its levels or tighter, and say which check convinced you. A setup with no story behind it is still a guess.
 - entry_ref is the current price on the tape card (or your best read of it for a symbol without a card). Stops and targets are prices, not percentages.
 - confidence is your probability, 0 to 1, that the target is hit before the stop within the horizon. Calibration is tracked per model.
 - "what_would_prove_me_wrong" must be observable within days: a price, a data print, a headline.
@@ -225,8 +246,8 @@ async function patchSession(id: string, patch: J): Promise<boolean> {
   const r = await rest(`desk_sessions?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() }) });
   return r.ok;
 }
-async function saveOpinion(uid: string, sessionId: string, model: string, juror: string, round: string, res: Result, content: J): Promise<void> {
-  await rest("desk_opinions", { method: "POST", body: JSON.stringify({ user_id: uid, session_id: sessionId, model, juror, round, content, raw: res.raw.slice(0, 4000), latency_ms: res.latency, cost_usd: res.cost, tokens_in: res.tokensIn, tokens_out: res.tokensOut, error: res.error }) });
+async function saveOpinion(uid: string, sessionId: string, model: string, juror: string, round: string, res: Result, content: J, sitId?: string): Promise<void> {
+  await rest("desk_opinions", { method: "POST", body: JSON.stringify({ user_id: uid, session_id: sessionId || null, sit_id: sitId ?? null, model, juror, round, content, raw: res.raw.slice(0, 4000), latency_ms: res.latency, cost_usd: res.cost, tokens_in: res.tokensIn, tokens_out: res.tokensOut, error: res.error }) });
 }
 function seededShuffle<T>(arr: T[], seed: string): T[] {
   let h = 2166136261;
@@ -323,6 +344,7 @@ const costOf = (ops: J[]) => ops.reduce((a, o) => a + num(o.cost_usd), 0);
 
 // The child: one juror, one round, one model call, one opinion row.
 async function jurorJob(uid: string, body: J): Promise<J> {
+  if (String(body.round) === "sit") return await sitBallot(uid, body);
   const sid = str(body.session_id, 64), juror = str(body.juror, 2).toUpperCase(), round = str(body.round, 8);
   if (!/^[0-9a-f-]{36}$/i.test(sid) || !juror || !["1", "2", "judge"].includes(round)) return { error: "bad job" };
   const sR = await rest(`desk_sessions?id=eq.${sid}&user_id=eq.${uid}&select=*`);
@@ -398,6 +420,255 @@ async function jurorJob(uid: string, body: J): Promise<J> {
   await saveOpinion(uid, sid, j.model, juror, "2", res, { ballots: clean, change_my_mind: str(res.json?.change_my_mind, 300) });
   return { ok: !res.error, error: res.error, latency: res.latency, ballots: clean.length };
 }
+
+
+/* ── sits: a jury before every trade ──────────────────────────────────── */
+const SIT_SCHEMA = { name: "ballot", schema: { type: "object", additionalProperties: false, required: ["stance", "confidence", "side", "stop", "target", "leverage", "thesis", "what_would_prove_me_wrong", "tags"], properties: {
+  stance: { type: "string", enum: ["take", "pass"] }, confidence: { type: "number" }, side: { type: "string", enum: ["long", "short"] }, stop: { type: "number" }, target: { type: "number" }, leverage: { type: "number" },
+  thesis: { type: "string" }, what_would_prove_me_wrong: { type: "string" }, tags: { type: "array", items: { type: "string" } } } } };
+const SIT_SYSTEM = `You are one of three fast jurors on a paper-trading desk run by Ben, 19, who is learning markets by watching you. A coded strategy has flagged a setup. Decide whether the desk should take it now: "take" or "pass", with your confidence 0-1 that the target is hit before the stop within the horizon. Your confidence is scored for calibration later, so say what you believe.
+Judge the mechanism (does the reason for the move hold up?), the level (is the entry good here, or has the move already happened?), the timing (an event or headline that changes it), and the size of the risk. Read the headlines: quantitative, cash-flow news drifts; qualitative or anticipated news fades. You may tighten the stop or target and lower the leverage; you may not widen the stop, and you may not change the symbol. Give a thesis in at most 60 words and one observable thing that would prove you wrong. Tags from: chase, extended, no-catalyst, event-risk, crowded, thin-volume, counter-trend, clean, strong-confluence. Write in English. Return ONLY JSON matching the schema.`;
+type SitBrief = { setup: J; strategy: J; headlines: string[]; macro: string[]; book: J; rules: J; regime: string };
+function sitBriefText(b: SitBrief): string {
+  const s = b.setup as { symbol: string; venue: string; instrument: string; side: string; timeframe: string; entry_ref: number; stop: number; target: number; leverage_hint: number; horizon_hours: number | null; horizon_days: number | null; score: number; reasons: { label: string; value: string; ok: boolean; core: boolean }[]; invalidation: string; card: J };
+  const st = b.strategy as { name?: string; what?: string; why?: string; fails?: string };
+  const rr = Math.abs(s.target - s.entry_ref) / Math.abs(s.entry_ref - s.stop);
+  const lines = [
+    `SETUP: ${s.symbol} ${s.side} (${s.venue}, ${s.instrument}) · ${s.timeframe} · horizon ${s.horizon_hours ? `${s.horizon_hours} hours` : `${s.horizon_days} days`}${s.instrument === "crypto_perp" ? ` · leverage hint ${s.leverage_hint}x` : ""}`,
+    `LEVELS: entry ${s.entry_ref} · stop ${s.stop} · target ${s.target} · reward:risk ${rr.toFixed(2)} · confluence score ${(s.score * 100).toFixed(0)}%`,
+    `STRATEGY: ${st.name ?? ""} — ${st.what ?? ""} Why it might work: ${st.why ?? ""} When it fails: ${st.fails ?? ""}`,
+    `CHECKS (core must all hold; the rest are confirmations):`,
+    ...s.reasons.map((r) => `  [${r.ok ? "ok" : "no"}] ${r.core ? "core" : "confirm"} · ${r.label}: ${r.value}`),
+    `INVALIDATION: ${s.invalidation}`,
+    `TAPE: ${Object.entries(s.card ?? {}).filter(([, v]) => v !== null && v !== undefined).map(([k, v]) => `${k} ${typeof v === "number" ? (Math.abs(v) >= 100 ? v.toFixed(2) : v.toFixed(4)) : v}`).join(" · ")}`,
+    `REGIME: ${b.regime}`,
+    `HEADLINES ON ${s.symbol} (last 24h): ${b.headlines.length ? "" : "none"}`, ...b.headlines.map((h) => `  - ${h}`),
+    `MACRO (last 24h): ${b.macro.length ? "" : "quiet"}`, ...b.macro.map((h) => `  - ${h}`),
+    `THE BOOK: ${JSON.stringify(b.book)}`,
+    `RULES: ${JSON.stringify(b.rules)}`,
+  ];
+  return lines.join("\n");
+}
+async function sitBallot(uid: string, body: J): Promise<J> {
+  const sitId = str(body.sit_id, 64), juror = str(body.juror, 2).toUpperCase();
+  if (!/^[0-9a-f-]{36}$/i.test(sitId) || !juror) return { error: "bad job" };
+  const [sR, aR] = await Promise.all([rest(`desk_sits?id=eq.${sitId}&user_id=eq.${uid}&select=*`), rest(`desk_accounts?user_id=eq.${uid}&select=sit_roster`)]);
+  const sit = (sR.ok ? (sR.json as J[]) : [])[0];
+  if (!sit) return { error: "no sit" };
+  const roster = ((aR.ok ? (aR.json as J[]) : [])[0]?.sit_roster as string[]) ?? [];
+  const model = roster[LETTERS.indexOf(juror)];
+  if (!model) return { error: "no such juror" };
+  const dup = await rest(`desk_opinions?sit_id=eq.${sitId}&round=eq.sit&juror=eq.${juror}&select=id&limit=1`);
+  if (dup.ok && (dup.json as J[]).length) return { ok: true, skipped: "already answered" };
+  const key = (await secret("anthropic_api_key")) || ENV_KEY;
+  if (!key) return { error: "no key" };
+  const res = await callModel(key, { model, system: SIT_SYSTEM, user: sitBriefText(sit.brief as SitBrief), schema: SIT_SCHEMA, maxTokens: 1500, deadline: Date.now() + 100_000 });
+  const j: J = res.json ?? {};
+  const content = {
+    stance: j.stance === "take" ? "take" : "pass", confidence: Math.min(0.99, Math.max(0.01, num(j.confidence, 0.5))), side: j.side === "short" ? "short" : "long",
+    stop: num(j.stop), target: num(j.target), leverage: num(j.leverage, 1), thesis: str(j.thesis, 500), what_would_prove_me_wrong: str(j.what_would_prove_me_wrong, 300),
+    tags: (Array.isArray(j.tags) ? j.tags : []).map((t) => str(t, 24)).slice(0, 5),
+  };
+  await saveOpinion(uid, "", model, juror, "sit", res, res.json ? content : {}, sitId);
+  return { ok: !res.error, error: res.error, latency: res.latency, stance: content.stance };
+}
+
+// The tick calls this every five minutes: open juries for new setups, then settle the juries that have answered.
+async function collectSits(uid: string): Promise<J> {
+  const t0 = Date.now();
+  const aR = await rest(`desk_accounts?user_id=eq.${uid}&select=*`);
+  const acct = (aR.ok ? (aR.json as J[]) : [])[0];
+  if (!acct) return { error: "no account" };
+  const rules = rulesFor((acct.preset as PresetKey) ?? "aggressive", (acct.rules as Partial<Rules>) ?? {});
+  const roster = (Array.isArray(acct.sit_roster) ? (acct.sit_roster as string[]) : []).filter((m) => /^[a-z0-9.-]+\/[a-z0-9.:_-]+$/i.test(m)).slice(0, 5);
+  const jurors = roster.map((model, i) => ({ juror: LETTERS[i], model }));
+  const day = etDate(t0);
+  const halted = !!acct.halted_until && String(acct.halted_until) >= day;
+  const out: J = { opened: 0, settled: 0, taken: 0, passed: 0, waiting: 0, skipped: [] as string[] };
+  const skipped = out.skipped as string[];
+  const openR = await rest(`desk_trades?user_id=eq.${uid}&owner=eq.desk&status=in.(pending,open)&select=*`);
+  const open = (openR.ok ? (openR.json as J[]) : []).map((x) => x as unknown as Trade);
+  const openSyms = new Set(open.map((t) => t.symbol));
+
+  /* 1. settle the juries that have answered */
+  const lR = await rest(`desk_sits?user_id=eq.${uid}&status=eq.launched&select=*&order=created_at.asc&limit=20`);
+  const live = lR.ok ? (lR.json as J[]) : [];
+  const ratR = await rest(`desk_ratings?user_id=eq.${uid}&select=model,elo,n_trades,n_sits,calib`);
+  const ratings = ratR.ok ? (ratR.json as J[]) : [];
+  // A juror's vote carries its Elo once it has a record: ten shadow trades or twenty scored sits.
+  const hasRecord = (r: J | undefined) => !!r && (num(r.n_trades) >= 10 || num(r.n_sits) >= 20);
+  const rated = ratings.some(hasRecord);
+  const weightOf = (m: string) => { const r = ratings.find((x) => x.model === m); return !rated ? 1 : hasRecord(r) ? Math.max(0.25, (num(r!.elo, 1500) - 1400) / 200) : 0.5; };
+  const stratR = await rest(`desk_strategies?user_id=eq.${uid}&select=id,enabled,size_mult,benched_until`);
+  const strats = stratR.ok ? (stratR.json as J[]) : [];
+  const quoteCache: Record<string, number> = {};
+  const quote = async (symbol: string, venue: string) => {
+    if (quoteCache[symbol]) return quoteCache[symbol];
+    const q = await tape(uid, { mode: "quotes", symbols: [{ symbol, venue }] }, 20000);
+    const p = num(((q.quotes as J)?.[symbol] as J)?.price, NaN);
+    if (Number.isFinite(p)) quoteCache[symbol] = p;
+    return Number.isFinite(p) ? p : null;
+  };
+  for (const sit of live) {
+    const sid = String(sit.id);
+    const setup = (sit.brief as J)?.setup as J | undefined;
+    if (!setup) { await rest(`desk_sits?id=eq.${sid}`, { method: "PATCH", body: JSON.stringify({ status: "failed", error: "no setup in the brief", updated_at: iso(t0) }) }); continue; }
+    const oR = await rest(`desk_opinions?sit_id=eq.${sid}&round=eq.sit&select=model,juror,content,error,cost_usd&order=created_at.asc`);
+    const ops = oR.ok ? (oR.json as J[]) : [];
+    const launched = (sit.launched as Record<string, { at: number; n: number }>) ?? {};
+    const missing = jurors.filter((j) => !ops.some((o) => o.juror === j.juror));
+    if (missing.length) {
+      const stale = missing.filter((j) => !launched[j.juror] || t0 - launched[j.juror].at > 240_000);
+      const retry = stale.filter((j) => (launched[j.juror]?.n ?? 0) < 2);
+      const gaveUp = stale.filter((j) => (launched[j.juror]?.n ?? 0) >= 2);
+      for (const j of gaveUp) await saveOpinion(uid, "", j.model, j.juror, "sit", { json: null, raw: "", cost: 0, tokensIn: 0, tokensOut: 0, latency: 0, error: "no answer within the time allowed (two tries)" }, {}, sid);
+      if (retry.length) {
+        for (const j of retry) launched[j.juror] = { at: t0, n: (launched[j.juror]?.n ?? 0) + 1 };
+        await rest(`desk_sits?id=eq.${sid}`, { method: "PATCH", body: JSON.stringify({ launched, updated_at: iso(t0) }) });
+        await launchSit(uid, sid, retry.map((j) => j.juror));
+      }
+      if (missing.length > gaveUp.length) { (out.waiting as number)++; continue; }
+    }
+    // everyone answered (or was given up on): tally
+    const ops2 = missing.length ? (await rest(`desk_opinions?sit_id=eq.${sid}&round=eq.sit&select=model,juror,content,error,cost_usd&order=created_at.asc`)).json as J[] ?? ops : ops;
+    const votes = ops2.map((o) => ({ model: String(o.model), juror: String(o.juror), error: str(o.error, 120), ...((o.content as J) ?? {}) })) as (J & { model: string; stance?: string; confidence?: number; stop?: number; target?: number; leverage?: number; thesis?: string; side?: string })[];
+    const answered = votes.filter((v) => !v.error && v.stance);
+    const takers = answered.filter((v) => v.stance === "take");
+    const score = answered.reduce((a, v) => a + (v.stance === "take" ? 1 : -1) * num(v.confidence, 0.5) * weightOf(v.model), 0);
+    const cost = ops2.reduce((a, o) => a + num(o.cost_usd), 0);
+    const majority = answered.length >= 2 && takers.length >= Math.ceil(answered.length / 2 + 0.01) && score > 0;
+    const decision: J = { take: majority, score, answered: answered.length, takers: takers.length, reasons: [] as string[] };
+    const reasons = decision.reasons as string[];
+    let tradeId: string | null = null;
+    if (!majority) reasons.push(answered.length < 2 ? "fewer than two jurors answered" : `${takers.length} of ${answered.length} voted take (weighted score ${score.toFixed(2)})`);
+    else if (halted) reasons.push("the account is halted");
+    else if (openSyms.has(String(setup.symbol))) reasons.push(`${setup.symbol} is already on the book`);
+    else {
+      // the price now, not the price at the scan
+      const px = await quote(String(setup.symbol), String(setup.venue));
+      const side = String(setup.side) === "short" ? "short" : "long";
+      const entry0 = num(setup.entry_ref), stop0 = num(setup.stop), target0 = num(setup.target);
+      const entry = px ?? entry0;
+      const dir = side === "long" ? 1 : -1;
+      const risk0 = Math.abs(entry0 - stop0);
+      const progress = ((entry - entry0) * dir) / Math.max(1e-9, Math.abs(target0 - entry0));
+      if ((stop0 - entry) * dir >= 0) reasons.push(`the price (${entry}) is already through the stop (${stop0})`);
+      else if (progress > 0.5) reasons.push(`the price has already made ${(progress * 100).toFixed(0)}% of the move to the target since the scan`);
+      else {
+        // takers may tighten: the median of their stops and targets, only if on the right side and not wider
+        const med = (xs: number[]) => { const a = xs.filter((x) => x > 0).sort((p, q) => p - q); return a.length ? a[Math.floor((a.length - 1) / 2)] : null; };
+        const tStop = med(takers.map((v) => num(v.stop)));
+        const tTarget = med(takers.map((v) => num(v.target)));
+        const stop = tStop !== null && (tStop - entry) * dir < 0 && Math.abs(entry - tStop) <= Math.abs(entry - stop0) ? tStop : stop0;
+        const target = tTarget !== null && (tTarget - entry) * dir > 0 && Math.abs(tTarget - entry) <= Math.abs(target0 - entry) ? tTarget : target0;
+        const levHint = num(setup.leverage_hint, 1);
+        const tLev = takers.map((v) => num(v.leverage)).filter((x) => x >= 1);
+        const leverage = tLev.length ? Math.min(levHint, ...tLev) : levHint;
+        const strat = strats.find((x) => x.id === setup.strategy);
+        const benched = strat && (strat.enabled === false || (strat.benched_until && String(strat.benched_until) >= day));
+        const sizeMult = strat ? Math.max(0.25, Math.min(2, num(strat.size_mult, 1))) : 1;
+        if (benched) reasons.push(`strategy ${setup.strategy} is benched`);
+        else {
+          const best = [...takers].sort((a, b) => num(b.confidence) - num(a.confidence))[0];
+          const def = STRATEGIES.find((x) => x.id === setup.strategy);
+          const plan: Plan = {
+            venue: String(setup.venue) as Venue, instrument: String(setup.instrument) as Instrument, symbol: String(setup.symbol), side, leverage, template: 0,
+            thesis: str(best?.thesis, 700) || str(setup.invalidation, 300), catalyst: def?.what ?? "", falsifier: str(best?.what_would_prove_me_wrong, 400) || str(setup.invalidation, 400),
+            confidence: takers.reduce((a, v) => a + num(v.confidence, 0.5), 0) / Math.max(1, takers.length), entry_ref: entry, stop, target,
+            horizon_days: num(setup.horizon_days) || Math.max(1, Math.ceil(num(setup.horizon_hours, 24) / 24)), risk_pct: rules.risk_pct * sizeMult, evidence: [], key_risks: [], crosses_event: false,
+            timeframe: String(setup.timeframe) as Plan["timeframe"], horizon_hours: setup.horizon_hours === null || setup.horizon_hours === undefined ? undefined : num(setup.horizon_hours), strategy: String(setup.strategy),
+          };
+          let meta: InstrumentMeta = { max_leverage: plan.instrument === "crypto_perp" ? 20 : 1, contract_value: 1, lot_size: 1, tick_size: 0.01 };
+          let name = plan.symbol, largeCap = true, sector = "";
+          const v = await tape(uid, { mode: "validate", symbol: plan.symbol, venue: plan.venue }, 20000);
+          if (v.ok === true) { meta = v.meta as InstrumentMeta; name = str(v.name, 80); largeCap = v.largeCap === true; sector = str(v.sector, 40); }
+          const themeOf = (sym: string) => ETF_THEME[sym] ? ETF_THEME[sym] : /-USDT?$/.test(sym) ? "crypto" : sector || "other";
+          const g = guardrail(plan, { equity: num(acct.equity, 100000), rules: { ...rules, risk_pct: rules.risk_pct * Math.max(1, sizeMult) }, open, atr: num((setup.card as J)?.atr) || null, meta, halted, themeOf, drawdownHalved: drawdownHalved(num(acct.peak_equity, 100000), num(acct.equity, 100000)), newTonight: 0 });
+          if (!g.ok || !g.sizing) reasons.push(`guardrail: ${g.reasons.join("; ")}`);
+          else {
+            const uv = g.sizing.unit === "contract" ? meta.contract_value : 1;
+            const notional = g.sizing.qty * uv * g.plan.entry_ref;
+            const row = {
+              user_id: uid, owner: "desk", session_id: null, sit_id: sid, proposal_id: sid, source: "sit", strategy: plan.strategy, timeframe: plan.timeframe, horizon_hours: plan.horizon_hours ?? null, size_mult: sizeMult,
+              venue: g.plan.venue, instrument: g.plan.instrument, symbol: g.plan.symbol, name, side: g.plan.side, status: "pending", template: 0,
+              thesis: g.plan.thesis, catalyst: g.plan.catalyst, falsifier: g.plan.falsifier, confidence: g.plan.confidence, evidence: [], regime: str((setup.card as J)?.regime, 60), decided_at: iso(t0),
+              entry_ref: g.plan.entry_ref, stop: g.plan.stop, target: g.plan.target, horizon_days: g.plan.horizon_days, risk_pct: g.plan.risk_pct, leverage: g.sizing.leverage, qty: g.sizing.qty, unit: g.sizing.unit, contract_value: uv,
+              notional, margin: g.plan.instrument === "crypto_perp" ? notional / g.sizing.leverage : notional, liq_price: g.plan.instrument === "crypto_perp" ? liqPrice(g.plan.entry_ref, g.plan.side, g.sizing.leverage) : null,
+              fill_rule: "next_5m", slippage_bps: slippageBps(g.plan.instrument, g.plan.symbol, largeCap, 0),
+            };
+            const ins = await rest("desk_trades", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(row) });
+            const made = (ins.ok ? (ins.json as J[]) : [])[0];
+            if (!made) reasons.push("the order could not be written");
+            else { tradeId = String(made.id); open.push(made as unknown as Trade); openSyms.add(plan.symbol); reasons.push(...g.reasons); decision.sized = { qty: g.sizing.qty, unit: g.sizing.unit, notional, leverage: g.sizing.leverage, entry: g.plan.entry_ref, stop: g.plan.stop, target: g.plan.target }; }
+          }
+        }
+      }
+    }
+    const taken = !!tradeId;
+    decision.taken = taken;
+    await rest(`desk_sits?id=eq.${sid}`, { method: "PATCH", body: JSON.stringify({ status: "done", votes, decision, trade_id: tradeId, cost_usd: cost, updated_at: iso(t0) }) });
+    if (sit.setup_id) await rest(`desk_setups?id=eq.${sit.setup_id}`, { method: "PATCH", body: JSON.stringify({ status: taken ? "taken" : "passed", trade_id: tradeId }) });
+    (out.settled as number)++;
+    if (taken) (out.taken as number)++; else (out.passed as number)++;
+  }
+
+  /* 2. open juries for new setups, inside the day's budget */
+  if (jurors.length < 3) { skipped.push("the sit jury needs three models"); return { ...out, ms: Date.now() - t0 }; }
+  const dayStart = new Date(`${day}T04:00:00Z`).toISOString(); // roughly midnight New York
+  const costR = await rest(`desk_opinions?user_id=eq.${uid}&round=eq.sit&created_at=gte.${dayStart}&select=cost_usd`);
+  const spent = (costR.ok ? (costR.json as J[]) : []).reduce((a, o) => a + num(o.cost_usd), 0);
+  const budget = num(acct.sit_budget_usd, 3);
+  out.spent_today = Number(spent.toFixed(3));
+  if (spent >= budget) { skipped.push(`today's sit budget ($${budget}) is spent`); return { ...out, ms: Date.now() - t0 }; }
+  if (halted) { skipped.push("the account is halted"); return { ...out, ms: Date.now() - t0 }; }
+  const nR = await rest(`desk_setups?user_id=eq.${uid}&status=eq.new&expires_at=gte.${iso(t0)}&select=*&order=score.desc,created_at.desc&limit=12`);
+  const fresh = nR.ok ? (nR.json as J[]) : [];
+  const inFlight = new Set(live.map((s) => String(s.symbol)));
+  const cooldownMs = num(acct.cooldown_hours, 4) * 3_600_000;
+  const recentR = await rest(`desk_sits?user_id=eq.${uid}&created_at=gte.${iso(t0 - cooldownMs)}&select=symbol,decision`);
+  const cooled = new Set((recentR.ok ? (recentR.json as J[]) : []).filter((x) => (x.decision as J)?.take === false).map((x) => String(x.symbol)));
+  const [newsR] = await Promise.all([rest(`desk_news?tagged=eq.true&published=gte.${iso(t0 - 24 * 3_600_000)}&select=title,tickers,impact,direction,category,why,published,venue&order=impact.desc,published.desc&limit=300`)]);
+  const news = newsR.ok ? (newsR.json as J[]) : [];
+  let opened = 0;
+  for (const su of fresh) {
+    if (opened >= 6) break;
+    const sym = String(su.symbol);
+    if (openSyms.has(sym)) { await rest(`desk_setups?id=eq.${su.id}`, { method: "PATCH", body: JSON.stringify({ status: "held" }) }); continue; }
+    if (inFlight.has(sym)) continue;
+    if (cooled.has(sym)) { await rest(`desk_setups?id=eq.${su.id}`, { method: "PATCH", body: JSON.stringify({ status: "cooled" }) }); continue; }
+    if (open.length + opened >= rules.max_open) { skipped.push(`${rules.max_open} positions already open`); break; }
+    const base = sym.split("-")[0];
+    const mine = news.filter((n) => (Array.isArray(n.tickers) ? (n.tickers as string[]) : []).some((t) => t === sym || t === base)).slice(0, 6);
+    const macro = news.filter((n) => n.venue === "macro" && num(n.impact) >= 4).slice(0, 5);
+    const line = (n: J) => `${str(n.title, 110)} (impact ${n.impact}, ${n.direction}, ${n.category}${n.why ? `: ${str(n.why, 120)}` : ""})`;
+    const def = STRATEGIES.find((x) => x.id === su.strategy);
+    const brief: SitBrief = {
+      setup: { symbol: sym, venue: su.venue, instrument: su.instrument, side: su.side, timeframe: su.timeframe, entry_ref: num(su.entry_ref), stop: num(su.stop), target: num(su.target), leverage_hint: num(su.leverage_hint, 1), horizon_hours: su.horizon_hours ?? null, horizon_days: su.horizon_days ?? null, score: num(su.score), reasons: su.reasons ?? [], invalidation: str(su.invalidation, 300), card: su.card ?? {}, strategy: su.strategy },
+      strategy: def ? { name: def.name, what: def.what, why: def.why, fails: def.fails } : { name: String(su.strategy) },
+      headlines: mine.map(line), macro: macro.map(line),
+      book: { equity: num(acct.equity), open: open.map((t) => `${t.symbol} ${t.side} ${t.status}`), preset: acct.preset },
+      rules: { risk_pct: rules.risk_pct, min_rr: rules.min_rr, max_leverage: rules.max_leverage, max_open: rules.max_open }, regime: str((su.card as J)?.regime, 60),
+    };
+    const launched: Record<string, { at: number; n: number }> = {};
+    for (const j of jurors) launched[j.juror] = { at: t0, n: 1 };
+    const ins = await rest("desk_sits", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: uid, setup_id: su.id, symbol: sym, strategy: su.strategy, timeframe: su.timeframe, status: "launched", brief, launched }) });
+    const made = (ins.ok ? (ins.json as J[]) : [])[0];
+    if (!made) { skipped.push(`${sym}: could not open the sit`); continue; }
+    await rest(`desk_setups?id=eq.${su.id}`, { method: "PATCH", body: JSON.stringify({ status: "sit", sit_id: made.id }) });
+    await launchSit(uid, String(made.id), jurors.map((j) => j.juror));
+    inFlight.add(sym);
+    opened++;
+  }
+  out.opened = opened;
+  return { ...out, ms: Date.now() - t0 };
+}
+async function launchSit(uid: string, sitId: string, jurors: string[]): Promise<void> {
+  const calls = jurors.map((juror) => fetch(SELF, { method: "POST", headers: svcH, body: JSON.stringify({ mode: "juror", round: "sit", userId: uid, sit_id: sitId, juror }) }).then((r) => r.text()).catch((e) => console.error("[desk] launch sit", juror, e instanceof Error ? e.message : e)));
+  const all = Promise.allSettled(calls);
+  const rt = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+  if (rt?.waitUntil) rt.waitUntil(all); else await new Promise((r) => setTimeout(r, 1500));
+}
+const iso = (ms: number) => new Date(ms).toISOString();
 
 /* ── the run: one stage per call ──────────────────────────────────────── */
 async function run(uid: string, body: J): Promise<J> {
@@ -637,6 +908,7 @@ Deno.serve(async (req) => {
     }
     if (!/^[0-9a-f-]{36}$/i.test(uid)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     if (mode === "run") return ok(await run(uid, body));
+    if (mode === "collect") { if (token !== SERVICE_KEY && !body.cronSecret) return ok({ error: "the tick collects" }); return ok(await collectSits(uid)); }
     if (mode === "juror") { if (token !== SERVICE_KEY) return ok({ error: "jurors are launched by the desk itself" }); return ok(await jurorJob(uid, body)); }
     if (mode === "status") {
       const [a, sR] = await Promise.all([rest(`desk_accounts?user_id=eq.${uid}&select=*`), rest(`desk_sessions?user_id=eq.${uid}&select=id,day,seq,status,stage,cost_usd,error&order=day.desc,seq.desc&limit=1`)]);

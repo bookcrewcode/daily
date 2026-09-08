@@ -1,9 +1,10 @@
 import type { PresetKey, Rules, Side, Trade } from "./types.ts";
 import { addDays, nextSessionDate } from "./clock.ts";
 export const PRESETS: Record<PresetKey, Rules> = {
-  aggressive:      { risk_pct: 3,   max_notional_pct: 100, max_open: 4, gross_cap_pct: 200, max_leverage: 10, daily_halt_pct: 6, weekly_pause_pct: 12, heat_cap_pct: 12, max_new_per_night: 2, min_rr: 1.5, min_stop_atr: 0.5, liq_buffer: 0.2 },
-  very_aggressive: { risk_pct: 5,   max_notional_pct: 200, max_open: 4, gross_cap_pct: 400, max_leverage: 25, daily_halt_pct: 8, weekly_pause_pct: 15, heat_cap_pct: 15, max_new_per_night: 2, min_rr: 1.5, min_stop_atr: 0.5, liq_buffer: 0.2 },
-  moderate:        { risk_pct: 1.5, max_notional_pct: 25,  max_open: 5, gross_cap_pct: 100, max_leverage: 3,  daily_halt_pct: 4, weekly_pause_pct: 8,  heat_cap_pct: 6,  max_new_per_night: 2, min_rr: 1.5, min_stop_atr: 0.5, liq_buffer: 0.2 },
+  aggressive:      { risk_pct: 3,   max_notional_pct: 100, max_open: 10, gross_cap_pct: 500,  max_leverage: 10,  daily_halt_pct: 6,   weekly_pause_pct: 12,  heat_cap_pct: 30,   max_new_per_night: 99,  min_rr: 1.5, min_stop_atr: 0.5, liq_buffer: 0.2, max_per_theme: 3 },
+  very_aggressive: { risk_pct: 5,   max_notional_pct: 200, max_open: 10, gross_cap_pct: 800,  max_leverage: 25,  daily_halt_pct: 8,   weekly_pause_pct: 15,  heat_cap_pct: 50,   max_new_per_night: 99,  min_rr: 1.5, min_stop_atr: 0.5, liq_buffer: 0.2, max_per_theme: 4 },
+  moderate:        { risk_pct: 1.5, max_notional_pct: 25,  max_open: 5,  gross_cap_pct: 100,  max_leverage: 3,   daily_halt_pct: 4,   weekly_pause_pct: 8,   heat_cap_pct: 6,    max_new_per_night: 2,   min_rr: 1.5, min_stop_atr: 0.5, liq_buffer: 0.2, max_per_theme: 2 },
+  no_limits:       { risk_pct: 5,   max_notional_pct: 300, max_open: 20, gross_cap_pct: 1000, max_leverage: 100, daily_halt_pct: 100, weekly_pause_pct: 100, heat_cap_pct: 1000, max_new_per_night: 999, min_rr: 1.2, min_stop_atr: 0.3, liq_buffer: 0.1, max_per_theme: 99 },
 };
 export function rulesFor(preset: PresetKey, overrides?: Partial<Rules>): Rules {
   const base = { ...(PRESETS[preset] ?? PRESETS.aggressive) };

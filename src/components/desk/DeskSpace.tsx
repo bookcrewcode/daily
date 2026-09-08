@@ -1,8 +1,10 @@
 "use client";
 
-// The Desk — the space. Five gears: Tonight (the verdict), Debate (the
-// argument), Book (the ledger), League (the models against each other),
-// Lessons (what it has learned). Paper money on every screen, said plainly.
+// The Desk — the space. Six gears: Now (the desk this minute, and the
+// nightly verdict under it), Feed (the news funnel), Debate (the sits and the
+// nightly argument), Book (the ledger), League (models and strategies against
+// each other), Learn (the strategies and the lessons). Paper money on every
+// screen, said plainly.
 //
 // This shell owns the account row and the live marks; the gears render.
 // A failed read never looks like an empty account (GRADING.md rule 2), and
@@ -10,7 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { todayStr } from "@/lib/supabase";
-import { Card, Eyebrow, Segmented } from "../ui";
+import { Card, Eyebrow, SectionTitle, Segmented } from "../ui";
 import { ensureAccount, loadEquity, callFn, SYNC_FN, fmtMoney, fmtPct, type Account, type EquityPoint } from "@/lib/desk/api";
 import Book from "./Book";
 import Tonight from "./Tonight";
@@ -19,12 +21,14 @@ import League from "./League";
 import Lessons from "./Lessons";
 import DeskSettings from "./DeskSettings";
 import Feed from "./Feed";
+import Strategies from "./Strategies";
+import Now from "./Now";
 
-type Gear = "tonight" | "feed" | "debate" | "book" | "league" | "lessons";
+type Gear = "now" | "feed" | "debate" | "book" | "league" | "lessons";
 export type LiveMarks = { quotes: Record<string, { price?: number; at?: number; error?: string }>; marks: { owner: string; equity: number; unrealized: number; gross: number }[]; at: number };
 
 export default function DeskSpace({ uid }: { uid: string }) {
-  const [gear, setGear] = useState<Gear>("tonight");
+  const [gear, setGear] = useState<Gear>("now");
   const [account, setAccount] = useState<Account | null>(null);
   const [curve, setCurve] = useState<EquityPoint[]>([]);
   const [live, setLive] = useState<LiveMarks | null>(null);
@@ -122,13 +126,15 @@ export default function DeskSpace({ uid }: { uid: string }) {
 
       <div className="mt-3">
         <Segmented value={gear} onChange={setGear} options={[
-          { key: "tonight", label: "Tonight" }, { key: "feed", label: "Feed" }, { key: "debate", label: "Debate" }, { key: "book", label: "Book" }, { key: "league", label: "League" }, { key: "lessons", label: "Lessons" },
+          { key: "now", label: "Now" }, { key: "feed", label: "Feed" }, { key: "debate", label: "Debate" }, { key: "book", label: "Book" }, { key: "league", label: "League" }, { key: "lessons", label: "Learn" },
         ]} />
       </div>
 
       <div key={gear} className="tab-enter">
-        {gear === "tonight" && (
+        {gear === "now" && (
           <>
+            <Now uid={uid} account={account} live={live} today={today} onRefresh={() => { load(); refreshLive(); }} />
+            <SectionTitle>The nightly jury</SectionTitle>
             <Tonight uid={uid} account={account} today={today} onRan={() => { load(); refreshLive(); }} />
             <DeskSettings key={account.preset + account.roster.join(",") + account.judge + account.budget_usd_per_run + String(account.leverage_cap_override)} uid={uid} account={account} onSaved={load} />
           </>
@@ -137,7 +143,12 @@ export default function DeskSpace({ uid }: { uid: string }) {
         {gear === "debate" && <Debate uid={uid} />}
         {gear === "book" && <Book uid={uid} account={account} curve={curve} live={live} today={today} onRefresh={() => { load(); refreshLive(); }} />}
         {gear === "league" && <League uid={uid} account={account} live={live} />}
-        {gear === "lessons" && <Lessons uid={uid} />}
+        {gear === "lessons" && (
+          <>
+            <Strategies uid={uid} account={account} onSaved={load} />
+            <Lessons uid={uid} />
+          </>
+        )}
       </div>
     </div>
   );
