@@ -45,3 +45,6 @@ next-env.d.ts
 
 # bundled edge-function deploy artifacts
 supabase/functions/*/dist/
+# caption courier venv (see tools/caption-courier/courier.py)
+tools/caption-courier/venv/
+tools/caption-courier/courier.log
