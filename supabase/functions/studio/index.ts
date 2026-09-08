@@ -61,7 +61,7 @@ async function getUser(token: string) {
 
 async function models(token: string, uid: string) {
   try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_settings?select=ai_models&user_id=eq.${uid}`, { headers: { apikey: ANON, Authorization: `Bearer ${token}` } });
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_settings?select=ai_models&user_id=eq.${uid}`, { headers: hdr(token) });
     if (!r.ok) return { smart: D_SMART, fast: D_FAST };
     const m = (await r.json())?.[0]?.ai_models ?? {};
     return { smart: okModel(m.smart) ? m.smart : D_SMART, fast: okModel(m.fast) ? m.fast : D_FAST };
@@ -139,7 +139,8 @@ type Chunk = { id: string; text: string };
 const S = (v: unknown, n: number) => String(v ?? "").trim().slice(0, n);
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const strs = (v: unknown, n: number) => arr(v).map((x) => S(x, n)).filter(Boolean);
-const hdr = (token: string) => ({ apikey: ANON, Authorization: `Bearer ${token}`, "Content-Type": "application/json" });
+// the gateway wants the apikey that matches the bearer: the service key in service mode, else anon
+const hdr = (token: string) => ({ apikey: SERVICE_KEY && token === SERVICE_KEY ? SERVICE_KEY : ANON, Authorization: `Bearer ${token}`, "Content-Type": "application/json" });
 
 // `uid` is set only in service mode: the RPCs then scope to that user themselves
 async function rpc<T>(token: string, fn: string, args: C, uid = ""): Promise<T | null> {
