@@ -269,9 +269,10 @@ async function run(uid: string, body: J): Promise<J> {
 
   const sR = await rest(`desk_sessions?user_id=eq.${uid}&day=eq.${day}&select=*&order=seq.desc&limit=1`);
   let s = (sR.ok ? (sR.json as J[]) : [])[0];
-  const finished = (st: string) => st === "done" || st === "failed" || st === "dry";
-  if (s && finished(String(s.status)) && !force) return { session: s, stage: s.stage, next: false, cost: num(s.cost_usd) };
-  if (!s || (finished(String(s.status)) && force)) {
+  // A dry session keeps status "dry" through every stage; it is finished only at stage "done".
+  const finished = (row: J) => row.status === "done" || row.status === "failed" || (row.status === "dry" && row.stage === "done");
+  if (s && finished(s) && !force) return { session: s, stage: s.stage, next: false, cost: num(s.cost_usd) };
+  if (!s || (finished(s) && force)) {
     const seq = s ? num(s.seq) + 1 : 1;
     const c = await rest("desk_sessions", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: uid, day, seq, status: dry ? "dry" : "running", stage: "packet" }) });
     s = (c.ok ? (c.json as J[]) : [])[0];
