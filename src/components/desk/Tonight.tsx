@@ -16,6 +16,12 @@ import type { Trade } from "@/lib/desk/types";
 type CalEvent = { day: string; time_et: string; kind: string; label: string };
 type BriefItem = { i: number; headline: string; url: string };
 const STAGE_TEXT: Record<string, string> = { packet: "reading the news and the tape…", round1: "the jurors are writing their proposals…", round2: "the jurors are arguing…", judge: "the judge is writing…", done: "done" };
+// "round1:5" while five jurors are still answering in their own invocations.
+function stageLabel(stage: string): string {
+  const [base, n] = stage.split(":");
+  const text = STAGE_TEXT[base] ?? base;
+  return n ? `${text} · ${n} still answering` : text;
+}
 const VENUE: Record<string, string> = { robinhood: "Robinhood", blofin: "BloFin" };
 
 function clockLine(today: string): string {
@@ -61,11 +67,14 @@ export default function Tonight({ uid, account, today, onRan }: { uid: string; a
     if (running.current) return;
     running.current = true; setRunErr(""); setStage("packet");
     try {
-      for (let i = 0; i < 6; i++) {
-        const r = await callFn<{ stage?: string; next?: boolean; error?: string }>(DESK_FN, { mode: "run", day: today, force: force && i === 0 }, 170_000);
+      // Each call moves one stage or reports that jurors are still answering
+      // in their own invocations; poll every 15s, for at most 15 minutes.
+      for (let i = 0; i < 60; i++) {
+        const r = await callFn<{ stage?: string; next?: boolean; waiting?: boolean; pending?: string[]; error?: string }>(DESK_FN, { mode: "run", day: today, force: force && i === 0 }, 150_000);
         if (r.error) { setRunErr(r.error); break; }
-        setStage(r.stage ?? "");
+        setStage(r.waiting ? `${r.stage ?? ""}:${(r.pending ?? []).length}` : (r.stage ?? ""));
         if (!r.next) break;
+        if (r.waiting) await new Promise((res) => setTimeout(res, 15_000));
       }
       await load();
       sfx.coin(); buzz(12);
@@ -193,7 +202,7 @@ export default function Tonight({ uid, account, today, onRan }: { uid: string; a
       <Card className="mt-3">
         <button onClick={() => run(!!isToday && latest?.status === "done")} disabled={!!stage}
           className="w-full rounded-lg bg-[var(--neon)] text-black text-sm font-bold py-2.5 active:scale-95 disabled:opacity-40">
-          {stage ? (STAGE_TEXT[stage] ?? stage) : isToday && latest?.status === "done" ? "Run the desk again tonight" : "Run the desk now"}
+          {stage ? stageLabel(stage) : isToday && latest?.status === "done" ? "Run the desk again tonight" : "Run the desk now"}
         </button>
         <p className="text-[10px] text-[var(--text-4)] mt-2 leading-relaxed">
           Runs automatically at 9:30pm ET after the briefing. A run costs about {fmtMoney(0.45, 2)} with the default jury; the cap is {fmtMoney(account.budget_usd_per_run, 2)}. A second run tonight is recorded separately and does not queue orders twice.

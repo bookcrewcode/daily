@@ -4,9 +4,10 @@
 // purpose: every loader returns { data, error } shaped results so a failed
 // read can never render like an empty state (GRADING.md rule 2).
 
-import { supabase, SUPABASE_URL, SUPABASE_ANON } from "@/lib/supabase";
+import { supabase, SUPABASE_URL, SUPABASE_ANON, todayStr } from "@/lib/supabase";
 import type { PresetKey, Rules, Trade, TradeStatus } from "./types";
 import type { Tally } from "./vote";
+import type { CalibBin } from "./stats";
 
 export const TAPE_FN = `${SUPABASE_URL}/functions/v1/tape`;
 export const DESK_FN = `${SUPABASE_URL}/functions/v1/desk`;
@@ -161,3 +162,106 @@ export const fmtMoney = (v: number, digits = 0) => (v < 0 ? "-" : "") + "$" + Ma
 export const fmtPct = (v: number, d = 1) => `${v >= 0 ? "+" : ""}${(v * 100).toFixed(d)}%`;
 export const fmtPrice = (v: number) => (v >= 1000 ? v.toLocaleString(undefined, { maximumFractionDigits: 1 }) : v >= 100 ? v.toFixed(2) : v >= 1 ? v.toFixed(3) : v.toPrecision(4));
 export const fmtR = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}R`;
+
+/* ── league, lessons, coach ─────────────────────────────────────────────── */
+export type Rating = {
+  model: string; elo: number; n_matches: number; n_trades: number; n_wins: number; sum_r: number;
+  brier: number | null; brier_n: number; calib: CalibBin[]; n_abstain: number; updated_at: string;
+};
+export async function loadRatings(uid: string): Promise<{ ratings: Rating[]; error: string }> {
+  const { data, error } = await supabase.from("desk_ratings").select("*").eq("user_id", uid);
+  if (error) return { ratings: [], error: "Couldn't load the ratings." };
+  return {
+    ratings: ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      model: String(r.model), elo: n(r.elo, 1500), n_matches: n(r.n_matches), n_trades: n(r.n_trades), n_wins: n(r.n_wins), sum_r: n(r.sum_r),
+      brier: n(r.brier_n) > 0 ? n(r.brier_sum) / n(r.brier_n) : null, brier_n: n(r.brier_n), calib: Array.isArray(r.calib) ? (r.calib as CalibBin[]) : [],
+      n_abstain: n(r.n_abstain), updated_at: String(r.updated_at ?? ""),
+    })),
+    error: "",
+  };
+}
+
+// Latest 4pm mark per owner (the desk and every shadow book).
+export async function loadLatestEquity(uid: string): Promise<{ latest: Record<string, { day: string; equity: number }>; error: string }> {
+  const { data, error } = await supabase.from("desk_equity").select("owner,day,equity").eq("user_id", uid).order("day", { ascending: false }).limit(400);
+  if (error) return { latest: {}, error: "Couldn't load the shadow books." };
+  const latest: Record<string, { day: string; equity: number }> = {};
+  for (const r of (data ?? []) as Record<string, unknown>[]) { const o = String(r.owner); if (!latest[o]) latest[o] = { day: String(r.day), equity: n(r.equity) }; }
+  return { latest, error: "" };
+}
+
+export type LessonStatus = "hidden" | "emerging" | "active";
+export type Lesson = {
+  id: string; text: string; scope: Record<string, unknown>; for_count: number; against_count: number; applied_count: number;
+  status: LessonStatus; source_trade_ids: string[]; created_at: string; updated_at: string;
+};
+export async function loadLessons(uid: string): Promise<{ lessons: Lesson[]; error: string }> {
+  const { data, error } = await supabase.from("desk_lessons").select("*").eq("user_id", uid).order("for_count", { ascending: false }).order("updated_at", { ascending: false }).limit(200);
+  if (error) return { lessons: [], error: "Couldn't load the lessons." };
+  return {
+    lessons: ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      id: String(r.id), text: String(r.text ?? ""), scope: (r.scope as Record<string, unknown>) ?? {}, for_count: n(r.for_count), against_count: n(r.against_count),
+      applied_count: n(r.applied_count), status: (["hidden", "emerging", "active"].includes(String(r.status)) ? String(r.status) : "hidden") as LessonStatus,
+      source_trade_ids: Array.isArray(r.source_trade_ids) ? (r.source_trade_ids as string[]) : [], created_at: String(r.created_at ?? ""), updated_at: String(r.updated_at ?? ""),
+    })),
+    error: "",
+  };
+}
+
+export type CoachCell = { n: number; hit: number | null; mean_r: number | null; shrunk_r: number | null; profit_factor: number | null; t: number | null; label: string };
+export type CoachCard = { week_start: string; card: { as_of?: string; desk?: Record<string, Record<string, CoachCell> | CoachCell>; models?: Record<string, CoachCell & { elo?: number; brier?: number | null; matches?: number }> }; review: string; created_at: string };
+export async function loadCards(uid: string, limit = 4): Promise<{ cards: CoachCard[]; error: string }> {
+  const { data, error } = await supabase.from("desk_cards").select("*").eq("user_id", uid).order("week_start", { ascending: false }).limit(limit);
+  if (error) return { cards: [], error: "Couldn't load the coach's cards." };
+  return {
+    cards: ((data ?? []) as Record<string, unknown>[]).map((r) => ({ week_start: String(r.week_start), card: (r.card as CoachCard["card"]) ?? {}, review: String(r.review ?? ""), created_at: String(r.created_at ?? "") })),
+    error: "",
+  };
+}
+
+/* ── settings ───────────────────────────────────────────────────────────── */
+export type AccountPatch = { preset?: PresetKey; roster?: string[]; judge?: string; budget_usd_per_run?: number; leverage_cap_override?: number | null; rules?: Partial<Rules> };
+export async function updateAccount(uid: string, patch: AccountPatch): Promise<{ error: string }> {
+  const { error } = await supabase.from("desk_accounts").update(patch).eq("user_id", uid);
+  return { error: error ? "Couldn't save the desk settings." : "" };
+}
+export const MODEL_ID = /^[a-z0-9.-]+\/[a-z0-9.:_-]+$/i;
+
+/* ── ask the desk: one persisted thread per session (topic_id is a uuid) ── */
+export type ChatTurn = { role: "user" | "assistant"; content: string };
+export async function loadDeskChat(uid: string, sessionId: string): Promise<{ turns: ChatTurn[]; error: string }> {
+  const { data, error } = await supabase.from("chat_messages").select("role,content").eq("user_id", uid).eq("advisor", "desk").eq("topic_id", sessionId).order("created_at", { ascending: true }).limit(60);
+  if (error) return { turns: [], error: "Couldn't load the thread." };
+  return { turns: ((data ?? []) as Record<string, unknown>[]).map((r) => ({ role: r.role === "assistant" ? "assistant" : "user", content: String(r.content ?? "") })), error: "" };
+}
+export async function saveDeskChat(uid: string, sessionId: string, role: ChatTurn["role"], content: string): Promise<{ error: string }> {
+  const { error } = await supabase.from("chat_messages").insert({ user_id: uid, advisor: "desk", topic_id: sessionId, role, content });
+  return { error: error ? "Couldn't save the thread." : "" };
+}
+
+/* ── the Card's one-line chip ───────────────────────────────────────────── */
+export type DeskChip = { equity: number; start: number; day_pnl: number; open: number; pending: number; halted: boolean; tonight: string };
+export async function loadDeskChip(uid: string): Promise<DeskChip | null> {
+  const [a, t, s, e] = await Promise.all([
+    supabase.from("desk_accounts").select("equity,starting_equity,halted_until").eq("user_id", uid).maybeSingle(),
+    supabase.from("desk_trades").select("status").eq("user_id", uid).eq("owner", "desk").in("status", ["open", "pending"]),
+    supabase.from("desk_sessions").select("day,status,stage").eq("user_id", uid).neq("status", "dry").order("day", { ascending: false }).order("seq", { ascending: false }).limit(1),
+    supabase.from("desk_equity").select("day,pnl_day").eq("user_id", uid).eq("owner", "desk").order("day", { ascending: false }).limit(1),
+  ]);
+  if (a.error || !a.data) return null; // no account yet: no chip, not a fake zero
+  const rows = (t.data ?? []) as { status: string }[];
+  const sess = ((s.data ?? []) as { day: string; status: string; stage: string }[])[0];
+  const today = todayStr();
+  const last = ((e.data ?? []) as { day: string; pnl_day: number }[])[0];
+  const tonight = !sess ? "no debate yet" : sess.day !== today ? `last debate ${sess.day.slice(5)}` : sess.status === "done" ? "tonight's debate is in" : sess.status === "running" ? "the jury is sitting" : sess.status === "skipped" ? "waiting for the briefing" : sess.status;
+  return {
+    equity: n(a.data.equity, 100000), start: n(a.data.starting_equity, 100000), day_pnl: last && last.day === today ? n(last.pnl_day) : 0,
+    open: rows.filter((r) => r.status === "open").length, pending: rows.filter((r) => r.status === "pending").length,
+    halted: !!a.data.halted_until && String(a.data.halted_until) >= today, tonight,
+  };
+}
+export function deskChipText(c: DeskChip): string {
+  const all = c.equity - c.start;
+  const pos = c.open + c.pending ? `${c.open} open${c.pending ? ` · ${c.pending} queued` : ""}` : "flat";
+  return `${fmtMoney(c.equity)} · ${all >= 0 ? "+" : "-"}${fmtMoney(Math.abs(all))} all time · ${pos}${c.halted ? " · halted" : ""} · ${c.tonight}`;
+}

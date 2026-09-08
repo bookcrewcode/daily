@@ -29,6 +29,7 @@ import {
 import { splitsFor } from "@/lib/dayList";
 import { burstConfetti } from "@/lib/confetti";
 import { readPlanCache } from "@/lib/learnApi";
+import { loadDeskChip, deskChipText, type DeskChip } from "@/lib/desk/api";
 import { studyDay } from "@/lib/session";
 import { sfx, buzz } from "@/lib/fx";
 import { Num, Eyebrow, SegRing, ProgressCircle } from "./ui";
@@ -102,6 +103,16 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
     read();
     document.addEventListener("visibilitychange", read);
     return () => document.removeEventListener("visibilitychange", read);
+  }, [uid]);
+
+  // the Desk in one line: equity, today, open positions, tonight's status
+  const [deskChip, setDeskChip] = useState<DeskChip | null>(null);
+  useEffect(() => {
+    let live = true;
+    const read = () => { Promise.resolve().then(() => loadDeskChip(uid)).then((c) => { if (live && c) setDeskChip(c); }); };
+    read();
+    document.addEventListener("visibilitychange", read);
+    return () => { live = false; document.removeEventListener("visibilitychange", read); };
   }, [uid]);
 
   const fxRef = useRef<{ day: string; fx: FxStore }>({ day: "", fx: { closed: false, ten: false, gold: false } });
@@ -589,6 +600,15 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
               </div>
             )}
           </div>
+
+          {deskChip && (
+            <button onClick={() => onGoTab("desk")}
+              className="w-full mt-2 rounded-xl border border-[var(--border-1)] bg-[var(--card)] px-3.5 py-2.5 text-left flex items-center gap-2 active:scale-[0.99]">
+              <span className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] shrink-0">Desk</span>
+              <p className="text-[12px] font-semibold flex-1 min-w-0 truncate">{deskChipText(deskChip)}</p>
+              <span className="text-[10px] opacity-45">→</span>
+            </button>
+          )}
 
           {learnPlan && (
             <button onClick={() => onGoTab("learning")}

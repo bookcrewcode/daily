@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Card, Eyebrow, SectionTitle, Sparkline } from "../ui";
-import { loadTrades, fmtMoney, fmtPct, fmtPrice, fmtR, type Account, type EquityPoint } from "@/lib/desk/api";
+import { loadTrades, callFn, REVIEW_FN, fmtMoney, fmtPct, fmtPrice, fmtR, type Account, type EquityPoint } from "@/lib/desk/api";
 import { unrealized, COSTS } from "@/lib/desk/ledger";
 import { tradeStats, curveStats, tradesToDetect } from "@/lib/desk/stats";
 import { templateName } from "@/lib/desk/playbook";
@@ -16,6 +16,7 @@ import type { LiveMarks } from "./DeskSpace";
 
 const VENUE: Record<string, string> = { robinhood: "Robinhood", blofin: "BloFin" };
 const INSTR: Record<string, string> = { stock: "stock", etf: "ETF", crypto_spot: "spot", crypto_perp: "perp" };
+const QUADRANT: Record<string, string> = { earned: "earned it: good process, good outcome", bad_luck: "bad luck: good process, bad outcome", dumb_luck: "dumb luck: bad process, good outcome", deserved: "deserved: bad process, bad outcome" };
 const EXIT: Record<string, string> = { stop: "stopped out", target: "hit target", time: "time stop", thesis_broke: "thesis broke", liquidated: "liquidated", halt: "halted", cancelled: "never filled" };
 const tone = (v: number) => (v > 0 ? "var(--ok)" : v < 0 ? "var(--bad)" : "var(--text-3)");
 const signed = (v: number, d = 0) => (v >= 0 ? "+" : "-") + fmtMoney(Math.abs(v), d);
@@ -35,6 +36,8 @@ export default function Book({ uid, account, curve, live, today, onRefresh }: {
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [pmBusy, setPmBusy] = useState<string | null>(null);
+  const [pmErr, setPmErr] = useState("");
 
   const load = useCallback(async () => {
     const r = await loadTrades(uid, { owner: "desk", limit: 300 });
@@ -43,6 +46,15 @@ export default function Book({ uid, account, curve, live, today, onRefresh }: {
     setLoaded(true);
   }, [uid]);
   useEffect(() => { Promise.resolve().then(load); }, [load]);
+
+  async function writePostmortem(id: string, force: boolean) {
+    if (pmBusy) return;
+    setPmBusy(id); setPmErr("");
+    const r = await callFn<{ review?: Record<string, unknown> }>(REVIEW_FN, { mode: "postmortem", trade_id: id, force }, 150_000);
+    if (r.error) setPmErr(r.error);
+    else await load();
+    setPmBusy(null);
+  }
 
   if (!loaded) return <div className="pt-3"><div className="skeleton h-28" /><div className="skeleton h-40 mt-3" /></div>;
 
@@ -197,12 +209,18 @@ export default function Book({ uid, account, curve, live, today, onRefresh }: {
                       </p>
                       {text ? (
                         <div className="rounded-lg bg-[var(--raised)] border border-[var(--border-1)] p-3">
-                          <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mb-1.5">Post-mortem</p>
+                          <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mb-1.5">Post-mortem{typeof review.quadrant === "string" && review.quadrant ? ` · ${QUADRANT[String(review.quadrant)] ?? review.quadrant}` : ""}</p>
                           <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{text}</p>
+                          {typeof review.lesson === "string" && review.lesson && <p className="text-[11.5px] text-[var(--text-2)] mt-2"><span className="text-[var(--text-4)]">Lesson:</span> {review.lesson}</p>}
+                          <button onClick={() => writePostmortem(t.id, true)} disabled={pmBusy !== null} className="mono text-[10px] text-[var(--text-4)] mt-2 active:scale-95 disabled:opacity-50">{pmBusy === t.id ? "rewriting…" : "rewrite the post-mortem"}</button>
                         </div>
                       ) : (
-                        <p className="mono text-[10px] text-[var(--text-4)]">post-mortem pending</p>
+                        <div className="flex items-center gap-3">
+                          <button onClick={() => writePostmortem(t.id, false)} disabled={pmBusy !== null} className="rounded-lg bg-[var(--neon)]/15 text-[var(--neon)] text-xs font-semibold px-3 py-1.5 active:scale-95 disabled:opacity-50">{pmBusy === t.id ? "Writing…" : "Write the post-mortem"}</button>
+                          <span className="mono text-[9px] text-[var(--text-4)]">grades the reasoning apart from the money</span>
+                        </div>
                       )}
+                      {pmErr && pmBusy === null && openId === t.id && <p className="text-[11px] text-orange-400">{pmErr}</p>}
                     </div>
                   )}
                 </Card>

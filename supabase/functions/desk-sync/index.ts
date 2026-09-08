@@ -139,6 +139,14 @@ async function sync(uid: string, force: { mark?: boolean } = {}): Promise<SyncRe
         if (today === fillDay && b && nowMs < b.openMs + 90_000) continue;
         const bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "1d", range: "5d" }));
         bar = bars.find((x) => etDate(x.t) === fillDay);
+        // The opening print itself: the first five-minute bar of the session. Yahoo's
+        // daily bar can carry the previous session's open for minutes after the bell
+        // (SPY on 2026-09-08 read 772.01 at 9:35 when the open was 769.07).
+        if (b) {
+          const intraday = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "5m", range: fillDay === today ? "1d" : "5d" }));
+          const first = intraday.find((x) => x.t >= b.openMs && x.t < b.openMs + 15 * 60_000);
+          if (first) bar = { ...(bar ?? first), t: first.t, o: first.o };
+        }
         if (!bar) continue;
         const prev = bars.filter((x) => etDate(x.t) < fillDay).pop();
         gap = prev && prev.c > 0 ? bar.o / prev.c - 1 : 0;

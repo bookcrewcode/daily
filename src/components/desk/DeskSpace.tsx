@@ -15,6 +15,9 @@ import { ensureAccount, loadEquity, callFn, SYNC_FN, fmtMoney, fmtPct, type Acco
 import Book from "./Book";
 import Tonight from "./Tonight";
 import Debate from "./Debate";
+import League from "./League";
+import Lessons from "./Lessons";
+import DeskSettings from "./DeskSettings";
 
 type Gear = "tonight" | "debate" | "book" | "league" | "lessons";
 export type LiveMarks = { quotes: Record<string, { price?: number; at?: number; error?: string }>; marks: { owner: string; equity: number; unrealized: number; gross: number }[]; at: number };
@@ -123,22 +126,18 @@ export default function DeskSpace({ uid }: { uid: string }) {
       </div>
 
       <div key={gear} className="tab-enter">
-        {gear === "tonight" && <Tonight uid={uid} account={account} today={today} onRan={() => { load(); refreshLive(); }} />}
+        {gear === "tonight" && (
+          <>
+            <Tonight uid={uid} account={account} today={today} onRan={() => { load(); refreshLive(); }} />
+            <DeskSettings key={account.preset + account.roster.join(",") + account.judge + account.budget_usd_per_run + String(account.leverage_cap_override)} uid={uid} account={account} onSaved={load} />
+          </>
+        )}
         {gear === "debate" && <Debate uid={uid} />}
         {gear === "book" && <Book uid={uid} account={account} curve={curve} live={live} today={today} onRefresh={() => { load(); refreshLive(); }} />}
-        {gear === "league" && <ComingCard what="The League" why="ranks the models against each other once their shadow trades have closed. It arrives with phase 3, when there is something to rank." />}
-        {gear === "lessons" && <ComingCard what="Lessons" why="hold the post-mortems, the weekly coach review and the playbook. They arrive with phase 3, after the first trades have closed and taught something." />}
+        {gear === "league" && <League uid={uid} account={account} live={live} />}
+        {gear === "lessons" && <Lessons uid={uid} />}
       </div>
     </div>
-  );
-}
-
-function ComingCard({ what, why }: { what: string; why: string }) {
-  return (
-    <Card className="mt-3">
-      <p className="text-sm font-semibold">{what}</p>
-      <p className="text-[12px] text-[var(--text-3)] mt-1 leading-relaxed">{what} {why}</p>
-    </Card>
   );
 }
 

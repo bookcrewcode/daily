@@ -5,9 +5,9 @@
 // anonymous letters inside the debate; here their real names are shown, with
 // one colour per lab, so Ben learns who tends to be right about what.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, Eyebrow } from "../ui";
-import { loadOpinions, loadSessions, modelLabel, labTone, fmtPrice, fmtMoney, type OpinionRow, type SessionRow } from "@/lib/desk/api";
+import { loadOpinions, loadSessions, loadDeskChat, saveDeskChat, callFn, REVIEW_FN, modelLabel, labTone, fmtPrice, fmtMoney, type OpinionRow, type SessionRow, type ChatTurn } from "@/lib/desk/api";
 import { templateName } from "@/lib/desk/playbook";
 import type { Tally } from "@/lib/desk/vote";
 
@@ -176,11 +176,7 @@ export default function Debate({ uid }: { uid: string }) {
         </div>
       )}
 
-      {/* ask the desk: phase 4 */}
-      <Card className="mt-4">
-        <Eyebrow className="mb-1.5">Ask the desk</Eyebrow>
-        <p className="text-[11.5px] text-[var(--text-3)] leading-relaxed">Questions about this debate, answered with the packet and the transcript in hand, arrive with phase 4.</p>
-      </Card>
+      <AskDesk uid={uid} session={session} />
 
       <p className="mono text-[9px] text-[var(--text-4)] mt-3">{jurorName.size} jurors · session cost {fmtMoney(session.cost_usd, 2)}</p>
     </div>
@@ -225,5 +221,63 @@ function JurorBubble({ op }: { op: OpinionRow }) {
       ))}
       <p className="mono text-[9px] text-[var(--text-4)] mt-1.5">{fmtMoney(op.cost_usd, 3)} · {(op.latency_ms / 1000).toFixed(0)}s</p>
     </Bubble>
+  );
+}
+
+// Ask the desk: a question about this night, answered with the packet and
+// the transcript in hand. One thread per session, persisted in chat_messages
+// (advisor "desk", topic_id = the session id), so it survives a reload.
+function AskDesk({ uid, session }: { uid: string; session: SessionRow }) {
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const busyRef = useRef(false);
+
+  useEffect(() => {
+    let live = true;
+    Promise.resolve().then(() => loadDeskChat(uid, session.id)).then((r) => { if (!live) return; if (r.error) setErr(r.error); else { setTurns(r.turns); setErr(""); } });
+    return () => { live = false; };
+  }, [uid, session.id]);
+
+  async function ask() {
+    const message = q.trim();
+    if (!message || busyRef.current) return;
+    busyRef.current = true; setBusy(true); setErr("");
+    const history = turns.slice(-10);
+    setTurns((t) => [...t, { role: "user", content: message }]);
+    setQ("");
+    const r = await callFn<{ text?: string; cost?: number; model?: string }>(REVIEW_FN, { mode: "ask", day: session.day, message, history }, 120_000);
+    if (r.error || !r.text) {
+      setErr(r.error || "The desk did not answer.");
+      setTurns((t) => t.slice(0, -1));
+      setQ(message);
+    } else {
+      const answer = r.text;
+      setTurns((t) => [...t, { role: "assistant", content: answer }]);
+      const [a, b] = await Promise.all([saveDeskChat(uid, session.id, "user", message), saveDeskChat(uid, session.id, "assistant", answer)]);
+      if (a.error || b.error) setErr("Answered, but the thread could not be saved.");
+    }
+    busyRef.current = false; setBusy(false);
+  }
+
+  return (
+    <Card className="mt-4">
+      <Eyebrow className="mb-1.5">Ask the desk</Eyebrow>
+      <p className="text-[10.5px] text-[var(--text-4)] leading-relaxed">Anything about this night: why a juror liked a level, what a term means, what the tally was really saying. The answer is written from the packet and the transcript above, not from memory.</p>
+      {turns.length > 0 && (
+        <div className="mt-2.5 space-y-2">
+          {turns.map((t, i) => (
+            <div key={i} className={`rounded-xl px-3 py-2 text-[12px] leading-relaxed whitespace-pre-wrap ${t.role === "user" ? "bg-[var(--neon)]/10 ml-6" : "bg-black/30 border border-[var(--border-1)] mr-4"}`}>{t.content}</div>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2 mt-2.5">
+        <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") ask(); }} placeholder="Why did the room turn on B2?" disabled={busy}
+          className="flex-1 min-w-0 rounded-lg bg-black/30 border border-[var(--border-1)] px-3 py-2 text-[12px] outline-none focus:border-[var(--neon)]/50 disabled:opacity-60" />
+        <button onClick={ask} disabled={busy || !q.trim()} className="rounded-lg bg-[var(--neon)] text-black text-xs font-bold px-3.5 active:scale-95 disabled:opacity-40">{busy ? "…" : "Ask"}</button>
+      </div>
+      {err && <p className="text-[11px] text-orange-400 mt-2">{err}</p>}
+    </Card>
   );
 }
