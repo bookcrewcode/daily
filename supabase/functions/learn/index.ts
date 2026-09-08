@@ -382,6 +382,9 @@ function cleanCard(c: C, fade: number, chunks: Chunk[], videos: Video[]): C | nu
 // `noPretest` (a cold notebook) keeps card 0 as the first teach card.
 function assemble(raw: unknown[], n: number, fade: number, quant: boolean, chunks: Chunk[], videos: Video[], noPretest = false): { cards: C[]; ok: boolean; soft: boolean; clips: string } {
   const kept = raw.map((c, i) => ({ c: cleanCard((c ?? {}) as C, fade, chunks, videos), i })).filter((x) => x.c) as { c: C; i: number }[];
+  // which shapes the model keeps getting wrong: the tuning signal for the prompt
+  const rejected = raw.map((c, i) => (kept.some((k) => k.i === i) ? "" : String((c as C)?.kind ?? "?"))).filter(Boolean);
+  if (rejected.length) console.error(`[learn:lesson] rejected ${rejected.length} malformed card(s): ${rejected.join(", ")}`);
   const proposed = raw.filter((c) => (c as C)?.kind === "teach" && (c as C)?.clip).length;
   // pretest: the first question aimed at the first teach card, else the first question
   const t0 = kept.find((x) => !isQ(x.c))?.i;
@@ -499,7 +502,7 @@ WORDS — this matters more than anything else:
 - Questions and their "explain" lines follow the same rules — no unexplained term in a question.
 
 SHAPE OF THE RUN
-- Exactly ${n} cards: at least 7 question cards, the rest teach cards. Never two teach cards in a row — every teach card is followed by at least one question about it, and the LAST card is a question.
+- Between ${n} and ${n + 3} cards: at least ${Math.ceil(n * 0.75)} question cards, the rest teach cards. Never two teach cards in a row — every teach card is followed by at least one question about it, and the LAST card is a question.
 - Card 0 is a teach card. Every question card carries "pretest_of": the 0-based index in this array of the teach card that answers it.
 - Mix the question kinds; never the same kind twice in a row.${quant ? "\n- This is a quantitative chapter: include at least 2 \"worked\" cards." : ""}${interests.length ? `\n- HIS INTERESTS: ${interests.map((x) => `"${x}"`).join(", ")}. At least one scenario card is set in one of HIS interests with real quantities (e.g. a $6.50 DoorDash order, 4 miles); give that card "hook".` : ""}
 
@@ -523,9 +526,9 @@ ${m.text}
 ${videos.length ? `
 VIDEOS — timed transcripts of real explainers for this chapter:
 ${videos.map((v, i) => timedBlock(v, i + 1)).join("")}
-CLIP RULE: on a teach card, if one of these videos explains the SAME idea as the card, add
+CLIP RULE: Ben learns best from a short clip, so put a clip on EVERY teach card whose idea one of these videos explains — when the videos cover the chapter, most teach cards should carry one:
 "clip": {"v": 1, "start": "02:10", "end": "03:25", "quote": "8-20 words copied verbatim from the transcript inside that window"}.
-The clip must run 30–150 seconds, start where that explanation starts, and cover only that idea. If no video segment teaches exactly this card's idea, OMIT clip — a wrong clip is worse than none. Never invent timestamps.
+The clip must run 30–150 seconds, start where that explanation starts, and cover only that idea; use a different window for each card. Only when NO window teaches the card's idea, omit clip — a wrong clip is worse than none. Never invent timestamps.
 ` : ""}
 (${CITE_RULE})`;
       try {

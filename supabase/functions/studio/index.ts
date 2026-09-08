@@ -387,8 +387,7 @@ Return ONLY JSON: {"videos":[{"id":"the 11-character YouTube id","title":"…","
       return v.error ? err(v.error) : ok({ videos: v.videos, withTranscripts: v.withTranscripts, ready: v.ready });
     }
 
-    // ── prep: the nightly job — write the next runs so every notebook opens
-    // instantly. Sequential, ≤150s a chapter, honest per-chapter errors. ──
+    // ── prep: write the next runs ahead of time, one chapter a call (≤150s)
     if (mode === "prep") {
       if (!svc) return err("Prep runs from the nightly job only.");
       const max = Math.max(1, Math.min(10, Math.floor(Number(body.max) || 3)));
@@ -442,7 +441,11 @@ Return ONLY JSON: {"videos":[{"id":"the 11-character YouTube id","title":"…","
           if (j.error || !cards.length) throw new Error(j.error || "no cards came back");
           row.clips = `${cards.filter((c) => c.clip).length}/${cards.filter((c) => c.kind === "teach").length}`;
           if (j.cached === false) row.error = "cards built but not saved to the chapter";
-        } catch (e) { row.error = e instanceof Error && e.name === "TimeoutError" ? "timed out after 150s" : e instanceof Error ? e.message : "failed"; }
+        } catch (e) {
+          row.error = e instanceof Error && e.name === "TimeoutError" ? "timed out after 150s" : e instanceof Error ? e.message : "failed";
+          // most failures are transient (a malformed run, a model hiccup): retry in ~30 min, not 6h
+          await fetch(`${SUPABASE_URL}/rest/v1/notebook_chapters?id=eq.${ch.id}&run=is.null`, { method: "PATCH", headers: { ...hdr(token), Prefer: "return=minimal" }, body: JSON.stringify({ run_at: new Date(Date.now() - 5.5 * 3600_000).toISOString() }) }).catch(() => {});
+        }
         row.ms = Date.now() - t0;
         console.error(`[studio:prep] "${ch.title}" clips=${row.clips} ms=${row.ms}${row.error ? ` error=${row.error}` : ""}`);
         out.push(row);
