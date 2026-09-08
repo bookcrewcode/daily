@@ -1,17 +1,12 @@
-// The Desk — the deterministic tally. Pure. The jurors argue; code counts.
 import type { Plan } from "./types.ts";
 import { calibratedConfidence, type CalibBin } from "./stats.ts";
-
 export type Ballot = { juror: string; model: string; stances: Record<string, { stance: "support" | "oppose" | "abstain"; confidence: number }> };
 export type Weight = { model: string; weight: number; calib: CalibBin[] };
 export type Tally = { proposal_id: string; score: number; voters: number; support: number; oppose: number; candidate: boolean; rr: number };
-
 export function equalWeights(models: string[]): Weight[] {
   return models.map((m) => ({ model: m, weight: 1, calib: [] }));
 }
-
 const clamp01 = (x: number) => (Number.isFinite(x) ? Math.min(1, Math.max(0, x)) : 0.5);
-
 export function tally(proposals: { id: string; plan: Plan }[], ballots: Ballot[], weights: Weight[], minVoters = 3): Tally[] {
   const w = new Map(weights.map((x) => [x.model, x]));
   const totalW = weights.reduce((a, x) => a + x.weight, 0);

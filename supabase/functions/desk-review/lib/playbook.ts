@@ -1,14 +1,8 @@
-// The Desk — the playbook: reusable trade templates with the evidence grade
-// behind each one (research brief 1). Jurors must name the template they are
-// using; the League later shows which templates actually pay.
-
 export type Template = {
   id: number; name: string; trigger: string; direction: string; horizon: string; invalidation: string;
   evidence: "strong" | "medium" | "weak" | "folklore" | "practitioner"; sizeHint: "normal" | "small";
 };
-
 export const ORGANISING_RULE = "Quantitative, cash-flow news under-reacts (drift). Qualitative, transient or anticipated news over-reacts (reversal). Never trade the print itself; trade what unfolds over the following days.";
-
 export const PLAYBOOK: Template[] = [
   { id: 1, name: "Earnings drift after a big beat with raised guidance", trigger: "top-decile earnings surprise AND raised guidance; price gaps up and holds above the 200-day", direction: "long the stock, entered after the first 30 minutes or on a day-2 pullback", horizon: "10–60 days", invalidation: "close below the event-day low, or guidance walked back", evidence: "strong", sizeHint: "normal" },
   { id: 2, name: "Earnings miss with cut guidance", trigger: "bottom-decile surprise with lowered guidance; price below the 200-day", direction: "short the stock (or long the sector ETF against it)", horizon: "10–40 days", invalidation: "close above the event-day high", evidence: "strong", sizeHint: "normal" },
@@ -23,11 +17,9 @@ export const PLAYBOOK: Template[] = [
   { id: 11, name: "Crypto sell-the-news", trigger: "a long-anticipated positive event (ETF approval, upgrade, halving) after a run-up above 30%", direction: "reduce or short into the event, cover one to two weeks after", horizon: "3–15 days", invalidation: "a new high within three days of the event", evidence: "folklore", sizeHint: "small" },
   { id: 12, name: "Exchange hack fade versus solvency stand-aside", trigger: "a hack at a solvent exchange (fade the dip in 24–72h) versus a solvency or fraud event (stand aside until contagion clears)", direction: "BTC/ETH, COIN", horizon: "1–10 days", invalidation: "withdrawals halted turns a hack into a solvency event", evidence: "practitioner", sizeHint: "small" },
 ];
-
 export function templateName(id: number): string {
   return PLAYBOOK.find((t) => t.id === id)?.name ?? "no template";
 }
-
 export function playbookForPrompt(): string {
   return PLAYBOOK.map((t) =>
     `${t.id}. ${t.name} — trigger: ${t.trigger}. Direction: ${t.direction}. Horizon ${t.horizon}. Wrong if: ${t.invalidation}. Evidence: ${t.evidence}${t.sizeHint === "small" ? " (smallest size)" : ""}.`,

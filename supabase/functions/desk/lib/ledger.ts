@@ -1,11 +1,6 @@
-// The Desk — the paper ledger's arithmetic. Pure.
-// Every ambiguity resolves against the trader: worse side of the spread,
-// the gap price rather than the stop price, stop before target on a bar that
-// touched both, the next open rather than the close the model saw.
 import type { Bar, ExitReason, Instrument, Side, Trade } from "./types.ts";
 import { isMajorCrypto, unitValue } from "./types.ts";
 import { isNyseOpen } from "./clock.ts";
-
 export const COSTS = {
   slip_bps: { stock_large: 5, stock_other: 15, crypto_major: 10, crypto_alt: 25, crypto_spot: 0 },
   spread_bps: { crypto_spot: 50 },
@@ -16,38 +11,30 @@ export const COSTS = {
   maint_margin: 0.005,
   gap_doubling: 0.02,       // |gap| above this doubles stock slippage
 };
-
 export function slippageBps(instrument: Instrument, symbol: string, largeCap: boolean, gapPct: number): number {
   if (instrument === "crypto_spot") return COSTS.spread_bps.crypto_spot;
   if (instrument === "crypto_perp") return isMajorCrypto(symbol) ? COSTS.slip_bps.crypto_major : COSTS.slip_bps.crypto_alt;
   const base = largeCap ? COSTS.slip_bps.stock_large : COSTS.slip_bps.stock_other;
   return Math.abs(gapPct) > COSTS.gap_doubling ? base * 2 : base;
 }
-
-// Entering long or exiting short pays up; entering short or exiting long receives less.
 export function fillPrice(ref: number, side: Side, bps: number, action: "enter" | "exit"): number {
   const payUp = (side === "long") === (action === "enter");
   return payUp ? ref * (1 + bps / 10_000) : ref * (1 - bps / 10_000);
 }
-
 function sellSideFees(qty: number, notional: number): number {
   return notional * COSTS.sec_fee + Math.min(qty * COSTS.taf_per_share, COSTS.taf_cap);
 }
-
 export function entryFees(t: { instrument: Instrument; side: Side; qty: number; notional: number }): number {
   if (t.instrument === "crypto_perp") return t.notional * COSTS.perp_taker;
   if (t.instrument === "crypto_spot") return 0;
   return t.side === "short" ? sellSideFees(t.qty, t.notional) : 0;
 }
-
 export function exitFees(t: { instrument: Instrument; side: Side; qty: number; notional: number }): number {
   if (t.instrument === "crypto_perp") return t.notional * COSTS.perp_taker;
   if (t.instrument === "crypto_spot") return 0;
   return t.side === "long" ? sellSideFees(t.qty, t.notional) : 0;
 }
-
 export type ExitEvent = { reason: "stop" | "target" | "liquidated"; price: number; t: number; ambiguous: boolean };
-
 export function scanBars(t: Pick<Trade, "side" | "stop" | "target" | "liq_price" | "instrument">, bars: Bar[]): ExitEvent | null {
   for (const b of bars) {
     if (t.side === "long") {
@@ -64,34 +51,25 @@ export function scanBars(t: Pick<Trade, "side" | "stop" | "target" | "liq_price"
   }
   return null;
 }
-
-// Stocks: expires_on is an ET date; the trade closes at the first open session after it.
-// Crypto: expires_on is an ISO timestamp.
 export function timeStopDue(t: Pick<Trade, "expires_on" | "instrument">, nowMs: number, nowEtDate: string): boolean {
   if (!t.expires_on) return false;
   if (t.instrument === "stock" || t.instrument === "etf") return nowEtDate > t.expires_on && isNyseOpen(nowMs);
   const at = Date.parse(t.expires_on);
   return Number.isFinite(at) && nowMs >= at;
 }
-
-// Positive = paid by this position. Longs pay when the rate is positive.
 export function fundingCharge(notional: number, rate: number, side: Side): number {
   return notional * rate * (side === "long" ? 1 : -1);
 }
-
 export function unrealized(t: Pick<Trade, "side" | "qty" | "entry_price" | "unit" | "contract_value">, mark: number): number {
   const entry = t.entry_price ?? 0;
   return (mark - entry) * t.qty * unitValue(t) * (t.side === "long" ? 1 : -1);
 }
-
 export function positionValue(t: Trade, mark: number): number {
   if (t.instrument === "crypto_perp") return t.margin + unrealized(t, mark);
   const v = t.qty * mark;
   return t.side === "long" ? v : -v;
 }
-
 export type CloseResult = { exit_price: number; fees_total: number; pnl: number; pnl_pct: number; r_multiple: number; cash_delta: number };
-
 export function closeTrade(t: Trade, exitRef: number, bps: number, reason: ExitReason): CloseResult {
   const liquidated = reason === "liquidated";
   const exit_price = liquidated ? (t.liq_price ?? exitRef) : fillPrice(exitRef, t.side, bps, "exit");
@@ -114,13 +92,11 @@ export function closeTrade(t: Trade, exitRef: number, bps: number, reason: ExitR
     cash_delta,
   };
 }
-
 export function entryCashDelta(t: Trade): number {
   if (t.instrument === "crypto_perp") return -(t.margin + t.fees);
   if (t.side === "short") return t.notional - t.fees;
   return -(t.notional + t.fees);
 }
-
 export function bookEquity(startCash: number, closed: Pick<Trade, "pnl">[], open: Trade[], marks: Record<string, number>): { equity: number; marketValue: number; gross: number } {
   let equity = startCash;
   for (const c of closed) equity += c.pnl ?? 0;
@@ -134,7 +110,6 @@ export function bookEquity(startCash: number, closed: Pick<Trade, "pnl">[], open
   }
   return { equity, marketValue, gross };
 }
-
 export function excursions(t: Trade, bars: Bar[]): { mae_r: number; mfe_r: number } {
   const entry = t.entry_price ?? t.entry_ref;
   const risk = Math.abs(entry - t.stop);

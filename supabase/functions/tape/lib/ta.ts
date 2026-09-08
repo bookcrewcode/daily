@@ -1,22 +1,15 @@
-// The Desk — technical indicators and the tape card the jurors read. Pure.
-// Only tools with evidence behind them as RISK and REGIME tools (research
-// brief 1): trend state, RSI as an over-extension flag, ATR for stops and
-// sizing, realized vol, 52-week distance, relative strength, volume, gap.
 import type { Bar, Instrument, TapeCard, Venue } from "./types.ts";
-
 export function sma(values: number[], n: number): number | null {
   if (n <= 0 || values.length < n) return null;
   let s = 0;
   for (let i = values.length - n; i < values.length; i++) s += values[i];
   return s / n;
 }
-
 export function pctChange(closes: number[], n: number): number {
   const len = closes.length;
   if (n <= 0 || len < n + 1 || !(closes[len - 1 - n] > 0)) return 0;
   return closes[len - 1] / closes[len - 1 - n] - 1;
 }
-
 export function rsi14(closes: number[]): number | null {
   const P = 14;
   if (closes.length < P + 1) return null;
@@ -35,7 +28,6 @@ export function rsi14(closes: number[]): number | null {
   if (l === 0) return 100;
   return 100 - 100 / (1 + g / l);
 }
-
 export function atr14(bars: Bar[]): number | null {
   const P = 14;
   if (bars.length < P + 1) return null;
@@ -49,7 +41,6 @@ export function atr14(bars: Bar[]): number | null {
   for (let i = P + 1; i < bars.length; i++) a = (a * (P - 1) + tr(i)) / P;
   return a;
 }
-
 export function realizedVol20(closes: number[], periodsPerYear = 252): number | null {
   const P = 20;
   if (closes.length < P + 1) return null;
@@ -59,7 +50,6 @@ export function realizedVol20(closes: number[], periodsPerYear = 252): number | 
   const v = r.reduce((a, b) => a + (b - mean) ** 2, 0) / (r.length - 1);
   return Math.sqrt(v) * Math.sqrt(periodsPerYear);
 }
-
 export function buildCard(input: {
   symbol: string; venue: Venue; instrument: Instrument; name: string; bars: Bar[]; spyBars?: Bar[];
   extra?: { funding?: number; vol24hUsd?: number; maxLeverage?: number };
@@ -105,11 +95,7 @@ export function buildCard(input: {
     ...(input.extra?.maxLeverage !== undefined ? { maxLeverage: input.extra.maxLeverage } : {}),
   };
 }
-
 const pc = (x: number | null, d = 1) => (x === null ? "n/a" : `${x >= 0 ? "+" : ""}${(x * 100).toFixed(d)}%`);
-
-// One compact line per symbol for the prompt: features, not raw candles
-// (models read time series badly; they read labelled numbers fine).
 export function cardLine(c: TapeCard): string {
   const px = c.price >= 100 ? c.price.toFixed(2) : c.price >= 1 ? c.price.toFixed(3) : c.price.toPrecision(4);
   const parts = [
