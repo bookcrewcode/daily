@@ -1,12 +1,17 @@
-// Learn edge function — the teaching half of the notebook: syllabus · lesson ·
-// coach · tutor · grade. (exam / flashcards / mindmap / study-guide / podcast
-// live in `studio`, so each file stays small enough to redeploy by paste.)
+// Learn edge function — the teaching half of the notebook: lesson · coach ·
+// tutor. (syllabus / grade / videos / prep and the study tools live in
+// `studio`, so each file stays small enough to redeploy by paste.)
 //
 // WHY THIS EXISTS: generation used to fail silently inside the 100KB `advisor`
 // monolith — OpenRouter requires max_tokens to EXCEED the reasoning budget, so
 // a thinking model handed a small ceiling returned nothing. Every call here
-// disables reasoning, budgets generously, retries once with more room, and
-// LOGS the upstream failure so a silent failure can never happen again.
+// budgets a small, explicit thinking allowance ON TOP of the answer budget,
+// retries once with more room, and LOGS the upstream failure and the token
+// usage so a silent failure can never happen again.
+//
+// SERVICE MODE: the nightly prep job (studio `prep`) names the user with
+// {secret, userId}; the secret is checked against the vault and every call
+// then runs with the service key, the RPCs scoped by p_user_id.
 //
 // GROUNDING: prompts see an OUTLINE of every source plus the passages that
 // match the chapter (RPCs notebook_outline / search_chunks, run with the
@@ -35,19 +40,23 @@ const okModel = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9._-]+\/[A-Z
 const D_SMART = "google/gemini-3.7-flash";
 const D_FAST = "google/gemini-2.5-flash-lite";
 
-let ck = "", ca = 0;
-async function apiKey(): Promise<string> {
-  if (ck && Date.now() - ca < 60_000) return ck;
+// vault secrets via the service-role-only get_secret RPC, cached a minute; a
+// missing secret is "" and can never match a caller's
+const sc = new Map<string, { v: string; at: number }>();
+async function secretOf(name: string): Promise<string> {
+  const c = sc.get(name);
+  if (c && Date.now() - c.at < 60_000) return c.v;
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_secret`, {
       method: "POST",
       headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ secret_name: "anthropic_api_key" }),
+      body: JSON.stringify({ secret_name: name }),
     });
-    if (r.ok) { const v = ((await r.json()) as string | null) ?? ""; if (v) { ck = v; ca = Date.now(); return v; } }
+    if (r.ok) { const v = ((await r.json()) as string | null) ?? ""; if (v) { sc.set(name, { v, at: Date.now() }); return v; } }
   } catch { /* fall through */ }
-  return ENV_KEY || ck;
+  return c?.v ?? "";
 }
+const apiKey = async () => (await secretOf("anthropic_api_key")) || ENV_KEY;
 
 async function getUser(token: string) {
   try {
@@ -56,31 +65,26 @@ async function getUser(token: string) {
   } catch { return null; }
 }
 
-async function models(token: string) {
+async function models(token: string, uid: string) {
   try {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_settings?select=ai_models`, { headers: { apikey: ANON, Authorization: `Bearer ${token}` } });
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/user_settings?select=ai_models&user_id=eq.${uid}`, { headers: { apikey: ANON, Authorization: `Bearer ${token}` } });
     if (!r.ok) return { smart: D_SMART, fast: D_FAST };
     const m = (await r.json())?.[0]?.ai_models ?? {};
     return { smart: okModel(m.smart) ? m.smart : D_SMART, fast: okModel(m.fast) ? m.fast : D_FAST };
   } catch { return { smart: D_SMART, fast: D_FAST }; }
 }
 
-// ONE call path for every mode. Reasoning off, generous budget, one retry with
-// more room, and every upstream failure logged with its real body.
+// ONE call path for every mode. A small thinking allowance on top of the
+// answer budget, one retry with more room, and every upstream failure logged
+// with its real body.
+const THINK = 1024;
 async function ask(model: string, sys: string, msgs: { role: string; content: unknown }[], maxTokens: number, key: string, tag: string): Promise<string> {
-  const once = async (budget: number, withReasoning: boolean): Promise<string> => {
+  const once = async (budget: number, reasoning: Record<string, unknown>): Promise<string> => {
     if (isOR(key)) {
-      const body: Record<string, unknown> = {
-        model, max_tokens: budget,
-        messages: [{ role: "system", content: sys }, ...msgs],
-      };
-      // Some models reject effort:"none" outright; when that happens we retry
-      // without the field rather than failing the user's request.
-      if (withReasoning) body.reasoning = { effort: "none", exclude: true };
       const r = await fetch(`${OR_BASE}/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ model, max_tokens: budget + THINK, reasoning: { ...reasoning, exclude: true }, messages: [{ role: "system", content: sys }, ...msgs] }),
       });
       const raw = await r.text();
       if (!r.ok) {
@@ -89,10 +93,12 @@ async function ask(model: string, sys: string, msgs: { role: string; content: un
       }
       const d = JSON.parse(raw);
       const text = String(d?.choices?.[0]?.message?.content ?? "");
+      const u = d?.usage ?? {};
       if (!text.trim()) {
-        console.error(`[learn:${tag}] empty content model=${model} finish=${d?.choices?.[0]?.finish_reason} usage=${JSON.stringify(d?.usage ?? {})}`);
+        console.error(`[learn:${tag}] empty content model=${model} finish=${d?.choices?.[0]?.finish_reason} usage=${JSON.stringify(u)}`);
         throw new Error("EMPTY");
       }
+      console.error(`[learn:${tag}] usage prompt=${u.prompt_tokens ?? "?"} completion=${u.completion_tokens ?? "?"} reasoning=${u.completion_tokens_details?.reasoning_tokens ?? 0}`);
       return text;
     }
     const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -105,14 +111,17 @@ async function ask(model: string, sys: string, msgs: { role: string; content: un
     const d = JSON.parse(raw);
     const t = (d.content ?? []).filter((b: { type: string }) => b.type === "text").map((b: { text: string }) => b.text).join("");
     if (!t.trim()) throw new Error("EMPTY");
+    console.error(`[learn:${tag}] usage prompt=${d.usage?.input_tokens ?? "?"} completion=${d.usage?.output_tokens ?? "?"}`);
     return t;
   };
-  try { return await once(maxTokens, true); }
+  const think = { max_tokens: THINK };
+  try { return await once(maxTokens, think); }
   catch (e) {
     const m = e instanceof Error ? e.message : "";
-    // a 4xx often means the reasoning field itself was rejected — drop it
-    if (m.startsWith("HTTP_4")) { console.error(`[learn:${tag}] retrying without reasoning field`); return await once(maxTokens, false); }
-    if (m === "EMPTY") { console.error(`[learn:${tag}] retrying with ${maxTokens * 2} tokens`); return await once(maxTokens * 2, false); }
+    // a 4xx usually means this model refuses a token-counted thinking budget —
+    // ask for low effort instead; the field itself is never dropped
+    if (m.startsWith("HTTP_4")) { console.error(`[learn:${tag}] retrying with effort=low`); return await once(maxTokens, { effort: "low" }); }
+    if (m === "EMPTY") { console.error(`[learn:${tag}] retrying with ${maxTokens * 2} tokens`); return await once(maxTokens * 2, think); }
     throw e;
   }
 }
@@ -138,8 +147,10 @@ const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const strs = (v: unknown, n: number) => arr(v).map((x) => S(x, n)).filter(Boolean);
 const hdr = (token: string) => ({ apikey: ANON, Authorization: `Bearer ${token}`, "Content-Type": "application/json" });
 
-async function rpc<T>(token: string, fn: string, args: C): Promise<T | null> {
+// `uid` is set only in service mode: the RPCs then scope to that user themselves
+async function rpc<T>(token: string, fn: string, args: C, uid = ""): Promise<T | null> {
   try {
+    if (uid) args.p_user_id = uid;
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, { method: "POST", headers: hdr(token), body: JSON.stringify(args) });
     if (!r.ok) { console.error(`[learn] rpc ${fn} ${r.status} ${(await r.text()).slice(0, 200)}`); return null; }
     return await r.json() as T;
@@ -148,9 +159,9 @@ async function rpc<T>(token: string, fn: string, args: C): Promise<T | null> {
 
 // One line per source, every source survives; headings get half the budget,
 // the opening fills the rest.
-async function outline(token: string, nbId: string): Promise<{ text: string; sources: number; chunks: number; failed: boolean }> {
+async function outline(token: string, nbId: string, uid = ""): Promise<{ text: string; sources: number; chunks: number; failed: boolean }> {
   type Row = { title: string; kind: string; week: number | null; page_count: number; chunk_count: number; headings: string[] | null; opening: string | null };
-  const rows = await rpc<Row[]>(token, "notebook_outline", { p_notebook_id: nbId });
+  const rows = await rpc<Row[]>(token, "notebook_outline", { p_notebook_id: nbId }, uid);
   if (!rows) return { text: "", sources: 0, chunks: 0, failed: true };
   const per = Math.floor(24000 / Math.max(1, rows.length));
   const lines = rows.map((s) => {
@@ -165,11 +176,11 @@ async function outline(token: string, nbId: string): Promise<{ text: string; sou
 }
 
 // Passages numbered [1]..[n]; the caller keeps `chunks` to map numbers back.
-async function retrieve(token: string, nbId: string, query: string, limit = 24, pos: number | null = null): Promise<{ text: string; chunks: Chunk[]; failed: boolean }> {
+async function retrieve(token: string, nbId: string, query: string, limit = 24, pos: number | null = null, uid = ""): Promise<{ text: string; chunks: Chunk[]; failed: boolean }> {
   type Row = { id: string; source_title: string; heading: string | null; page_no: number | null; text: string };
   const args: C = { p_notebook_id: nbId, p_query: query.slice(0, 400), p_limit: limit };
   if (pos != null && Number.isFinite(pos)) args.p_pos = Math.max(0, Math.min(1, pos));
-  const rows = await rpc<Row[]>(token, "search_chunks", args);
+  const rows = await rpc<Row[]>(token, "search_chunks", args, uid);
   if (!rows) return { text: "", chunks: [], failed: true };
   const chunks: Chunk[] = [], parts: string[] = [];
   let budget = 36000;
@@ -185,8 +196,8 @@ async function retrieve(token: string, nbId: string, query: string, limit = 24, 
 
 // Everything a prompt needs about the notebook. A notebook whose chunker
 // hasn't run yet still gets its raw text (no passage numbers to cite).
-async function material(token: string, nbId: string, query: string, limit = 24, pos: number | null = null): Promise<{ text: string; chunks: Chunk[]; sources: number; failed: boolean }> {
-  const o = await outline(token, nbId);
+async function material(token: string, nbId: string, query: string, limit = 24, pos: number | null = null, uid = ""): Promise<{ text: string; chunks: Chunk[]; sources: number; failed: boolean }> {
+  const o = await outline(token, nbId, uid);
   if (o.failed) return { text: "", chunks: [], sources: 0, failed: true };
   if (!o.sources) return { text: "(no sources in this notebook yet)", chunks: [], sources: 0, failed: false };
   if (!o.chunks) {
@@ -197,7 +208,7 @@ async function material(token: string, nbId: string, query: string, limit = 24, 
       return { text: `NOTE: these sources aren't indexed into passages yet, so here is the raw text (nothing to cite by number).\n\n${raw}`, chunks: [], sources: o.sources, failed: false };
     } catch { return { text: "", chunks: [], sources: o.sources, failed: true }; }
   }
-  const r = query ? await retrieve(token, nbId, query, limit, pos) : { text: "", chunks: [], failed: false };
+  const r = query ? await retrieve(token, nbId, query, limit, pos, uid) : { text: "", chunks: [], failed: false };
   if (r.failed) return { text: "", chunks: [], sources: o.sources, failed: true };
   return { text: `OUTLINE OF HIS SOURCES:\n${o.text}${r.text ? `\n\nPASSAGES (cite by number):\n${r.text}` : ""}`, chunks: r.chunks, sources: o.sources, failed: false };
 }
@@ -289,13 +300,18 @@ function askOf(v: unknown): { q: string; choices: string[]; answer: number } | n
 
 function cleanCard(c: C, fade: number, chunks: Chunk[], videos: Video[]): C | null {
   const kind = String(c?.kind ?? "");
-  const explain = V(c.explain, 300);
+  const explain = V(c.explain, 180);
   const pre = Number.isInteger(Number(c.pretest_of)) ? Number(c.pretest_of) : -1;
+  // "From your driving" — a question set in one of his interests says so
+  const hook = V(c.hook, 24);
+  const hk = hook ? { hook } : {};
   if (kind === "teach") {
-    const text = V(c.text, 900);
+    const text = V(c.text, 460);
     if (!text) return null;
-    // plain-words check: an acronym with no "(…)" is probably undefined — log only
+    // plain-words checks are log-only: an acronym with no "(…)" is probably
+    // undefined; a sentence over 24 words is one he'll skim
     if (/\b[A-Z]{2,}\b/.test(text) && !text.includes("(")) console.error(`[learn:lesson] undefined acronym? "${text.slice(0, 80)}"`);
+    if (text.split(/(?<=[.!?])\s+/).some((s) => s.split(/\s+/).length > 24)) console.error(`[learn:lesson] long sentence: "${text.slice(0, 80)}"`);
     const d = c.diagram as C | undefined;
     const nodes = arr(d?.nodes ?? d?.items).map((n) => {
       const o = (typeof n === "string" ? { label: n } : n ?? {}) as C;
@@ -310,9 +326,9 @@ function cleanCard(c: C, fade: number, chunks: Chunk[], videos: Video[]): C | nu
   if (kind === "mcq" || kind === "scenario") {
     const a = askOf(c);
     if (!a || !a.q) return null;
-    const why_wrong = arr(c.why_wrong).map((w) => V(w, 200)).slice(0, a.choices.length);
+    const why_wrong = arr(c.why_wrong).map((w) => V(w, 140)).slice(0, a.choices.length);
     while (why_wrong.length < a.choices.length) why_wrong.push("");
-    return { kind, q: a.q, situation: kind === "scenario" ? V(c.situation, 400) : "", choices: a.choices, answer: a.answer, explain, why_wrong, pretest_of: pre };
+    return { kind, q: a.q, situation: kind === "scenario" ? V(c.situation, 400) : "", choices: a.choices, answer: a.answer, explain, why_wrong, pretest_of: pre, ...hk };
   }
   if (kind === "blank") {
     const sentence = V(c.sentence ?? c.prompt, 400);
@@ -330,13 +346,13 @@ function cleanCard(c: C, fade: number, chunks: Chunk[], videos: Video[]): C | nu
     }
     need.forEach((n, a) => { for (let k = have.get(a) ?? 0; k < n; k++) bank.push(a); });
     for (let i = bank.length - 1; i >= 0 && bank.length > answer.length + 3; i--) if (!need.has(bank[i])) bank.splice(i, 1);
-    return { kind, sentence, bank, answer, explain, pretest_of: pre };
+    return { kind, sentence, bank, answer, explain, pretest_of: pre, ...hk };
   }
   if (kind === "order") {
     const items = vstrs(c.items, 120).slice(0, 6);
     // duplicates make the tap-to-build interaction unsolvable
     if (items.length < 3 || new Set(items).size !== items.length) return null;
-    return { kind, prompt: V(c.prompt, 300), items, explain, pretest_of: pre };
+    return { kind, prompt: V(c.prompt, 300), items, explain, pretest_of: pre, ...hk };
   }
   if (kind === "match") {
     const pairs = arr(c.pairs).map((p) => {
@@ -344,7 +360,7 @@ function cleanCard(c: C, fade: number, chunks: Chunk[], videos: Video[]): C | nu
       return [V(o.left, 100), V(o.right, 100)] as [string, string];
     }).filter((p) => p[0] && p[1]).slice(0, 4);
     if (pairs.length < 3 || new Set(pairs.map((p) => p[0])).size !== pairs.length || new Set(pairs.map((p) => p[1])).size !== pairs.length) return null;
-    return { kind, prompt: V(c.prompt, 300), pairs, explain, pretest_of: pre };
+    return { kind, prompt: V(c.prompt, 300), pairs, explain, pretest_of: pre, ...hk };
   }
   if (kind === "worked") {
     const problem = V(c.problem, 500);
@@ -355,14 +371,15 @@ function cleanCard(c: C, fade: number, chunks: Chunk[], videos: Video[]): C | nu
     // last two, 2 → every step
     const from = fade >= 2 ? 0 : fade === 1 ? last - 1 : steps[last].ask ? last : last - 1;
     const out = steps.map((s, i) => (s.ask && i >= from ? { text: s.text, ask: s.ask } : { text: s.text }));
-    return { kind, problem, steps: out, explain, pretest_of: pre };
+    return { kind, problem, steps: out, explain, pretest_of: pre, ...hk };
   }
   return null;
 }
 
 // Raw model cards → a run the renderer can trust. `ok` = hard invariants
 // (regenerate if false); `soft` = the quant "≥2 worked" ask; `clips` = "kept/proposed" for the log.
-function assemble(raw: unknown[], n: number, fade: number, quant: boolean, chunks: Chunk[], videos: Video[]): { cards: C[]; ok: boolean; soft: boolean; clips: string } {
+// `noPretest` (a cold notebook) keeps card 0 as the first teach card.
+function assemble(raw: unknown[], n: number, fade: number, quant: boolean, chunks: Chunk[], videos: Video[], noPretest = false): { cards: C[]; ok: boolean; soft: boolean; clips: string } {
   const kept = raw.map((c, i) => ({ c: cleanCard((c ?? {}) as C, fade, chunks, videos), i })).filter((x) => x.c) as { c: C; i: number }[];
   const proposed = raw.filter((c) => (c as C)?.kind === "teach" && (c as C)?.clip).length;
   // pretest: the first question aimed at the first teach card, else the first question
@@ -370,9 +387,8 @@ function assemble(raw: unknown[], n: number, fade: number, quant: boolean, chunk
   let pi = kept.findIndex((x) => isQ(x.c) && x.c.pretest_of === t0);
   if (pi < 0) pi = kept.findIndex((x) => isQ(x.c));
   if (pi < 0) return { cards: [], ok: false, soft: false, clips: `0/${proposed}` };
-  const [p] = kept.splice(pi, 1);
-  p.c.pretest = true;
-  const rest = [p.c, ...kept.map((x) => x.c)];
+  if (!noPretest) { const [p] = kept.splice(pi, 1); p.c.pretest = true; kept.unshift(p); }
+  const rest = kept.map((x) => x.c);
   rest.forEach((c) => delete c.pretest_of);
   // never two teach cards in a row: pull the next question forward
   const seq: C[] = [];
@@ -402,7 +418,7 @@ Deno.serve(async (req) => {
   const friendly = (e: unknown, fallback: string) => {
     const m = e instanceof Error ? e.message : "";
     if (m.startsWith("BADJSON")) return `The model returned something unparseable — try again. (${m.slice(8, 90)})`;
-    if (m === "EMPTY") return "The model returned nothing twice — switch the Smart model in Settings and try again.";
+    if (m === "EMPTY") return "The model came back empty — tap to try again.";
     if (m.startsWith("HTTP_402") || m.includes("credit")) return "Your OpenRouter credits are out — top up and try again.";
     if (m.startsWith("HTTP_401")) return "OpenRouter rejected the key — re-paste it in Settings → AI key.";
     if (m.startsWith("HTTP_")) return `The model provider errored (${m.slice(0, 60)}) — try again.`;
@@ -410,60 +426,23 @@ Deno.serve(async (req) => {
   };
 
   try {
-    const token = (req.headers.get("Authorization") ?? "").replace("Bearer ", "");
-    const user = await getUser(token);
+    const body = await req.json();
+    // service mode: {secret, userId} from the prep job → act as that user with the service key
+    const svc = typeof body.secret === "string" && body.secret && isUuid(String(body.userId ?? "")) && body.secret === await secretOf("learn_prep_secret") ? String(body.userId) : "";
+    const token = svc ? SERVICE_KEY : (req.headers.get("Authorization") ?? "").replace("Bearer ", "");
+    const user = svc ? { id: svc } : await getUser(token);
     if (!user?.id) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const key = await apiKey();
     if (!key) return err("No AI key set — open Settings → AI key and paste your OpenRouter key.");
 
-    const body = await req.json();
     const mode = String(body.advisor ?? body.mode ?? "");
     const nbId = isUuid(String(body.topicId ?? "")) ? String(body.topicId) : "";
-    const M = await models(token);
-    if (["syllabus", "lesson", "coach", "tutor"].includes(mode) && !nbId) return err("Which notebook?");
+    const M = await models(token, user.id);
+    if (!nbId) return err("Which notebook?");
+    // ≤6 interests, each a short phrase: scenario cards get set in them
+    const interests = strs(body.interests, 80).slice(0, 6);
     const READ_FAIL = "Couldn't read your sources just now — try again in a moment.";
     const NO_SOURCES = "Add sources to this notebook first — everything here is built from your own material.";
-
-    // ── syllabus: design the chapters from the outline ───────────────────
-    if (mode === "syllabus") {
-      const title = S(body.title, 120) || "this notebook";
-      const kind = body.kind === "class" ? "class" : "personal";
-      const existing = strs(body.existing, 90);
-      const m = await material(token, nbId, "");
-      if (m.failed) return err(READ_FAIL);
-      if (!m.sources) return err(NO_SOURCES);
-      const sys = `You design the chapters of Ben's notebook "${title}" from an outline of HIS OWN sources. He has ADHD: concrete titles, one clear objective each.
-
-KIND: ${kind === "class" ? "class — 8 to 16 chapters organised by week/topic in the order the course teaches them (use the source weeks and headings); set \"week\" when the sources say it" : "personal — 5 to 8 chapters, trunk first: chapter 1 is the root idea everything hangs on, each later chapter depends only on earlier ones"}.
-- title: 2-6 words, concrete, no numbering. objective: ONE sentence starting with a verb — what he'll be able to DO. summary: one sentence on what it covers.
-- ${PLAIN} Titles in plain words; the objective explains any technical word it uses.
-- quant: true when the objective involves computing, deriving, solving or graphing.
-- trunk: one sentence — the root idea of the whole notebook.
-- Cover what is actually IN his material; never invent topics it doesn't support.${existing.length ? `\n- These chapters already exist — never reuse or rephrase them: ${existing.map((t) => `"${t}"`).join(", ")}` : ""}
-
-Return ONLY JSON: {"trunk":"…","chapters":[{"title":"…","objective":"…","summary":"…","week":3,"quant":false}]}
-
-HIS MATERIAL:
-${m.text}`;
-      try {
-        const raw = await ask(M.smart, sys, [{ role: "user", content: "Design the chapters." }], 5000, key, "syllabus");
-        const p = parseJson<{ trunk?: string; chapters?: C[] }>(raw, "syllabus");
-        const seen = new Set(existing.map((t) => t.toLowerCase()));
-        const chapters: C[] = [];
-        for (const c of arr(p.chapters) as C[]) {
-          const t = S(c?.title, 90);
-          if (!t || seen.has(t.toLowerCase())) continue;
-          seen.add(t.toLowerCase());
-          const week = Number(c.week);
-          chapters.push({
-            title: t, objective: S(c.objective, 220), summary: S(c.summary, 300), quant: c.quant === true,
-            ...(Number.isInteger(week) && week > 0 && week < 40 ? { week } : {}),
-          });
-        }
-        if (chapters.length < 2) return err("That came back too thin — try again.");
-        return ok({ trunk: S(p.trunk, 300), chapters: chapters.slice(0, kind === "class" ? 16 : 8) });
-      } catch (e) { return err(friendly(e, "Couldn't design the chapters — try again.")); }
-    }
 
     // ── lesson: the run — tappable cards, validated, cached on the chapter ──
     if (mode === "lesson") {
@@ -474,6 +453,7 @@ ${m.text}`;
       const quant = body.quant === true;
       const n = Math.max(8, Math.min(16, Math.floor(Number(body.n) || 12)));
       const pos = Number.isFinite(Number(body.chapterPos)) ? Number(body.chapterPos) : null;
+      const noPretest = body.noPretest === true;
       if (!ct) return err("Which chapter?");
 
       // double-tap protection: a run written in the last 3 minutes is the run
@@ -485,7 +465,7 @@ ${m.text}`;
         } catch { /* fall through to generating */ }
       }
 
-      const m = await material(token, nbId, `${ct} ${co}`, 24, pos);
+      const m = await material(token, nbId, `${ct} ${co}`, 24, pos, svc);
       if (m.failed) return err(READ_FAIL);
       if (!m.sources) return err(NO_SOURCES);
 
@@ -520,12 +500,12 @@ WORDS — this matters more than anything else:
 SHAPE OF THE RUN
 - Exactly ${n} cards: at least 7 question cards, the rest teach cards. Never two teach cards in a row — every teach card is followed by at least one question about it, and the LAST card is a question.
 - Card 0 is a teach card. Every question card carries "pretest_of": the 0-based index in this array of the teach card that answers it.
-- Mix the question kinds; never the same kind twice in a row.${quant ? "\n- This is a quantitative chapter: include at least 2 \"worked\" cards." : ""}
+- Mix the question kinds; never the same kind twice in a row.${quant ? "\n- This is a quantitative chapter: include at least 2 \"worked\" cards." : ""}${interests.length ? `\n- HIS INTERESTS: ${interests.map((x) => `"${x}"`).join(", ")}. At least one scenario card is set in one of HIS interests with real quantities (e.g. a $6.50 DoorDash order, 4 miles); give that card "hook".` : ""}
 
 CARD KINDS (exact JSON)
-teach    {"kind":"teach","text":"one vivid idea, 3-5 short sentences","diagram":{"kind":"flow|compare|cycle|stack","title":"…","nodes":[{"label":"…","note":"optional"}]} or null,"cite":{"n":3,"quote":"10-25 words copied VERBATIM from passage [3]"}${videos.length ? ",\"clip\":{…} (see CLIP RULE; else omit)" : ""}}
-mcq      {"kind":"mcq","q":"…","choices":["3 or 4 strings"],"answer":0,"explain":"why the right one is right","why_wrong":["one line per choice, '' for the right one"],"pretest_of":0}
-scenario {"kind":"scenario","situation":"a real moment from HIS life — Rutgers classes, driving gigs, his business","q":"…","choices":["3 or 4"],"answer":0,"explain":"…","why_wrong":["…"],"pretest_of":0}
+teach    {"kind":"teach","text":"one vivid idea: 3 short sentences, each under 20 words, then stop","diagram":{"kind":"flow|compare|cycle|stack","title":"…","nodes":[{"label":"…","note":"optional"}]} or null,"cite":{"n":3,"quote":"10-25 words copied VERBATIM from passage [3]"}${videos.length ? ",\"clip\":{…} (see CLIP RULE; else omit)" : ""}}
+mcq      {"kind":"mcq","q":"…","choices":["3 or 4 strings"],"answer":0,"explain":"why the right one is right, one sentence","why_wrong":["one short line per choice, '' for the right one"],"pretest_of":0}
+scenario {"kind":"scenario","situation":"a real moment from HIS life — Rutgers classes, driving gigs, his business","q":"…","choices":["3 or 4"],"answer":0,"explain":"…","why_wrong":["…"],"pretest_of":0,"hook":"only when set in one of his interests: ≤24 characters, like 'From your driving'"}
 blank    {"kind":"blank","sentence":"one ___ per answer","bank":["the answers plus 2-3 distractors"],"answer":["word"],"explain":"…","pretest_of":0}
 order    {"kind":"order","prompt":"…","items":["3-6 steps in the CORRECT order, all distinct"],"explain":"…","pretest_of":0}
 match    {"kind":"match","prompt":"…","pairs":[["left","right"]],"explain":"…","pretest_of":0}   (3-4 pairs; lefts distinct, rights distinct)
@@ -550,7 +530,7 @@ The clip must run 30–150 seconds, start where that explanation starts, and cov
       try {
         const gen = async (budget: number) => {
           const raw = await ask(M.smart, sys, [{ role: "user", content: "Build the run." }], budget, key, "lesson");
-          return assemble(arr(parseJson<{ cards?: unknown[] }>(raw, "lesson").cards), n, fade, quant, m.chunks, videos);
+          return assemble(arr(parseJson<{ cards?: unknown[] }>(raw, "lesson").cards), n, fade, quant, m.chunks, videos, noPretest);
         };
         let r = await gen(10000);
         if (!r.ok || !r.soft) {
@@ -582,9 +562,9 @@ The clip must run 30–150 seconds, start where that explanation starts, and cov
       const askText = S(body.ask, 600) || "Explain this a bit more.";
       const ct = S(body.chapterTitle, 120);
       const tellMe = /just tell me/i.test(askText);
-      const m = await material(token, nbId, `${ct} ${ctx.slice(0, 200)}`, 8);
+      const m = await material(token, nbId, `${ct} ${ctx.slice(0, 200)}`, 8, null, svc);
       if (m.failed) return err(READ_FAIL);
-      const sys = `You are Ben's Learning Guide, helping him through ONE point he's on right now${ct ? ` in the chapter "${ct}"` : ""}. He has ADHD — concrete, warm, plain words, under 120 words. Speak to him directly; no headings, no bullet lists.
+      const sys = `You are Ben's Learning Guide, helping him through ONE point he's on right now${ct ? ` in the chapter "${ct}"` : ""}. He has ADHD — concrete, warm, plain words, under 120 words. Speak to him directly; no headings, no bullet lists.${interests.length ? ` Examples from his life come from: ${interests.join("; ")}.` : ""}
 
 HE IS ON THIS CARD:
 """${ctx}"""
@@ -602,7 +582,7 @@ ${m.text}
 
 (${CITE_RULE})`;
       try {
-        const text = await ask(M.smart, sys, [{ role: "user", content: askText }], 1500, key, "coach");
+        const text = await ask(M.smart, sys, [{ role: "user", content: askText }], 2500, key, "coach");
         // the coach sheet shows plain prose — passage numbers are for the model
         return ok({ text: noCites(text).trim() });
       } catch (e) { return err(friendly(e, "Couldn't help with that right now — try again.")); }
@@ -617,14 +597,14 @@ ${m.text}
         .filter((h) => (h?.role === "user" || h?.role === "assistant") && typeof h.content === "string")
         .map((h) => ({ role: String(h.role), content: String(h.content).slice(0, 4000) }));
       const [m, chRows] = await Promise.all([
-        material(token, nbId, `${message.slice(0, 300)} ${ct}`, 16),
+        material(token, nbId, `${message.slice(0, 300)} ${ct}`, 16, null, svc),
         fetch(`${SUPABASE_URL}/rest/v1/notebook_chapters?notebook_id=eq.${nbId}&select=title,status,best_score,misses&order=idx`, { headers: hdr(token) })
           .then((r) => (r.ok ? r.json() : [])).catch(() => []) as Promise<{ title: string; status: string; best_score: number; misses: unknown }[]>,
       ]);
       if (m.failed) return err(READ_FAIL);
       const chapters = chRows.map((c) => `- ${c.title} (${c.status}${c.best_score ? `, best ${c.best_score}%` : ""})`).join("\n");
       const misses = [...new Set(chRows.flatMap((c) => strs(c.misses, 200)))].slice(-12);
-      const sys = `You are Ben's Learning Guide for this notebook${ct ? ` (he's working on "${ct}")` : ""} — you ask before you tell. He has ADHD: short, concrete, warm, no lecturing. Under 160 words.
+      const sys = `You are Ben's Learning Guide for this notebook${ct ? ` (he's working on "${ct}")` : ""} — you ask before you tell. He has ADHD: short, concrete, warm, no lecturing. Under 160 words.${interests.length ? ` Examples from his life come from: ${interests.join("; ")}.` : ""}
 
 HOW A TURN GOES
 1. Silently classify his last message first: irrelevant / question / incorrect attempt / correct attempt.
@@ -656,29 +636,6 @@ ${m.text}
         const { text, used } = mapCites(raw, m.chunks);
         return ok({ text, used });
       } catch (e) { return err(friendly(e, "Couldn't answer that right now — try again.")); }
-    }
-
-    // ── grade: judge free recall generously, on substance ─────────────────
-    if (mode === "grade") {
-      const items = arr(body.items).slice(0, 12);
-      if (!items.length) return err("Nothing to grade.");
-      const sys = `You grade Ben's free-recall answers. Grade on SUBSTANCE, not wording — if he has the idea, he gets it. Be generous but honest; 70 or above counts as correct.
-
-For each item return: score 0-100, correct (score >= 70), feedback (one warm sentence — what he got right, then the gap), missed (the key thing he left out, or "").
-
-Return ONLY JSON: {"results":[{"score":0,"correct":false,"feedback":"…","missed":"…"}]}
-Return exactly ${items.length} results, in order.`;
-      try {
-        const raw = await ask(M.smart, sys, [{ role: "user", content: JSON.stringify(items) }], 3000, key, "grade");
-        const p = parseJson<{ results?: C[] }>(raw, "grade");
-        const results = arr(p.results).slice(0, items.length).map((r) => {
-          const score = Math.max(0, Math.min(100, Math.round(Number((r as C)?.score) || 0)));
-          return { score, correct: score >= 70, feedback: S((r as C)?.feedback, 400), missed: S((r as C)?.missed, 300) };
-        });
-        // score -1 = not graded; clients leave it out of averages
-        while (results.length < items.length) results.push({ score: -1, correct: false, feedback: "Not graded — try again", missed: "" });
-        return ok({ results });
-      } catch (e) { return err(friendly(e, "Couldn't grade that — try again.")); }
     }
 
     return err(`Unknown mode "${mode}".`);

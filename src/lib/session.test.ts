@@ -3,8 +3,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { retrievability } from "./fsrs";
 import {
   studyDay, courseKey, urgency, pickNotebook, pickChapter, prepareRun, buildSession, scoreSession, estimateMinutes, needsSettling, planFromRow,
+  buildQuickFeed, isColdNotebook, planOpener, reviewOrder,
   RETRY_SLOTS,
   type ChapterLite, type DeadlineLite, type DueCard, type LearnHome, type NotebookLite, type RunCard, type SessionResult, type StudySessionRow,
   type TeachCard,
@@ -200,17 +203,24 @@ test("buildSession: every TodayState", () => {
   assert.equal(build(home({ chapters: [ch({ status: "done" })], due_cards: [card("k1")], due_count: 1 })).state, "ready");
 });
 
-test("buildSession: review block cap, round-robin, earliest due first, answered excluded", () => {
+test("buildSession: review block cap, round-robin, nearest the 60% sweet spot first, answered excluded", () => {
   const cards = Array.from({ length: 20 }, (_, i) => card(`k${i}`, i % 2 ? "nb2" : "nb1", iso(2026, 8, 1 + i)));
   // session_cap lifted so this test sees the review cap alone
   const h = home({ notebooks: [nb(), nb({ id: "nb2", title: "Bio", course_key: "BIO" })], due_cards: cards, due_count: 20, settings: { session_cap: 30 } });
   const plan = build(h);
   const reviews = plan.items.filter((it) => it.kind === "review");
   assert.equal(reviews.length, 8);                                  // clamp(20, 4, 8)
-  assert.equal(reviews[0].id, "rv:k0");                              // earliest due first
-  assert.equal(reviews[1].id, "rv:k1");                              // then the other notebook
+  const dist = (c: DueCard) => Math.abs(retrievability(c, NOW) - 0.6);
+  const best = [...cards].sort((a, b) => dist(a) - dist(b))[0];
+  assert.equal(reviews[0].id, `rv:${best.id}`);                      // the card most worth reviewing opens
+  assert.notEqual((reviews[1] as { card: DueCard }).card.notebook_id, best.notebook_id); // then the other notebook
   assert.equal(reviews.filter((r) => r.kind === "review" && r.card.notebook_id === "nb2").length, 4);
   assert.ok(plan.items.findIndex((it) => it.kind === "review") < plan.items.findIndex((it) => it.kind !== "review"));
+  // two reviews open the round; the rest are woven into the chapter block, none lost
+  assert.ok(plan.items[0].kind === "review" && plan.items[1].kind === "review" && plan.items[2].kind !== "review");
+  // a relearning card (just forgotten) jumps the queue
+  const lapsed = card("lp", "nb1", iso(2026, 9, 1), { state: 3, lapses: 1, last_review: iso(2026, 9, 1) });
+  assert.equal(build({ ...h, due_cards: [...cards, lapsed] }).items[0].id, "rv:lp");
   // few due → all of them
   assert.equal(build(home({ due_cards: cards.slice(0, 2), due_count: 2 })).items.filter((it) => it.kind === "review").length, 2);
   // answered ids drop out
@@ -228,11 +238,15 @@ test("buildSession: review block cap, round-robin, earliest due first, answered 
 test("buildSession: session cap trims mixed first, then reviews down to the floor", () => {
   const cards = Array.from({ length: 10 }, (_, i) => card(`k${i}`, "nb1", iso(2026, 8, 1 + i)));
   const passed = ch({ id: "c2", idx: 1, status: "passed", best_score: 85, retention_check_at: iso(2026, 9, 9) });
-  const h = home({ chapters: [ch(), passed], due_cards: cards, due_count: 10 });
+  const h = home({ chapters: [ch(), passed], due_cards: cards, due_count: 10, settings: { session_cap: 16 } });
   const plan = build(h, { c1: GOOD_RUN, c2: run(3, 3, 3) });
   assert.ok(plan.items.length <= 16, `got ${plan.items.length}`);
   assert.equal(plan.items.filter((it) => it.kind === "review").length, 7); // 16 − 9 chapter items; mixed all trimmed
   assert.equal(plan.items.filter((it) => it.kind !== "review" && (it as { mixed?: boolean }).mixed).length, 0);
+  // the default cap is 12: 9 chapter items leave 3, the floor lifts it to 4
+  const dflt = build({ ...h, settings: {} }, { c1: GOOD_RUN, c2: run(3, 3, 3) });
+  assert.equal(dflt.items.length, 13);
+  assert.equal(dflt.items.filter((it) => it.kind === "review").length, 4);
   // a bigger cap lets the mixed questions in, spaced out, after the first teach card
   const roomy = build({ ...h, settings: { session_cap: 30 } }, { c1: GOOD_RUN, c2: run(3, 3, 3) });
   const block = roomy.items.filter((it) => it.kind !== "review") as { mixed?: boolean; kind: string; chapter_id: string }[];
@@ -406,4 +420,144 @@ test("planFromRow rebuilds the plan a settled row is scored against", () => {
   assert.deepEqual(empty.notebookIds, []);
   assert.equal(empty.notebookId, null);
   assert.equal(scoreSession(empty, [{ id: "x", ok: true, attempt: 1, ms: 1 }]).asked, 0);
+});
+
+// ─── v50: opener, weaving, cold start, sticky notebook ──────────────────────
+test("the pretest is always followed by its teach card within 1 item, whatever is woven in", () => {
+  const cards = Array.from({ length: 12 }, (_, i) => card(`k${i}`, i % 2 ? "nb2" : "nb1", iso(2026, 8, 1 + i)));
+  const passed = ch({ id: "c2", idx: 1, status: "passed", best_score: 50, retention_check_at: iso(2026, 9, 9) });
+  for (const due of [0, 1, 2, 3, 5, 8, 12]) {
+    const h = home({
+      notebooks: [nb(), nb({ id: "nb2", title: "Bio", course_key: "BIO" })], chapters: [ch(), passed],
+      due_cards: cards.slice(0, due), due_count: due, settings: { session_cap: 30 },
+    });
+    const plan = build(h, { c1: GOOD_RUN, c2: run(3, 3, 3) });
+    const pre = plan.items.findIndex((it) => (it as { pretest?: boolean }).pretest);
+    assert.ok(pre >= 0, `due=${due}: no pretest`);
+    assert.equal(plan.items[pre + 1].kind, "teach", `due=${due}: pretest not glued to its teach card`);
+    // no review is ever sandwiched between a teach card and its first question
+    plan.items.forEach((it, i) => { if (it.kind === "teach") assert.notEqual(plan.items[i + 1]?.kind, "review", `due=${due}: review right after a teach card`); });
+    // at most two reviews open the round; every due card that made the cut is still in the plan
+    const firstBlock = plan.items.findIndex((it) => it.kind !== "review");
+    assert.ok(firstBlock <= 2, `due=${due}: ${firstBlock} reviews before the block`);
+    assert.equal(plan.items.filter((it) => it.kind === "review").length, Math.min(due, 8));
+  }
+});
+
+test("a chapter question that is also a due review card is asked once, as the review", () => {
+  const dup = card("d1", "nb1", iso(2026, 9, 1), { front: "q0.1" });
+  const plan = build(home({ due_cards: [dup], due_count: 1 }));
+  const qs = plan.items.filter((it) => it.kind === "mcq").map((it) => (it as { q: string }).q);
+  assert.ok(!qs.includes("q0.1"));
+  assert.ok(plan.items.some((it) => it.id === "rv:d1"));
+  // the teach card before it still has its other questions
+  assert.equal(plan.items.filter((it) => it.kind === "teach").length, 2);
+});
+
+test("isColdNotebook: never-studied notebook on a never-attempted chapter only", () => {
+  assert.equal(isColdNotebook(nb({ last_studied_at: null }), ch({ attempts: 0 })), true);
+  assert.equal(isColdNotebook(nb({ last_studied_at: null }), ch({ attempts: 1 })), false);
+  assert.equal(isColdNotebook(nb({ last_studied_at: iso(2026, 9, 1) }), ch({ attempts: 0 })), false);
+});
+
+test("pickNotebook sticks with a chapter mid-story unless a deadline presses", () => {
+  const a = nb({ id: "a", title: "A", course_key: "AAA", last_studied_at: iso(2026, 9, 1) });   // studied yesterday, chapter failed once
+  const b = nb({ id: "b", title: "B", course_key: "BBB", last_studied_at: iso(2026, 8, 25) });  // stale
+  const h = home({
+    notebooks: [a, b], source_counts: { a: 1, b: 1 },
+    chapters: [ch({ id: "ca", notebook_id: "a", attempts: 1 }), ch({ id: "cb", notebook_id: "b" })],
+  });
+  assert.equal(pickNotebook(h, TODAY)?.id, "a");
+  // a passed chapter waiting on its check sticks too
+  const waiting = { ...h, chapters: [ch({ id: "ca", notebook_id: "a", status: "passed", retention_check_at: iso(2026, 9, 5) }), ch({ id: "ca2", notebook_id: "a", idx: 1 }), ch({ id: "cb", notebook_id: "b" })] };
+  assert.equal(pickNotebook(waiting, TODAY)?.id, "a");
+  // nothing mid-story → staleness wins as before
+  assert.equal(pickNotebook({ ...h, chapters: [ch({ id: "ca", notebook_id: "a" }), ch({ id: "cb", notebook_id: "b" })] }, TODAY)?.id, "b");
+  // an exam on B inside its lead window beats the sticky bonus
+  assert.equal(pickNotebook({ ...h, deadlines: [dl({ course_key: "BBB" })] }, TODAY)?.id, "b");
+});
+
+test("reviewOrder: relearning first, then nearest 60% recall, then due, then id", () => {
+  const fresh = card("f", "nb1", iso(2026, 9, 1), { state: 2, stability: 30, last_review: iso(2026, 9, 1) });   // ≈ 1.0 recall
+  const sweet = card("s", "nb1", iso(2026, 9, 1), { state: 2, stability: 4, last_review: iso(2026, 8, 26) });    // near the sweet spot
+  const lapsed = card("l", "nb1", iso(2026, 9, 2), { state: 3, lapses: 1, last_review: iso(2026, 9, 2, 9) });
+  const order = reviewOrder([fresh, sweet, lapsed], NOW).map((c) => c.id);
+  assert.deepEqual(order, ["l", "s", "f"]);
+  assert.ok(Math.abs(retrievability(sweet, NOW) - 0.6) < Math.abs(retrievability(fresh, NOW) - 0.6));
+});
+
+// ─── quick feed ─────────────────────────────────────────────────────────────
+const clipTeach = (text: string, len: number, off = false): RunCard =>
+  ({ kind: "teach", text, diagram: null, clip: { id: "dQw4w9WgXcQ", title: "t", channel: "c", start: 10, end: 10 + len }, ...(off ? { clip_off: true } : {}) });
+const FEED_RUN: RunCard[] = [
+  mcq("pre", true), clipTeach("short", 60), mcq("q0"), mcq("q0b"), clipTeach("long", 120), mcq("q1"), teach("plain"), mcq("q2"),
+  clipTeach("off", 40, true), mcq("q3"), clipTeach("dangling", 30),
+];
+
+test("buildQuickFeed: due cards, then short clips paired with their question, tagged mixed, capped, no stuck chapters", () => {
+  const cards = [card("k1"), card("k2", "nb2")];
+  const h = home({
+    notebooks: [nb(), nb({ id: "nb2", title: "Bio", course_key: "BIO" })], due_cards: cards, due_count: 2,
+    chapters: [ch(), ch({ id: "c2", notebook_id: "nb2", status: "passed" }), ch({ id: "c3", notebook_id: "nb1", idx: 1, status: "stuck" })],
+  });
+  const feed = buildQuickFeed(h, { c1: FEED_RUN, c2: FEED_RUN, c3: FEED_RUN }, { now: NOW });
+  assert.equal(feed.scope, "quick");
+  assert.equal(feed.chapterId, null);
+  assert.equal(feed.retrySlots, 0);
+  assert.equal(feed.items.filter((it) => it.kind === "review").length, 2);
+  const pairs = feed.items.filter((it) => it.kind !== "review") as ({ mixed?: boolean; feedClip?: { clip: { end: number; start: number }; k: number }; chapter_id: string; q?: string })[];
+  // one pair per short (≤75 s), not-switched-off clip that has a question after it: "short" only, from c1 and c2
+  assert.equal(pairs.length, 2);
+  assert.ok(pairs.every((p) => p.mixed && p.feedClip && p.feedClip.clip.end - p.feedClip.clip.start <= 75 && p.q === "q0" && p.feedClip.k === 1));
+  assert.deepEqual(pairs.map((p) => p.chapter_id).sort(), ["c1", "c2"]);
+  assert.ok(!pairs.some((p) => p.chapter_id === "c3"));
+  // reviews come first; the cap and the answered filter hold; same order all day
+  assert.ok(feed.items[0].kind === "review");
+  assert.equal(buildQuickFeed(h, { c1: FEED_RUN, c2: FEED_RUN }, { now: NOW, max: 3 }).items.length, 3);
+  const again = buildQuickFeed(h, { c1: FEED_RUN, c2: FEED_RUN }, { now: NOW, answeredIds: ["rv:k1", pairs[0].chapter_id === "c1" ? "qf:c1:2" : "qf:c2:2"] });
+  assert.equal(again.items.length, 2);
+  assert.deepEqual(buildQuickFeed(h, { c1: FEED_RUN, c2: FEED_RUN }, { now: NOW }).items.map((i) => i.id), feed.items.map((i) => i.id));
+  // nothing → done-today, never a crash
+  assert.equal(buildQuickFeed(home({ chapters: [] }), {}, { now: NOW }).state, "done-today");
+});
+
+test("a quick-feed row left open is never resumed as today's round", () => {
+  const quick = row({ scope: "quick", pos: 1, results: [{ id: "x", ok: true, attempt: 1, ms: 1 }] });
+  assert.equal(build(home({ open_session: quick })).state, "ready");
+});
+
+// ─── the opener ─────────────────────────────────────────────────────────────
+test("planOpener: the first choice question, else a flashcard front with no choices", () => {
+  const plan = build(home());
+  const first = planOpener(plan, "Econ");
+  assert.ok(first && first.kind === "mcq" && first.stem === "pre" && first.choices?.length === 3 && first.answer === 0 && first.notebook === "Econ");
+  assert.equal(first?.id, plan.items[0].id);
+  // reviews open the round: a plain flashcard first → the first mcq in the block is the opener
+  const withRv = build(home({ due_cards: [card("k1")], due_count: 1 }));
+  assert.equal(planOpener(withRv, "Econ")?.kind, "mcq");
+  // an interactive miss card up front is a choice question in its own right
+  const miss = card("m1", "nb1", iso(2026, 8, 1), { origin: "miss", meta: { item: mcq("orig"), notebook_title: "Bio" } });
+  const o = planOpener(build(home({ due_cards: [miss], due_count: 1 })), "Econ");
+  assert.ok(o && o.id === "rv:m1" && o.stem === "orig" && o.notebook === "Bio");
+  // flashcards only → the front, no choices
+  const fc = planOpener(build(home({ chapters: [ch({ status: "done" })], due_cards: [card("k1")], due_count: 1 })), "Econ");
+  assert.ok(fc && fc.kind === "review" && fc.stem === "Q k1" && fc.choices === undefined);
+  assert.equal(planOpener({ ...plan, items: [] }, "Econ"), null);
+});
+
+// ─── copy: nothing that reads as a verdict or a nag ─────────────────────────
+test("Learn copy never says almost / so close / failed / behind / missed a day", () => {
+  const banned = /(^|[\s"'`(—·])(almost|so close|failed|behind|missed a day)\b/i;
+  const files = ["session.ts", "learnApi.ts", "../components/Session.tsx", "../components/SessionCards.tsx"];
+  for (const f of files) {
+    const src = readFileSync(new URL(f, import.meta.url), "utf8");
+    // every single-line string or template literal with at least three words = copy; ${…} expressions are not words
+    const literals = [...src.matchAll(/"((?:[^"\\\n]|\\.)*)"|`((?:[^`\\\n]|\\.)*)`/g)].map((m) => (m[1] ?? m[2] ?? "").replace(/\$\{[^}]*\}/g, " "));
+    for (const lit of literals) {
+      if (lit.trim().split(/\s+/).length < 3) continue;
+      assert.doesNotMatch(lit, banned, `${f}: ${lit}`);
+    }
+  }
+  // the why line, for the states the planner writes itself
+  for (const w of [build(home()).why, build(home({ notebooks: [nb({ last_studied_at: iso(2026, 8, 20) })] })).why]) assert.doesNotMatch(w, banned);
 });

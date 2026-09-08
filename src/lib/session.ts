@@ -5,15 +5,17 @@
 // The one thing this file decides: what Ben studies today, in what order, and
 // what "done" means for it. The side effects live in learnApi.ts.
 
-import type { NBCard } from "./fsrs";
+import { retrievability, type NBCard } from "./fsrs";
 
 // ─── Card shapes (mirror the lesson validator in the learn edge function) ────
 export type RunDiagram = { kind: "flow" | "compare" | "cycle" | "stack"; title?: string; nodes: { label: string; note?: string }[] };
 // A clip is a start/end window (seconds) of a real YouTube video, verified
 // server-side against its transcript — a teach card gets none rather than a doubtful one.
 export type TeachClip = { id: string; title: string; channel: string; start: number; end: number };
-export type TeachCard = { kind: "teach"; text: string; diagram: RunDiagram | null; cite?: { chunk_id: string; quote: string }; clip?: TeachClip };
-export type ChoiceCard = { kind: "mcq" | "scenario"; q: string; situation: string; choices: string[]; answer: number; explain: string; why_wrong?: string[] };
+// clip_off: Ben said the clip made no sense — it stays off this card for good.
+export type TeachCard = { kind: "teach"; text: string; diagram: RunDiagram | null; cite?: { chunk_id: string; quote: string }; clip?: TeachClip; clip_off?: boolean };
+// hook: a ≤24-char tag when the card is set in one of his interests ("From your driving").
+export type ChoiceCard = { kind: "mcq" | "scenario"; q: string; situation: string; choices: string[]; answer: number; explain: string; why_wrong?: string[]; hook?: string };
 export type BlankCard = { kind: "blank"; sentence: string; bank: string[]; answer: string[]; explain: string };
 export type OrderCard = { kind: "order"; prompt: string; items: string[]; explain: string };
 export type MatchCard = { kind: "match"; prompt: string; pairs: [string, string][]; explain: string };
@@ -28,6 +30,7 @@ export type ChapterLite = {
   status: string; best_score: number; week: number | null; due: string | null;
   has_run: boolean; run_at: string | null; retention_check_at: string | null; attempts: number; fade: number; quant: boolean;
   videos: { id: string; title: string; channel: string; why: string }[]; misses: string[]; clips_ready: boolean;
+  videos_tried_at?: string | null;   // last failed video hunt; ensureRun retries at most once a day
 };
 export type NotebookLite = { id: string; title: string; emoji: string; course: string; course_key: string | null; kind: string; last_studied_at: string | null };
 export type DeadlineLite = {
@@ -37,7 +40,11 @@ export type DeadlineLite = {
 // A due card row carries its origin and meta so a missed interactive card can be
 // re-asked as itself instead of as a flat flashcard.
 export type DueCard = NBCard & { origin?: string; meta?: { item?: RunCard; notebook_title?: string } | null };
-export type LearnSettings = { session_cap?: number; review_cap?: number; best_week?: number; anchor?: string };
+export type LearnSettings = {
+  session_cap?: number; review_cap?: number; best_week?: number; week_goal?: number; anchor?: string; interests?: string[];
+  nudge_on?: boolean; nudge_at?: string; tz?: string; nudge_sent_day?: string;
+  nudge?: { day: string; text: string; chapter_id: string; nb: string };
+};
 export type LearnHome = {
   notebooks: NotebookLite[]; chapters: ChapterLite[]; due_cards: DueCard[]; due_count: number;
   deadlines: DeadlineLite[]; open_session: StudySessionRow | null; week_days: string[]; done_today: boolean;
@@ -50,17 +57,20 @@ export type SessionItem =
   | (RunCard & {
       id: string; kind: RunCard["kind"]; chapter_id: string; notebook_id: string; chapter_title: string;
       pretest?: boolean; mixed?: boolean; retention?: boolean; reask?: boolean;
+      // quick feed only: the short clip shown above this question, and the run index of the teach card it came from
+      feedClip?: { clip: TeachClip; k: number };
     });
 export type SessionResult = { id: string; ok: boolean; attempt: 1 | 2; ms: number; rating?: number; skipped?: boolean };
+export type SessionScope = "today" | "chapter" | "quick";
 export type StudySessionRow = {
-  id: string; user_id: string; day: string; scope: "today" | "chapter"; status: "open" | "done";
+  id: string; user_id: string; day: string; scope: SessionScope; status: "open" | "done";
   notebook_ids: string[]; chapter_id: string | null; plan: SessionItem[]; results: SessionResult[]; pos: number;
   stats: Record<string, unknown> | null; started_at: string; finished_at: string | null;
 };
 export type TodayState = "no-notebooks" | "no-sources" | "needs-chapters" | "preparing" | "ready" | "resume" | "done-today" | "ai-off";
 export type SessionPlan = {
   state: TodayState; items: SessionItem[]; retrySlots: number; why: string; notebookIds: string[];
-  chapterId: string | null; notebookId: string | null; minutes: number; scope?: "today" | "chapter";
+  chapterId: string | null; notebookId: string | null; minutes: number; scope?: SessionScope;
   prepare?: { notebookId: string; chapter: ChapterLite | null; reason: "no-chapters" | "no-run" };
   nextDeadline?: DeadlineLite | null;
 };
@@ -72,11 +82,19 @@ export type SessionScore = {
 export const RETRY_SLOTS = 4;
 export const NEW_BLOCK = 10;
 export const PASS_PCT = 80;
+export const SESSION_CAP = 12;
+export const REVIEW_FLOOR = 4;
 const MIN_QUESTIONS = 7;
 const MIXED_POSITIONS = [4, 8, 12];
+// Two reviews open the round (a warm-up, not a wall); the rest are woven into
+// the chapter block so the new idea arrives within a minute of tapping Start.
+const OPENERS = 2;
+const REVIEW_POSITIONS = [3, 6, 9, 12, 15, 18];
 const MIXED_COUNT = 3;
 const RETENTION_COUNT = 3;
-const SECONDS_PER_ITEM = 25;
+export const SECONDS_PER_ITEM = 25;
+const TARGET_R = 0.6;              // the recall probability a review is most worth doing at
+const FEED_CLIP_MAX_S = 75;        // a quick-feed clip is a bite, not a lecture
 
 // ─── Dates (local, because "today" is the day Ben is living in) ─────────────
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -213,16 +231,32 @@ function tierOf(home: LearnHome, nb: NotebookLite, today: string): number {
   return (home.source_counts?.[nb.id] ?? 0) > 0 ? 2 : 1;
 }
 
+// A notebook mid-story: its next chapter was already attempted (it comes back
+// rewritten) or a chapter is passed and waiting on its check. Unfinished
+// business pulls harder than a stale notebook — unless a deadline somewhere
+// is pressing.
+function midStory(nb: NotebookLite, home: LearnHome, today: string): boolean {
+  const mine = home.chapters.filter((c) => c.notebook_id === nb.id);
+  if (mine.some((c) => c.status === "passed" && !!c.retention_check_at)) return true;
+  const next = pickChapter(nb, home.chapters, home.deadlines, today);
+  return !!next && next.status === "active" && next.attempts > 0;
+}
+const STICKY = 0.5;
+const STICKY_MAX_URGENCY = 0.3;
+
 export function pickNotebook(home: LearnHome, today: string): NotebookLite | null {
   if (!home.notebooks.length) return null;
   const totalDue = home.due_cards.length;
-  const scored = home.notebooks.map((nb) => {
+  const urgencies = home.notebooks.map((nb) => urgency(nb, home.deadlines, chaptersLeft(nb, home.chapters), today));
+  const calm = Math.max(0, ...urgencies) <= STICKY_MAX_URGENCY;
+  const scored = home.notebooks.map((nb, i) => {
     const mine = home.chapters.filter((c) => c.notebook_id === nb.id);
     const left = chaptersLeft(nb, home.chapters);
     const staleness = nb.last_studied_at ? Math.min(1, Math.max(0, daysBetween(localDay(nb.last_studied_at), today)) / 4) : 0.5;
     const backlog = mine.length ? left / mine.length : 0;
     const dueShare = totalDue ? home.due_cards.filter((c) => c.notebook_id === nb.id).length / totalDue : 0;
-    const score = 0.45 * urgency(nb, home.deadlines, left, today) + 0.25 * staleness + 0.2 * backlog + 0.1 * dueShare;
+    const sticky = calm && midStory(nb, home, today) ? STICKY : 0;
+    const score = 0.45 * urgencies[i] + 0.25 * staleness + 0.2 * backlog + 0.1 * dueShare + sticky;
     return { nb, tier: tierOf(home, nb, today), score };
   });
   scored.sort((a, b) => {
@@ -303,11 +337,25 @@ function chapterItem(ch: ChapterLite, card: RunCard, k: number, prefix: string, 
   };
 }
 
-function reviewBlock(home: LearnHome, answered: Set<string>): SessionItem[] {
-  const due = home.due_cards
-    .filter((c) => !c.suspended && !answered.has(reviewItemId(c.id)))
-    .sort((a, b) => a.due.localeCompare(b.due) || a.id.localeCompare(b.id));
-  const lower = home.settings?.review_cap ?? 4;
+// Which reviews matter most: a card just forgotten (FSRS "relearning" — the
+// one he was sure about and got wrong) first, then the ones nearest the 60%
+// recall sweet spot, then the longest overdue. Deterministic: ties by id.
+const RELEARNING = 3;
+export function reviewOrder(cards: DueCard[], now: Date): DueCard[] {
+  const key = (c: DueCard) => [c.state === RELEARNING ? 0 : 1, Math.abs(retrievability(c, now) - TARGET_R)] as const;
+  return [...cards].sort((a, b) => {
+    const ka = key(a), kb = key(b);
+    return ka[0] - kb[0] || ka[1] - kb[1] || a.due.localeCompare(b.due) || a.id.localeCompare(b.id);
+  });
+}
+const asReviewItem = (card: DueCard): SessionItem => {
+  const item = card.origin === "miss" && card.meta?.item && card.meta.item.kind !== "teach" ? card.meta.item : undefined;
+  return { id: reviewItemId(card.id), kind: "review" as const, card, card_id: card.id, item };
+};
+
+function reviewBlock(home: LearnHome, answered: Set<string>, now: Date): SessionItem[] {
+  const due = reviewOrder(home.due_cards.filter((c) => !c.suspended && !answered.has(reviewItemId(c.id))), now);
+  const lower = home.settings?.review_cap ?? REVIEW_FLOOR;
   const cap = clamp(home.due_count, lower, Math.max(lower, 8));
   // round-robin by notebook so one heavy deck can't crowd the others out
   const byNb = new Map<string, DueCard[]>();
@@ -318,10 +366,7 @@ function reviewBlock(home: LearnHome, answered: Set<string>): SessionItem[] {
     const q = queues[i % queues.length];
     if (q.length) out.push(q.shift() as DueCard);
   }
-  return out.map((card) => {
-    const item = card.origin === "miss" && card.meta?.item && card.meta.item.kind !== "teach" ? card.meta.item : undefined;
-    return { id: reviewItemId(card.id), kind: "review" as const, card, card_id: card.id, item };
-  });
+  return out.map(asReviewItem);
 }
 
 // Questions from a cached run that Ben did NOT miss last time — the honest
@@ -353,14 +398,40 @@ function mixedItems(nb: NotebookLite, chapters: ChapterLite[], runs: Record<stri
   }
   return out;
 }
-function weaveMixed(block: ChapterItem[], mixed: ChapterItem[]): ChapterItem[] {
+// Drop extras into the block at fixed positions: never before the first
+// teach card (the pretest stays glued to it) and never straight after a teach
+// card (its own question comes first) — the slot moves one down instead.
+// Extras that find no slot are appended when `keep` is set (a due review is
+// owed) and dropped otherwise (a mixed question is a bonus).
+function weaveInto<T extends SessionItem>(block: T[], extras: T[], positions: number[], keep = false): T[] {
   const firstTeach = block.findIndex((c) => c.kind === "teach");
   const out = [...block];
   let inserted = 0;
-  for (const p of MIXED_POSITIONS) {
-    if (inserted >= mixed.length) break;
+  for (let p of positions) {
+    if (inserted >= extras.length) break;
     if (p > out.length || (firstTeach >= 0 && p <= firstTeach)) continue;
-    out.splice(p, 0, mixed[inserted++]);
+    if (out[p - 1]?.kind === "teach") p++;
+    if (p > out.length) continue;
+    out.splice(p, 0, extras[inserted++]);
+  }
+  return keep ? [...out, ...extras.slice(inserted)] : out;
+}
+
+// A chapter question that is also a due review card would be asked twice in
+// one round; the review (scheduled, rated) wins. A teach card keeps at least
+// one question so it never dangles; the pretest is never dropped.
+function dedupeAgainstReviews(block: ChapterItem[], reviews: SessionItem[]): ChapterItem[] {
+  const fronts = new Set(reviews.map((r) => (r.kind === "review" ? r.card.front : "")).map((f) => f.trim().toLowerCase()).filter(Boolean));
+  if (!fronts.size) return block;
+  const out: ChapterItem[] = [];
+  for (let i = 0; i < block.length; i++) {
+    const it = block[i];
+    const dup = it.kind !== "teach" && !it.pretest && fronts.has(stemOf(it).trim().toLowerCase());
+    if (!dup) { out.push(it); continue; }
+    // keep it when it is the last question of its teach group
+    const prevTeach = out.length && out[out.length - 1].kind === "teach";
+    const nextIsQuestion = i + 1 < block.length && block[i + 1].kind !== "teach";
+    if (prevTeach && !nextIsQuestion) out.push(it);
   }
   return out;
 }
@@ -423,8 +494,10 @@ export function buildSession(
   // An open session from the last three days wins: pick it up rather than plan
   // a new one over it. Past its last item (or older) it is finished, not
   // resumable — the home settles it through the finish path.
+  // A quick-feed row left open is not today's round — startSession settles it
+  // on the way in (the one-open-row index), so it is never resumed here.
   const open = home.open_session;
-  if (forToday && open && open.status === "open" && Array.isArray(open.plan) && !needsSettling(open, today)) {
+  if (forToday && open && open.status === "open" && open.scope !== "quick" && Array.isArray(open.plan) && !needsSettling(open, today)) {
     const left = open.plan.length - open.pos;
     return mk("resume", open.plan, `Pick up where you left off · ${left} left`, {
       notebookIds: open.notebook_ids ?? [], chapterId: open.chapter_id, notebookId: open.notebook_ids?.[0] ?? null,
@@ -432,7 +505,7 @@ export function buildSession(
     });
   }
 
-  const reviews = forToday ? reviewBlock(home, answered) : [];
+  const reviews = forToday ? reviewBlock(home, answered, opts.now) : [];
 
   // which notebook, which chapter
   let nb: NotebookLite | null = null;
@@ -485,23 +558,24 @@ export function buildSession(
         ...withChapter, prepare: { notebookId: nb.id, chapter: chosen, reason: "no-run" },
       });
     }
-    block = cards.map((card, k) => chapterItem(chosen as ChapterLite, card, k, "ch"));
-    block = weaveMixed(block, mixedItems(nb, home.chapters, runs, chosen, seed));
+    block = dedupeAgainstReviews(cards.map((card, k) => chapterItem(chosen as ChapterLite, card, k, "ch")), reviews);
+    block = weaveInto(block, mixedItems(nb, home.chapters, runs, chosen, seed), MIXED_POSITIONS);
   }
   block = block.filter((it) => !answered.has(it.id));
 
   // session_cap bounds the whole thing: mixed questions go first, then the
   // review block shrinks — but never below the review floor.
-  const cap = home.settings?.session_cap ?? 16;
+  const cap = home.settings?.session_cap ?? SESSION_CAP;
   let reviewList = reviews;
   while (block.length + reviewList.length > cap && block.some((b) => b.mixed)) {
     const last = block.map((b) => !!b.mixed).lastIndexOf(true);
     block.splice(last, 1);
   }
-  const floor = home.settings?.review_cap ?? 4;
+  const floor = home.settings?.review_cap ?? REVIEW_FLOOR;
   if (block.length + reviewList.length > cap) reviewList = reviewList.slice(0, Math.max(floor, cap - block.length));
 
-  const items: SessionItem[] = [...reviewList, ...block];
+  // two reviews open, the rest ride inside the chapter block
+  const items: SessionItem[] = [...reviewList.slice(0, OPENERS), ...weaveInto<SessionItem>(block, reviewList.slice(OPENERS), REVIEW_POSITIONS, true)];
   const why = retentionDue(chosen, today)
     ? `Quick check on "${chosen.title}" — does it still hold?`
     : whyFor(nb, nextDeadline, left, today);
@@ -536,4 +610,78 @@ export function scoreSession(plan: SessionPlan, results: SessionResult[]): Sessi
   }
   const pctOf = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
   return { asked, right, pct: pctOf(right, asked), chapterPct: pctOf(cRight, cAsked), chapterAsked: cAsked, chapterRight: cRight, misses, sureButWrong, retention };
+}
+
+// A notebook Ben has never finished a round in, on a chapter never attempted:
+// the run is requested without a pretest so the round opens on the clip or
+// the teach card, not on a question about something he has never seen.
+export function isColdNotebook(nb: NotebookLite, ch: ChapterLite): boolean {
+  return (ch.attempts ?? 0) === 0 && !nb.last_studied_at;
+}
+
+// ─── The quick feed ─────────────────────────────────────────────────────────
+// What he opens when bored: every due card, then short clips (≤75 s) from any
+// chapter with cards written, each paired with the question that follows it.
+// Feed items are tagged `mixed` so a chapter never passes or fails from here,
+// while a miss still records. Round-robin by notebook; same order all day.
+export function buildQuickFeed(
+  home: LearnHome, runs: Record<string, RunCard[]>, opts: { now: Date; max?: number; answeredIds?: string[] },
+): SessionPlan {
+  const max = opts.max ?? 20;
+  const today = studyDay(opts.now);
+  const answered = new Set(opts.answeredIds ?? []);
+  const seed = hashSeed(`quick:${today}`);
+  const reviews = reviewOrder(home.due_cards.filter((c) => !c.suspended && !answered.has(reviewItemId(c.id))), opts.now).map(asReviewItem);
+
+  const byNb = new Map<string, ChapterItem[]>();
+  for (const ch of home.chapters) {
+    const run = runs[ch.id];
+    if (ch.status === "stuck" || !Array.isArray(run) || !run.length) continue;
+    const pairs: ChapterItem[] = [];
+    run.forEach((card, k) => {
+      const q = run[k + 1];
+      if (card.kind !== "teach" || !card.clip || card.clip_off || !q || q.kind === "teach") return;
+      if (card.clip.end - card.clip.start > FEED_CLIP_MAX_S) return;
+      const item = chapterItem(ch, q, k + 1, "qf", "mixed");
+      if (!answered.has(item.id)) pairs.push({ ...item, feedClip: { clip: card.clip, k } });
+    });
+    if (pairs.length) byNb.set(ch.notebook_id, [...(byNb.get(ch.notebook_id) ?? []), ...pickSome(pairs, pairs.length, seed + ch.idx)]);
+  }
+  const queues = [...byNb.values()];
+  const clips: ChapterItem[] = [];
+  for (let i = 0; queues.some((q) => q.length); i++) {
+    const q = queues[i % queues.length];
+    if (q.length) clips.push(q.shift() as ChapterItem);
+  }
+  const items: SessionItem[] = [...reviews, ...clips].slice(0, max);
+  const notebookIds = [...new Set(items.map((it) => (it.kind === "review" ? it.card.notebook_id : it.notebook_id)))];
+  return {
+    state: items.length ? "ready" : "done-today", items, retrySlots: 0, why: items.length ? `${items.length} quick ones` : "Nothing quick left today",
+    notebookIds, chapterId: null, notebookId: notebookIds[0] ?? null, minutes: estimateMinutes(items.length), scope: "quick", nextDeadline: null,
+  };
+}
+
+// ─── The opener: what the Today card shows before anything else ────────────
+export type PlanFirst = {
+  id: string; kind: "mcq" | "scenario" | "review"; stem: string; situation?: string; choices?: string[]; answer?: number; notebook: string;
+};
+// items[0] when it is a choice question; else the first choice question in the
+// chapter block; else the first review flashcard's front with no choices.
+// `answered` (a resumed round's result ids) is skipped, so the Today card asks
+// the next open item rather than one he already answered.
+export function planOpener(plan: SessionPlan, notebookTitle: string, answered: readonly string[] = []): PlanFirst | null {
+  const nbOf = (it: SessionItem) => (it.kind === "review" ? it.card.meta?.notebook_title || notebookTitle : notebookTitle);
+  const choice = (it: SessionItem): PlanFirst | null => {
+    const c = it.kind === "review" ? it.item : it;
+    if (!c || (c.kind !== "mcq" && c.kind !== "scenario")) return null;
+    return { id: it.id, kind: c.kind, stem: c.q, ...(c.situation ? { situation: c.situation } : {}), choices: c.choices, answer: c.answer, notebook: nbOf(it) };
+  };
+  const skip = new Set(answered);
+  const items = skip.size ? plan.items.filter((it) => !skip.has(it.id)) : plan.items;
+  const first = items[0];
+  if (!first) return null;
+  const opener = choice(first) ?? items.map(choice).find((x) => x !== null) ?? null;
+  if (opener) return opener;
+  const rv = items.find((it) => it.kind === "review");
+  return rv && rv.kind === "review" ? { id: rv.id, kind: "review", stem: rv.card.front, notebook: nbOf(rv) } : null;
 }

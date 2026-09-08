@@ -13,6 +13,7 @@ import { supabase } from "@/lib/supabase";
 import { LADDER, LADDER_NOTEBOOK } from "@/lib/curriculum";
 import { buildSession, studyDay, pickChapter, orderChapters, type SessionPlan, type LearnHome, type ChapterLite, type NotebookLite, type RunCard } from "@/lib/session";
 import { ensureRun, buildChapters } from "@/lib/learnApi";
+import { advisorCall } from "@/lib/notebook";
 import { sfx } from "@/lib/fx";
 import { Card, ProgressCircle, Segmented } from "./ui";
 import NotebookSources from "./NotebookSources";
@@ -50,6 +51,7 @@ export default function NotebookView({ uid, notebook, home, runs, aiOff, onBack,
   const [session, setSession] = useState<SessionPlan | null>(null);
   const [progress, setProgress] = useState("");   // the ONE line for anything the AI is writing
   const [err, setErr] = useState("");
+  const [note, setNote] = useState("");           // a quiet result line ("3 videos found"), never orange
   const [confirm, setConfirm] = useState<"rebuild" | "ladder" | null>(null);
   // "is the check ready" compares against the moment the screen opened — a
   // stable clock keeps render pure and a few minutes of drift changes nothing
@@ -74,7 +76,7 @@ export default function NotebookView({ uid, notebook, home, runs, aiOff, onBack,
     setProgress(ch.has_run || runs[ch.id] ? "opening…" : `Writing the cards for “${ch.title}”… about 30 seconds`);
     try {
       if (!runs[ch.id]) {
-        const cards = await ensureRun(notebook, ch);
+        const cards = await ensureRun(notebook, ch, { onNote: setNote });
         if (!cards?.length) { setErr(`Couldn't write the cards for “${ch.title}”. Tap it again to retry.`); return; }
         runs[ch.id] = cards;
       }
@@ -85,7 +87,7 @@ export default function NotebookView({ uid, notebook, home, runs, aiOff, onBack,
         // the cached run failed the checks a round relies on — a fresh one is
         // the only way forward (re-reading the same run would fail the same way)
         setProgress(`Rewriting the cards for “${ch.title}”… about 30 seconds`);
-        const cards = await ensureRun(notebook, ch, { force: true });
+        const cards = await ensureRun(notebook, ch, { force: true, onNote: setNote });
         if (!cards?.length) { setErr(`Couldn't rewrite the cards for “${ch.title}”. Tap it again to retry.`); return; }
         runs[ch.id] = cards;
         plan = buildSession(home, runs, opts);
@@ -126,7 +128,7 @@ export default function NotebookView({ uid, notebook, home, runs, aiOff, onBack,
       const first = orderChapters(notebook, h.chapters)[0];
       if (!first) return;
       setProgress(`${r.added} chapters ready · writing chapter 1: ${first.title}… about 30 seconds`);
-      const cards = await ensureRun(notebook, first);
+      const cards = await ensureRun(notebook, first, { onNote: setNote });
       if (cards?.length) { runs[first.id] = cards; sfx.coin(); }
       else setErr("Chapters are in. The first round didn't finish writing — tap a chapter to try again.");
       await onChanged();
@@ -161,6 +163,27 @@ export default function NotebookView({ uid, notebook, home, runs, aiOff, onBack,
     finally { busy.current = false; setProgress(""); }
   }
 
+  // A fresh video search for the chapter that is up next, ignoring the ones on
+  // the row (`existing: []`) — for when the clips on it made no sense. The
+  // studio verifies each candidate against YouTube and caches transcripts;
+  // clips reach the cards only when they are next written, and the copy says so.
+  async function findVideos() {
+    if (busy.current || !next) return;
+    busy.current = true; setErr(""); setNote("");
+    setProgress(`Finding videos for “${next.title}”… about a minute`);
+    try {
+      const json = await advisorCall<{ videos?: unknown[]; withTranscripts?: number }>({
+        advisor: "videos", topicId: notebook.id, chapterId: next.id, chapterTitle: next.title, chapterObjective: next.objective, chapterSummary: next.summary, existing: [],
+      });
+      if (json.error) { setErr(json.error); return; }
+      const n = Array.isArray(json.videos) ? json.videos.length : 0;
+      if (!n) { setErr(`No video for “${next.title}” checked out on YouTube — its cards stay text-first for now.`); return; }
+      sfx.coin();
+      setNote(`${n} video${n === 1 ? "" : "s"} found for “${next.title}” · ${json.withTranscripts ?? 0} with transcripts. New clips land the next time its cards are written.`);
+      await onChanged();
+    } finally { busy.current = false; setProgress(""); }
+  }
+
   if (session) {
     // onFinished fires before the done screen — the Session stays up until Done
     // is tapped (onClose), which is when the spine refreshes.
@@ -189,6 +212,7 @@ export default function NotebookView({ uid, notebook, home, runs, aiOff, onBack,
 
       {progress && <p className="text-[12px] text-[var(--neon)] mt-3">{progress}</p>}
       {err && !progress && <p className="text-xs text-orange-300 mt-3">{err}</p>}
+      {note && !progress && !err && <p className="text-[12px] text-[var(--text-2)] mt-3">{note}</p>}
 
       {/* ── paste-first: nothing to study yet ─────────────────────── */}
       {pasteFirst ? (
@@ -266,11 +290,12 @@ export default function NotebookView({ uid, notebook, home, runs, aiOff, onBack,
               {tool === "guide" && <StudyGuide uid={uid} notebookId={notebook.id} title={notebook.title} />}
               {tool === "cards" && <Cards uid={uid} notebookId={notebook.id} />}
               {tool === "map" && <MindMap uid={uid} notebookId={notebook.id} title={notebook.title} />}
-              {tool === "chat" && <NotebookChat uid={uid} notebookId={notebook.id} chapterTitle={next?.title} />}
+              {tool === "chat" && <NotebookChat uid={uid} notebookId={notebook.id} chapterTitle={next?.title} interests={home.settings.interests} />}
 
               {/* chapter maintenance lives here, not next to the spine — it is rare */}
               <div className="pt-2 border-t border-[var(--border-1)] flex flex-wrap items-center gap-x-4 gap-y-1">
                 <button onClick={() => build(false)} disabled={!!progress} className="text-[11px] text-[var(--neon)] underline disabled:opacity-40">Add chapters from new sources</button>
+                {next && <button onClick={findVideos} disabled={!!progress} className="text-[11px] opacity-60 underline disabled:opacity-40">Find videos again for “{next.title}”</button>}
                 {isLadderNb && <button onClick={() => setConfirm("ladder")} disabled={!!progress} className="text-[11px] opacity-60 underline disabled:opacity-40">Load the ladder</button>}
                 <button onClick={() => setConfirm("rebuild")} disabled={!!progress} className="text-[11px] opacity-60 underline disabled:opacity-40">Rebuild from scratch</button>
               </div>
@@ -306,7 +331,7 @@ function ChapterRow({ c, n, nowMs, isNext, onStudy, onGuide }: { c: ChapterLite;
     isDone ? "done ✓"
     : c.status === "passed" ? (checkDue ? "passed · check is ready" : `passed · check ${weekday(c.retention_check_at)}`)
     : c.status === "stuck" ? "sticking — ask the guide?"
-    : c.attempts > 0 ? "in progress" : "not started";
+    : c.attempts > 0 ? "in progress" : "first look";   // a cold chapter is a first look, not a task not started
   return (
     <div className="relative">
       <span className={`absolute -left-[1.55rem] top-3.5 w-6 h-6 rounded-full grid place-items-center text-xs font-bold z-10 border-2 border-[var(--background)] ${isDone ? "bg-[var(--neon)] text-black" : isNext ? "bg-white/25" : "bg-white/10"}`}>

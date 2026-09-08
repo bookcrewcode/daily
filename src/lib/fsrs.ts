@@ -105,6 +105,18 @@ function humanize(ms: number): string {
   return `${(d / 365).toFixed(1)}y`;
 }
 
+// How likely the card is still remembered right now, 0–1 (FSRS's own
+// forgetting curve). 0.6 is the sweet spot the planner aims a review at —
+// hard enough to be worth it, not yet gone. A row that was never reviewed
+// (imported, or a miss card made mid-round) gets its elapsed time from the
+// schedule instead of last_review, so the number is still finite.
+export function retrievability(row: CardState, now = new Date()): number {
+  if (row.state === State.New) return 0;
+  const last = row.last_review ? new Date(row.last_review) : new Date(new Date(row.due).getTime() - (row.scheduled_days || 1) * 86400000);
+  const r = scheduler.get_retrievability(fromRow({ ...row, last_review: last.toISOString() }), now, false);
+  return Number.isFinite(r) ? Math.max(0, Math.min(1, r)) : 0;
+}
+
 // Is this card due now?
 export function isDue(row: { due: string; suspended?: boolean }, now = new Date()): boolean {
   return !row.suspended && new Date(row.due).getTime() <= now.getTime();

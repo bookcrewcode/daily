@@ -40,7 +40,7 @@ function renderWithChips(text: string, onChip: (id: string) => void): ReactNode[
   return out;
 }
 
-export default function NotebookChat({ uid, notebookId, chapterTitle }: { uid: string; notebookId: string; chapterTitle?: string }) {
+export default function NotebookChat({ uid, notebookId, chapterTitle, interests }: { uid: string; notebookId: string; chapterTitle?: string; interests?: string[] }) {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -82,6 +82,7 @@ export default function NotebookChat({ uid, notebookId, chapterTitle }: { uid: s
       scrollDown();
       const json = await advisorCall<{ text?: string; error?: string }>({
         advisor: "tutor", message: text, history, topicId: notebookId, chapterTitle: chapterTitle ?? "", clientDay: todayStr(),
+        interests: (interests ?? []).slice(0, 6),
       });
       const reply = json.text || json.error || "No response.";
       if (json.text) {
