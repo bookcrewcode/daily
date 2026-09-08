@@ -32,3 +32,14 @@ $$);
 select cron.unschedule('news-agent-run-edt');
 select cron.unschedule('news-agent-sync-edt');
 select cron.unschedule('news-agent-sync-est');
+
+-- Phase 5 (2026-09-08): the five-minute heartbeat replaces the half-hourly sync. One minute past each
+-- five-minute mark, after the exchanges have opened the new candle.
+select cron.unschedule('desk-sync');
+select cron.schedule('desk-tick', '1-59/5 * * * *', $$
+  select net.http_post(url := 'https://pciljeqsrricybdnhvsu.supabase.co/functions/v1/desk-tick',
+    headers := '{"Content-Type":"application/json"}'::jsonb,
+    body := jsonb_build_object('userId','f0e1e204-aa54-4a45-bbb5-99c83114fecb',
+      'cronSecret',(select decrypted_secret from vault.decrypted_secrets where name='desk_cron_secret')),
+    timeout_milliseconds := 140000);
+$$);

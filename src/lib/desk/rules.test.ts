@@ -82,7 +82,7 @@ test("guardrail rejects wrong-side stops, thin reward, duplicates, halts and cap
   assert.equal(guardrail(stockPlan({ target: 104 }), base).ok, false); // rr 0.8
   assert.equal(guardrail(stockPlan({ stop: 99.5 }), base).ok, false); // 0.5 < 0.5×atr(2)=1
   assert.equal(guardrail(stockPlan(), { ...base, halted: true }).ok, false);
-  assert.equal(guardrail(stockPlan(), { ...base, newTonight: 2 }).ok, false);
+  assert.equal(guardrail(stockPlan(), { ...base, rules: { ...PRESETS.aggressive, max_new_per_night: 2 }, newTonight: 2 }).ok, false);
   const open = { symbol: "AAPL", notional: 10000, risk_pct: 3, entry_price: 100, stop: 95, qty: 100, unit: "share", contract_value: 1, status: "open" } as unknown as Trade;
   assert.equal(guardrail(stockPlan(), { ...base, open: [open] }).ok, false);
   const ok = guardrail(stockPlan(), base);
@@ -93,7 +93,8 @@ test("guardrail rejects wrong-side stops, thin reward, duplicates, halts and cap
 test("theme cap, gross cap and heat cap", () => {
   const mkOpen = (symbol: string, notional: number, risk: number): Trade =>
     ({ symbol, notional, entry_price: 100, stop: 100 - risk / 100, qty: 100, unit: "share", contract_value: 1, status: "open" } as unknown as Trade);
-  const base = { equity: 100000, rules: PRESETS.aggressive, atr: 2, meta: shareMeta, halted: false, themeOf: (s: string) => (s === "AAPL" || s === "MSFT" || s === "NVDA" ? "tech" : "other"), drawdownHalved: false, newTonight: 0 };
+  // the mechanism, with the caps pinned: the presets themselves moved in phase 5
+  const base = { equity: 100000, rules: { ...PRESETS.aggressive, gross_cap_pct: 200, heat_cap_pct: 12, max_per_theme: 2 }, atr: 2, meta: shareMeta, halted: false, themeOf: (s: string) => (s === "AAPL" || s === "MSFT" || s === "NVDA" ? "tech" : "other"), drawdownHalved: false, newTonight: 0 };
   assert.equal(guardrail(stockPlan(), { ...base, open: [mkOpen("MSFT", 1000, 100), mkOpen("NVDA", 1000, 100)] }).ok, false); // 2 tech already
   assert.equal(guardrail(stockPlan(), { ...base, open: [mkOpen("XOM", 150000, 100)] }).ok, false); // 150k + 60k > 200k gross
   assert.equal(guardrail(stockPlan(), { ...base, open: [mkOpen("XOM", 1000, 10000)] }).ok, false); // heat 10000 + 3000 > 12000

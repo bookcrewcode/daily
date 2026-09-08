@@ -13,6 +13,7 @@ export const TAPE_FN = `${SUPABASE_URL}/functions/v1/tape`;
 export const DESK_FN = `${SUPABASE_URL}/functions/v1/desk`;
 export const SYNC_FN = `${SUPABASE_URL}/functions/v1/desk-sync`;
 export const REVIEW_FN = `${SUPABASE_URL}/functions/v1/desk-review`;
+export const FEED_FN = `${SUPABASE_URL}/functions/v1/desk-feed`;
 
 export async function callFn<T = Record<string, unknown>>(url: string, body: Record<string, unknown>, timeoutMs = 150_000): Promise<T & { error?: string }> {
   const { data: s } = await supabase.auth.getSession();
@@ -37,6 +38,7 @@ export type Account = {
   user_id: string; starting_equity: number; cash: number; equity: number; peak_equity: number;
   preset: PresetKey; rules: Partial<Rules>; halted_until: string | null; halt_reason: string;
   roster: string[]; judge: string; budget_usd_per_run: number; ladder: Record<string, unknown>; leverage_cap_override: number | null;
+  sit_roster: string[]; sit_budget_usd: number; cooldown_hours: number; strategies_off: string[];
 };
 
 const n = (v: unknown, d = 0) => { const x = Number(v); return Number.isFinite(x) ? x : d; };
@@ -49,6 +51,8 @@ function toAccount(row: Record<string, unknown>): Account {
     halted_until: row.halted_until ? String(row.halted_until) : null, halt_reason: String(row.halt_reason ?? ""),
     roster: Array.isArray(row.roster) ? (row.roster as string[]) : [], judge: String(row.judge ?? ""), budget_usd_per_run: n(row.budget_usd_per_run, 1.5),
     ladder: (row.ladder as Record<string, unknown>) ?? {}, leverage_cap_override: nul(row.leverage_cap_override),
+    sit_roster: Array.isArray(row.sit_roster) ? (row.sit_roster as string[]) : [], sit_budget_usd: n(row.sit_budget_usd, 3), cooldown_hours: n(row.cooldown_hours, 4),
+    strategies_off: Array.isArray(row.strategies_off) ? (row.strategies_off as string[]) : [],
   };
 }
 
@@ -65,6 +69,8 @@ export async function ensureAccount(uid: string): Promise<{ account: Account | n
 export function toTrade(x: Record<string, unknown>): Trade {
   return {
     id: String(x.id), owner: String(x.owner ?? "desk"), session_id: x.session_id ? String(x.session_id) : null, proposal_id: String(x.proposal_id ?? ""),
+    source: (x.source as Trade["source"]) ?? "nightly", strategy: String(x.strategy ?? ""), timeframe: (x.timeframe as Trade["timeframe"]) ?? "swing",
+    sit_id: x.sit_id ? String(x.sit_id) : null, horizon_hours: nul(x.horizon_hours), size_mult: n(x.size_mult, 1),
     venue: x.venue as Trade["venue"], instrument: x.instrument as Trade["instrument"], symbol: String(x.symbol), name: String(x.name ?? ""),
     side: x.side as Trade["side"], status: x.status as TradeStatus, template: n(x.template), thesis: String(x.thesis ?? ""),
     catalyst: String(x.catalyst ?? ""), falsifier: String(x.falsifier ?? ""), confidence: n(x.confidence, 0.5),
@@ -220,7 +226,7 @@ export async function loadCards(uid: string, limit = 4): Promise<{ cards: CoachC
 }
 
 /* ── settings ───────────────────────────────────────────────────────────── */
-export type AccountPatch = { preset?: PresetKey; roster?: string[]; judge?: string; budget_usd_per_run?: number; leverage_cap_override?: number | null; rules?: Partial<Rules> };
+export type AccountPatch = { preset?: PresetKey; roster?: string[]; judge?: string; budget_usd_per_run?: number; leverage_cap_override?: number | null; rules?: Partial<Rules>; sit_roster?: string[]; sit_budget_usd?: number; cooldown_hours?: number; strategies_off?: string[] };
 export async function updateAccount(uid: string, patch: AccountPatch): Promise<{ error: string }> {
   const { error } = await supabase.from("desk_accounts").update(patch).eq("user_id", uid);
   return { error: error ? "Couldn't save the desk settings." : "" };
@@ -264,4 +270,27 @@ export function deskChipText(c: DeskChip): string {
   const all = c.equity - c.start;
   const pos = c.open + c.pending ? `${c.open} open${c.pending ? ` · ${c.pending} queued` : ""}` : "flat";
   return `${fmtMoney(c.equity)} · ${all >= 0 ? "+" : "-"}${fmtMoney(Math.abs(all))} all time · ${pos}${c.halted ? " · halted" : ""} · ${c.tonight}`;
+}
+
+/* ── the feed ───────────────────────────────────────────────────────────── */
+export type NewsItem = {
+  id: string; link: string; title: string; source: string; published: string; summary: string;
+  tickers: string[]; venue: string; category: string; impact: number; direction: string; horizon: string; why: string; tagged: boolean;
+};
+export async function loadNews(limit = 150, opts: { minImpact?: number; venue?: string; ticker?: string; sinceHours?: number } = {}): Promise<{ items: NewsItem[]; error: string }> {
+  let q = supabase.from("desk_news").select("*").order("published", { ascending: false }).limit(limit);
+  if (opts.minImpact) q = q.gte("impact", opts.minImpact);
+  if (opts.venue) q = q.eq("venue", opts.venue);
+  if (opts.ticker) q = q.contains("tickers", [opts.ticker]);
+  if (opts.sinceHours) q = q.gte("published", new Date(Date.now() - opts.sinceHours * 3_600_000).toISOString());
+  const { data, error } = await q;
+  if (error) return { items: [], error: "Couldn't load the feed." };
+  return {
+    items: ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      id: String(r.id), link: String(r.link), title: String(r.title ?? ""), source: String(r.source ?? ""), published: String(r.published ?? ""), summary: String(r.summary ?? ""),
+      tickers: Array.isArray(r.tickers) ? (r.tickers as string[]) : [], venue: String(r.venue ?? "none"), category: String(r.category ?? "other"), impact: n(r.impact),
+      direction: String(r.direction ?? "none"), horizon: String(r.horizon ?? "none"), why: String(r.why ?? ""), tagged: r.tagged === true,
+    })),
+    error: "",
+  };
 }

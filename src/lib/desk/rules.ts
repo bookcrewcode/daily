@@ -73,7 +73,8 @@ export function guardrail(plan: Plan, ctx: GuardCtx): GuardResult {
   if (ctx.newTonight >= rules.max_new_per_night) return fail(`already ${rules.max_new_per_night} new positions tonight`);
   if (live.length >= rules.max_open) return fail(`already ${rules.max_open} positions open`);
   const theme = ctx.themeOf(plan.symbol);
-  if (live.filter((o) => ctx.themeOf(o.symbol) === theme).length >= 2) return fail(`two positions already ride the "${theme}" theme`);
+  const perTheme = rules.max_per_theme ?? 2;
+  if (live.filter((o) => ctx.themeOf(o.symbol) === theme).length >= perTheme) return fail(`${perTheme} positions already ride the "${theme}" theme`);
 
   const reasons: string[] = [];
   const p: Plan = { ...plan };

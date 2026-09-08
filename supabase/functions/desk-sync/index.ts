@@ -12,7 +12,7 @@
 
 import type { Bar, Instrument, PresetKey, Rules, Trade } from "./lib/types.ts";
 import { unitValue } from "./lib/types.ts";
-import { addDays, etDate, etParts, fundingTimesBetween, isNyseOpen, sessionBounds, sessionDateForFill, weekStart } from "./lib/clock.ts";
+import { addDays, etDate, etParts, fundingTimesBetween, isNyseOpen, nextSessionDate, sessionBounds, weekStart } from "./lib/clock.ts";
 import { bookEquity, closeTrade, entryCashDelta, entryFees, excursions, fillPrice, fundingCharge, scanBars, timeStopDue, unrealized } from "./lib/ledger.ts";
 import { drawdownHalved, haltCheck, liqPrice, rulesFor } from "./lib/risk.ts";
 
@@ -66,7 +66,7 @@ function toTrade(x: J): Trade {
     notional: num(x.notional), margin: num(x.margin), liq_price: nul(x.liq_price),
     entry_price: nul(x.entry_price), entry_at: x.entry_at ? String(x.entry_at) : null, fill_rule: String(x.fill_rule ?? ""), slippage_bps: num(x.slippage_bps),
     fees: num(x.fees), funding: num(x.funding), funding_at: x.funding_at ? String(x.funding_at) : null, checked_until: x.checked_until ? String(x.checked_until) : null,
-    expires_on: x.expires_on ? String(x.expires_on) : null, exit_price: nul(x.exit_price), exit_at: x.exit_at ? String(x.exit_at) : null,
+    expires_on: x.expires_on ? String(x.expires_on) : null, horizon_hours: nul(x.horizon_hours), timeframe: (x.timeframe as Trade["timeframe"]) ?? "swing", strategy: String(x.strategy ?? ""), source: (x.source as Trade["source"]) ?? "nightly", exit_price: nul(x.exit_price), exit_at: x.exit_at ? String(x.exit_at) : null,
     exit_reason: (x.exit_reason as Trade["exit_reason"]) ?? null, ambiguous_bar: x.ambiguous_bar === true, pnl: nul(x.pnl), pnl_pct: nul(x.pnl_pct),
     r_multiple: nul(x.r_multiple), mae_r: nul(x.mae_r), mfe_r: nul(x.mfe_r), spy_entry: nul(x.spy_entry), spy_exit: nul(x.spy_exit),
     review: (x.review as J | null) ?? null,
@@ -132,27 +132,35 @@ async function sync(uid: string, force: { mark?: boolean } = {}): Promise<SyncRe
       const decidedMs = Date.parse(t.decided_at);
       let bar: Bar | undefined, gap = 0;
       if (isStock(t.instrument)) {
-        const fillDay = sessionDateForFill(decidedMs);
+        // The first five-minute bar that opens at or after the decision, inside a session: a decision made at
+        // 10:03 fills at the 10:05 bar; a decision made overnight fills at the 9:30 bar; the market never fills
+        // at a price the jury already saw. Yahoo's daily bar is only the fallback (its open is stale for minutes).
+        const d0 = etDate(decidedMs);
+        const b0 = sessionBounds(d0);
+        const fillDay = b0 && decidedMs < b0.closeMs - 5 * 60_000 ? d0 : nextSessionDate(d0);
         if (today < fillDay) continue;
-        if (today > addDays(fillDay, 3)) { await patchTrade(t.id, { status: "cancelled", exit_reason: "cancelled", review: { note: `no open bar for ${fillDay} within two sessions` } }); continue; }
+        if (today > addDays(fillDay, 3)) { await patchTrade(t.id, { status: "cancelled", exit_reason: "cancelled", review: { note: `no bar to fill on ${fillDay} within two sessions` } }); continue; }
         const b = sessionBounds(fillDay);
-        if (today === fillDay && b && nowMs < b.openMs + 90_000) continue;
-        const bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "1d", range: "5d" }));
-        bar = bars.find((x) => etDate(x.t) === fillDay);
-        // The opening print itself: the first five-minute bar of the session. Yahoo's
-        // daily bar can carry the previous session's open for minutes after the bell
-        // (SPY on 2026-09-08 read 772.01 at 9:35 when the open was 769.07).
-        if (b) {
-          const intraday = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "5m", range: fillDay === today ? "1d" : "5d" }));
-          const first = intraday.find((x) => x.t >= b.openMs && x.t < b.openMs + 15 * 60_000);
-          if (first) bar = { ...(bar ?? first), t: first.t, o: first.o };
+        if (!b) continue;
+        const after = Math.max(decidedMs, b.openMs);
+        if (today === fillDay && nowMs < after + 60_000) continue;
+        const intraday = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "5m", range: fillDay === today ? "1d" : "5d" }));
+        bar = intraday.find((x) => x.t >= after && x.t < b.closeMs);
+        if (!bar && nowMs > after + 30 * 60_000) {
+          const daily = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "1d", range: "5d" }));
+          bar = daily.find((x) => etDate(x.t) === fillDay);
         }
         if (!bar) continue;
-        const prev = bars.filter((x) => etDate(x.t) < fillDay).pop();
-        gap = prev && prev.c > 0 ? bar.o / prev.c - 1 : 0;
+        if (after === b.openMs) {
+          const daily = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "1d", range: "5d" }));
+          const prev = daily.filter((x) => etDate(x.t) < fillDay).pop();
+          gap = prev && prev.c > 0 ? bar.o / prev.c - 1 : 0;
+        }
       } else {
-        if (nowMs - decidedMs > 48 * 3_600_000) { await patchTrade(t.id, { status: "cancelled", exit_reason: "cancelled", review: { note: "no hourly candle within 48 hours" } }); continue; }
-        const bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "1h", limit: 72 }));
+        if (nowMs - decidedMs > 48 * 3_600_000) { await patchTrade(t.id, { status: "cancelled", exit_reason: "cancelled", review: { note: "no candle within 48 hours" } }); continue; }
+        // the next five-minute candle after the decision (hourly if the decision is more than a day old)
+        const stale = nowMs - decidedMs > 24 * 3_600_000;
+        const bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: stale ? "1h" : "5m", limit: 300 }));
         bar = bars.find((x) => x.t > decidedMs);
         if (!bar) continue;
       }
@@ -164,7 +172,12 @@ async function sync(uid: string, force: { mark?: boolean } = {}): Promise<SyncRe
       const fees = entryFees({ instrument: t.instrument, side: t.side, qty: t.qty, notional });
       const liq = t.instrument === "crypto_perp" ? liqPrice(entry_price, t.side, t.leverage) : null;
       const entryDay = isStock(t.instrument) ? etDate(bar.t) : "";
-      const expires_on = isStock(t.instrument) ? addDays(entryDay, t.horizon_days) : iso(bar.t + t.horizon_days * 86_400_000);
+      const hours = t.horizon_hours ?? null;
+      let expires_on: string;
+      if (isStock(t.instrument)) {
+        const close = sessionBounds(entryDay)?.closeMs ?? bar.t;
+        expires_on = hours ? iso(Math.min(bar.t + hours * 3_600_000, close - 5 * 60_000)) : addDays(entryDay, t.horizon_days);
+      } else expires_on = iso(bar.t + (hours ? hours * 3_600_000 : t.horizon_days * 86_400_000));
       const spy = await quote("SPY", "robinhood");
       const patch: J = {
         status: "open", entry_price, entry_at: iso(bar.t), notional, margin, fees, liq_price: liq, slippage_bps: bps,
@@ -193,10 +206,13 @@ async function sync(uid: string, force: { mark?: boolean } = {}): Promise<SyncRe
           const range = etDate(from) < today ? "5d" : "1d";
           bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "5m", range }));
         }
-      } else {
+      } else if (nowMs - from > 24 * 3_600_000) {
         barMs = 3_600_000;
         const hours = Math.min(300, Math.ceil((nowMs - from) / 3_600_000) + 2);
         bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "1h", limit: Math.max(3, hours) }));
+      } else {
+        const fives = Math.min(300, Math.ceil((nowMs - from) / 300_000) + 2);
+        bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "5m", limit: Math.max(3, fives) }));
       }
       const done = bars.filter((b) => b.t >= from && b.t + barMs <= nowMs);
       let exitPrice: number | null = null, reason: Trade["exit_reason"] = null, exitAt = nowMs, ambiguous = false;

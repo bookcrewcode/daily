@@ -18,8 +18,9 @@ import Debate from "./Debate";
 import League from "./League";
 import Lessons from "./Lessons";
 import DeskSettings from "./DeskSettings";
+import Feed from "./Feed";
 
-type Gear = "tonight" | "debate" | "book" | "league" | "lessons";
+type Gear = "tonight" | "feed" | "debate" | "book" | "league" | "lessons";
 export type LiveMarks = { quotes: Record<string, { price?: number; at?: number; error?: string }>; marks: { owner: string; equity: number; unrealized: number; gross: number }[]; at: number };
 
 export default function DeskSpace({ uid }: { uid: string }) {
@@ -121,7 +122,7 @@ export default function DeskSpace({ uid }: { uid: string }) {
 
       <div className="mt-3">
         <Segmented value={gear} onChange={setGear} options={[
-          { key: "tonight", label: "Tonight" }, { key: "debate", label: "Debate" }, { key: "book", label: "Book" }, { key: "league", label: "League" }, { key: "lessons", label: "Lessons" },
+          { key: "tonight", label: "Tonight" }, { key: "feed", label: "Feed" }, { key: "debate", label: "Debate" }, { key: "book", label: "Book" }, { key: "league", label: "League" }, { key: "lessons", label: "Lessons" },
         ]} />
       </div>
 
@@ -132,6 +133,7 @@ export default function DeskSpace({ uid }: { uid: string }) {
             <DeskSettings key={account.preset + account.roster.join(",") + account.judge + account.budget_usd_per_run + String(account.leverage_cap_override)} uid={uid} account={account} onSaved={load} />
           </>
         )}
+        {gear === "feed" && <Feed />}
         {gear === "debate" && <Debate uid={uid} />}
         {gear === "book" && <Book uid={uid} account={account} curve={curve} live={live} today={today} onRefresh={() => { load(); refreshLive(); }} />}
         {gear === "league" && <League uid={uid} account={account} live={live} />}

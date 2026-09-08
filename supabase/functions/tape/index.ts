@@ -108,7 +108,7 @@ async function yahooSector(symbol: string): Promise<string> {
 }
 
 /* ── Coinbase (spot) ───────────────────────────────────────────────────── */
-async function coinbaseCandles(product: string, granularity: 3600 | 86400): Promise<Bar[]> {
+async function coinbaseCandles(product: string, granularity: 300 | 900 | 3600 | 21600 | 86400): Promise<Bar[]> {
   const r = await getJson(`https://api.exchange.coinbase.com/products/${encodeURIComponent(product)}/candles?granularity=${granularity}`);
   if (!r.ok || !Array.isArray(r.json)) return [];
   return (r.json as unknown as number[][]).map((row) => ({ t: row[0] * 1000, l: row[1], h: row[2], o: row[3], c: row[4], v: row[5] })).sort((a, b) => a.t - b.t);
@@ -121,7 +121,8 @@ async function coinbaseTicker(product: string): Promise<{ price: number; at: num
 
 /* ── BloFin (perps) ────────────────────────────────────────────────────── */
 const BLO = "https://openapi.blofin.com/api/v1/market";
-async function blofinCandles(instId: string, bar: "1H" | "1D", limit: number): Promise<Bar[]> {
+type BloBar = "5m" | "15m" | "1H" | "4H" | "1D";
+async function blofinCandles(instId: string, bar: BloBar, limit: number): Promise<Bar[]> {
   const r = await getJson(`${BLO}/candles?instId=${encodeURIComponent(instId)}&bar=${bar}&limit=${limit}`);
   const rows = ((r.json as J)?.data ?? []) as string[][];
   if (!r.ok || !Array.isArray(rows)) return [];
@@ -302,8 +303,19 @@ Deno.serve(async (req) => {
       if (!s) return err("Bad symbol.");
       const interval = String(body.interval ?? "1d");
       const instrument = s.instrument!;
-      if (interval === "5m") {
-        const r = await yahooChart(s.symbol, String(body.range ?? "1d"), "5m");
+      // Intraday: BloFin for perps (5m, 15m, 4H), Coinbase for spot (5m, 15m), Yahoo for stocks (5m, 15m).
+      if (interval === "5m" || interval === "15m" || interval === "4h" || interval === "4H") {
+        const lim = Math.min(300, Number(body.limit) || 300);
+        if (instrument === "crypto_perp") {
+          const bars = await blofinCandles(s.symbol, interval === "5m" ? "5m" : interval === "15m" ? "15m" : "4H", lim);
+          return bars.length ? ok({ bars, source: "blofin" }) : err(`no ${interval} candles for ${s.symbol}`);
+        }
+        if (instrument === "crypto_spot") {
+          const bars = await coinbaseCandles(s.symbol, interval === "5m" ? 300 : interval === "15m" ? 900 : 21600);
+          return bars.length ? ok({ bars, source: "coinbase" }) : err(`no ${interval} candles for ${s.symbol}`);
+        }
+        if (interval !== "5m" && interval !== "15m") return err("stocks have no 4h bars here");
+        const r = await yahooChart(s.symbol, String(body.range ?? "1d"), interval);
         return "error" in r ? err(r.error) : ok({ bars: r.bars, source: "yahoo" });
       }
       if (interval === "1h") {
