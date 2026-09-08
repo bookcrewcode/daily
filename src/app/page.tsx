@@ -2,7 +2,7 @@
 
 // The shell, v2 — a serious instrument, not an arcade.
 //
-// FOUR spaces: Card (THE GAME) · Plan · Body · Learn. The app ALWAYS opens on
+// FIVE spaces: Card (THE GAME) · Plan · Body · Learn · Desk. The app ALWAYS opens on
 // the Card — a front door you don't land on isn't a front door (the old shell
 // restored the last-visited tab, which is why a whole redesign once shipped
 // invisibly). Everything retired from the old twelve-tab era stays reachable
@@ -16,6 +16,7 @@ import TheCard from "@/components/TheCard";
 import PlanSpace from "@/components/PlanSpace";
 import Body from "@/components/Body";
 import Notebooks from "@/components/Notebooks";
+import DeskSpace from "@/components/desk/DeskSpace";
 import AIOffBanner from "@/components/AIOffBanner";
 import AIKey from "@/components/AIKey";
 import AIModels from "@/components/AIModels";
@@ -38,7 +39,7 @@ import { useVoiceInput } from "@/lib/useVoiceInput";
 import { sfx, buzz } from "@/lib/fx";
 
 type Tab =
-  | "home" | "plan" | "body" | "learning"
+  | "home" | "plan" | "body" | "learning" | "desk"
   | "today" | "planlegacy" | "goals" | "food" | "night" | "money" | "markets" | "hustle" | "vocab" | "affirmations" | "tools";
 
 const SPACES: { key: Tab; label: string }[] = [
@@ -46,6 +47,7 @@ const SPACES: { key: Tab; label: string }[] = [
   { key: "plan", label: "Plan" },
   { key: "body", label: "Body" },
   { key: "learning", label: "Learn" },
+  { key: "desk", label: "Desk" },
 ];
 
 const LEGACY: { key: Tab; label: string }[] = [
@@ -145,6 +147,7 @@ function Shell({ uid }: { uid: string }) {
           {tab === "plan" && <PlanSpace uid={uid} />}
           {tab === "body" && <Body uid={uid} />}
           {tab === "learning" && <Notebooks uid={uid} onGoFix={() => setSettingsOpen(true)} />}
+          {tab === "desk" && <DeskSpace uid={uid} />}
 
           {tab === "today" && <Today uid={uid} onOpenAdvisor={() => setBoardOpen(true)} onGoTab={(t) => go(t as Tab)} />}
           {tab === "planlegacy" && <Plan uid={uid} onGoTab={(t) => go(t as Tab)} />}
@@ -165,7 +168,7 @@ function Shell({ uid }: { uid: string }) {
         {/* mobile dock — four words and a settings dot. That's the whole nav. */}
         <nav className="fixed left-3 right-3 z-10 rounded-2xl border border-[var(--border-2)] bg-[var(--raised)]/95 backdrop-blur-sm md:hidden"
           style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }}>
-          <div className="max-w-md mx-auto grid grid-cols-5">
+          <div className="max-w-md mx-auto grid grid-cols-6">
             {SPACES.map((s) => (
               <button key={s.key} onClick={() => go(s.key)}
                 className={`relative py-3.5 mono text-[10px] font-semibold uppercase tracking-[0.14em] transition ${tab === s.key ? "text-[var(--neon)]" : "opacity-45"}`}>

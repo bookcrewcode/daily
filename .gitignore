@@ -42,3 +42,6 @@ next-env.d.ts
 
 # git worktrees (Claude sessions)
 /.worktrees/
+
+# bundled edge-function deploy artifacts
+supabase/functions/*/dist/

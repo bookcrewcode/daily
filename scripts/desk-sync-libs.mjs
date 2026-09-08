@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 const MODS = ["types", "clock", "ta", "risk", "rules", "ledger", "stats", "vote", "playbook"];
 const TARGETS = {
   tape: ["types", "clock", "ta"],
-  desk: ["types", "clock", "risk", "rules", "vote", "playbook", "stats", "ledger"],
+  desk: ["types", "clock", "risk", "rules", "vote", "playbook", "stats", "ledger", "ta"],
   "desk-sync": ["types", "clock", "ledger", "risk"],
   "desk-review": ["types", "stats", "playbook"],
 };
