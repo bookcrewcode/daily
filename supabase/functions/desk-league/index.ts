@@ -788,7 +788,7 @@ async function sessionTeam(uid: string, body: J): Promise<J> {
   const user = `NEWS SINCE THE LAST SESSION (cite by [index])\n${digest.join("\n") || "(quiet)"}\n\nTAPE\n${context}\n\nSETUPS THE SCAN HAS ON THE TABLE (candidates already go to the team; propose something else, or one of these at a better level)\n${setups.join("\n") || "(none)"}\n\n${bookText(book)}`;
   // the workers propose, all at once
   const ideas = await Promise.all(team.workers.map(async (model) => {
-    const res = await callModel(key, { model, system: PROPOSE_SYSTEM(team, book, s), user, schema: PROPOSE_SCHEMA, maxTokens: 1200, deadline: Math.min(deadline - 60_000, t0 + 45_000) });
+    const res = await callModel(key, { model, system: PROPOSE_SYSTEM(team, book, s), user, schema: PROPOSE_SCHEMA, maxTokens: 1200, deadline: Math.min(deadline - 60_000, t0 + 45_000), reasoning: "off" });
     const j = res.json ?? {};
     const symbol = str(j.symbol, 20).toUpperCase().replace(/\s+/g, "");
     const venue = j.venue === "blofin" ? "blofin" : "robinhood";
@@ -988,7 +988,7 @@ async function councilTeam(uid: string, body: J): Promise<J> {
   const voters = [team.frontier, ...team.seniors.filter((m) => team.workers.includes(m))].slice(0, 3);
   const votes = await Promise.all(voters.map(async (model) => {
     const role = model === team.frontier ? "frontier" : "senior worker";
-    const res = await callModel(key, { model, system: COUNCIL_SYSTEM(team, book, role, s), user, schema: COUNCIL_SCHEMA, maxTokens: 1200, deadline: Math.min(deadline - 15_000, t0 + 70_000) });
+    const res = await callModel(key, { model, system: COUNCIL_SYSTEM(team, book, role, s), user, schema: COUNCIL_SCHEMA, maxTokens: 1200, deadline: Math.min(deadline - 15_000, t0 + 70_000), reasoning: role === "frontier" ? "low" : "off" });
     const list = (Array.isArray(res.json?.votes) ? (res.json!.votes as J[]) : []).map((v) => ({ member: str(v.member, 120), vote: v.vote === "kick" ? "kick" : "keep", reason: str(v.reason, 300) })).filter((v) => members.includes(v.member) && v.member !== model);
     await saveOpinion(uid, null, model, role, "council", res, { votes: list });
     return { model, role, votes: list, error: res.error, cost: res.cost };
