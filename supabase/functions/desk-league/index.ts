@@ -95,17 +95,25 @@ async function chat(key: string, body: J, deadline: number): Promise<{ status: n
 const usageOf = (d: J | null) => { const u = (d?.usage as J) ?? {}; return { cost: num(u.cost), tin: num(u.prompt_tokens), tout: num(u.completion_tokens) }; };
 const messageOf = (d: J | null): J => ((((d?.choices as J[]) ?? [])[0]?.message as J) ?? {});
 
+type Reasoning = "off" | "low" | "none";
+/** What a call sends for reasoning: off (none at all: hidden thinking ate whole answer budgets), low (the frontiers), none (the field left out when a provider refuses to be told). */
+const reasoningBody = (r: Reasoning): J | null => (r === "off" ? { enabled: false } : r === "low" ? { effort: "low", exclude: true } : null);
+const stepDown = (r: Reasoning): Reasoning => (r === "off" ? "low" : "none"); // a provider that will not switch reasoning off gets it capped low; one that rejects that gets no instruction
+/** Workers run without reasoning, except the models measured to do worse that way (GLM refuses to disable it; Qwen Max goes silent). */
+const LOW_ONLY = new Set(["z-ai/glm-5.3", "qwen/qwen3.8-max-0902"]);
+const workerReasoning = (model: string): Reasoning => (LOW_ONLY.has(model) ? "low" : "off");
+
 /** One structured answer: json_schema strict when the provider can, plain JSON otherwise; a retry on the first network or 5xx failure. */
-async function callModel(key: string, c: { model: string; system: string; user?: string; messages?: Msg[]; schema: Schema; maxTokens: number; deadline: number; reasoning?: "low" | "off" }): Promise<Res> {
+async function callModel(key: string, c: { model: string; system: string; user?: string; messages?: Msg[]; schema: Schema; maxTokens: number; deadline: number; reasoning?: Reasoning }): Promise<Res> {
   const t0 = Date.now();
   let cost = 0, tokensIn = 0, tokensOut = 0;
-  let opts = { schema: true, reasoning: true, maxTokens: c.maxTokens };
+  let opts = { schema: true, reasoning: (c.reasoning ?? "low") as Reasoning, maxTokens: c.maxTokens };
   let last = { status: 0, data: null as J | null, text: "" };
   for (let i = 0; i < 4; i++) {
     const system = opts.schema ? c.system : `${c.system}\n\nReturn ONLY a JSON object matching this JSON Schema, no prose:\n${JSON.stringify(c.schema.schema)}`;
     const messages: Msg[] = c.messages ? [{ role: "system", content: system }, ...c.messages.filter((m) => m.role !== "system")] : [{ role: "system", content: system }, { role: "user", content: c.user ?? "" }];
     const body: J = { model: c.model, messages, max_tokens: opts.maxTokens };
-    if (opts.reasoning) body.reasoning = c.reasoning === "off" ? { enabled: false } : { effort: "low", exclude: true }; // hidden reasoning can eat the whole answer budget: workers run without it
+    const rb = reasoningBody(opts.reasoning); if (rb) body.reasoning = rb;
     if (opts.schema) { body.response_format = { type: "json_schema", json_schema: { name: c.schema.name, strict: true, schema: c.schema.schema } }; body.provider = { require_parameters: true }; }
     last = await chat(key, body, c.deadline);
     const u = usageOf(last.data); cost += u.cost; tokensIn += u.tin; tokensOut += u.tout;
@@ -118,7 +126,7 @@ async function callModel(key: string, c: { model: string; system: string; user?:
     if (c.deadline - Date.now() < 15_000) break;
     const msg = last.text.slice(0, 300);
     if (opts.schema && (last.status === 503 || (last.status === 400 && /response_format|json_schema|structured|schema/i.test(msg)) || last.status === 404)) { opts = { ...opts, schema: false }; continue; }
-    if (opts.reasoning && last.status >= 400 && last.status < 500 && /reasoning/i.test(msg)) { opts = { ...opts, reasoning: false }; continue; }
+    if (opts.reasoning !== "none" && last.status >= 400 && last.status < 500 && /reasoning/i.test(msg)) { opts = { ...opts, reasoning: stepDown(opts.reasoning) }; continue; }
     if (last.status === 200 && !content.trim() && opts.maxTokens < c.maxTokens * 4) { opts = { ...opts, maxTokens: opts.maxTokens * 2 }; continue; }
     if (!((last.status === 0 || last.status >= 500) && i === 0)) break;
   }
@@ -127,22 +135,24 @@ async function callModel(key: string, c: { model: string; system: string; user?:
 
 type Tool = { name: string; description: string; parameters: J; run: (args: J) => Promise<string> };
 /** A worker that may look things up: tool rounds (at most maxCalls), then one structured answer. Models without tool support fall back to the plain call. */
-async function agentLoop(key: string, c: { model: string; system: string; user: string; schema: Schema; tools: Tool[]; maxCalls: number; maxTokens: number; deadline: number; reasoning?: "low" | "off" }): Promise<Res & { checked: string[] }> {
+async function agentLoop(key: string, c: { model: string; system: string; user: string; schema: Schema; tools: Tool[]; maxCalls: number; maxTokens: number; deadline: number; reasoning?: Reasoning }): Promise<Res & { checked: string[] }> {
   const t0 = Date.now();
   const checked: string[] = [];
   let cost = 0, tokensIn = 0, tokensOut = 0;
   const messages: Msg[] = [{ role: "system", content: `${c.system}\n\nYou may call the tools first (at most ${c.maxCalls} call${c.maxCalls === 1 ? "" : "s"}; answer straight away if the brief is enough). When you are done looking, answer with ONLY a JSON object matching this schema, no prose:\n${JSON.stringify(c.schema.schema)}` }, { role: "user", content: c.user }];
   const tools = c.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
+  let mode: Reasoning = c.reasoning ?? "low";
   let noTools = c.tools.length === 0 || c.maxCalls <= 0;
   for (let round = 0; round <= c.maxCalls && !noTools; round++) {
     if (c.deadline - Date.now() < 12_000) break;
-    const body: J = { model: c.model, messages, max_tokens: c.maxTokens, tools, tool_choice: round < c.maxCalls ? "auto" : "none", reasoning: c.reasoning === "off" ? { enabled: false } : { effort: "low", exclude: true } };
+    const body: J = { model: c.model, messages, max_tokens: c.maxTokens, tools, tool_choice: round < c.maxCalls ? "auto" : "none" };
+    const rb = reasoningBody(mode); if (rb) body.reasoning = rb;
     const r = await chat(key, body, c.deadline);
     const u = usageOf(r.data); cost += u.cost; tokensIn += u.tin; tokensOut += u.tout;
     if (r.status === 402) return { json: null, raw: "", cost, tokensIn, tokensOut, latency: Date.now() - t0, error: "OpenRouter credits are out", checked };
     if (r.status !== 200) {
       if (r.status === 404 || (r.status === 400 && /tool/i.test(r.text))) { noTools = true; break; }
-      if (/reasoning/i.test(r.text) && r.status < 500) { delete body.reasoning; }
+      if (/reasoning/i.test(r.text) && r.status < 500 && mode !== "none") { mode = stepDown(mode); round--; continue; } // the same round again, one step down
       break;
     }
     const m = messageOf(r.data);
@@ -167,10 +177,10 @@ async function agentLoop(key: string, c: { model: string; system: string; user: 
     }
   }
   // the structured answer, with whatever was looked up still in the thread; a provider that rejects the tool thread gets a plain summary instead
-  let final = await callModel(key, { model: c.model, system: c.system, messages: [...messages.filter((m) => m.role !== "system"), { role: "user", content: "Answer now with ONLY the JSON." }], schema: c.schema, maxTokens: c.maxTokens, deadline: c.deadline, reasoning: c.reasoning });
+  let final = await callModel(key, { model: c.model, system: c.system, messages: [...messages.filter((m) => m.role !== "system"), { role: "user", content: "Answer now with ONLY the JSON." }], schema: c.schema, maxTokens: c.maxTokens, deadline: c.deadline, reasoning: mode });
   if (!final.json && c.deadline - Date.now() > 12_000) {
     const looked = messages.filter((m) => m.role === "tool").map((m, i) => `LOOK-UP ${i + 1} (${checked[i] ?? ""})\n${m.content}`).join("\n\n");
-    const again = await callModel(key, { model: c.model, system: c.system, user: `${c.user}${looked ? `\n\nWHAT YOU LOOKED UP\n${looked}` : ""}\n\nAnswer now with ONLY the JSON.`, schema: c.schema, maxTokens: c.maxTokens, deadline: c.deadline, reasoning: c.reasoning });
+    const again = await callModel(key, { model: c.model, system: c.system, user: `${c.user}${looked ? `\n\nWHAT YOU LOOKED UP\n${looked}` : ""}\n\nAnswer now with ONLY the JSON.`, schema: c.schema, maxTokens: c.maxTokens, deadline: c.deadline, reasoning: mode });
     final = { ...again, cost: again.cost + final.cost, tokensIn: again.tokensIn + final.tokensIn, tokensOut: again.tokensOut + final.tokensOut };
   }
   return { ...final, cost: final.cost + cost, tokensIn: final.tokensIn + tokensIn, tokensOut: final.tokensOut + tokensOut, latency: Date.now() - t0, checked };
@@ -450,8 +460,8 @@ async function workerBallot(uid: string, key: string, team: TeamRow, model: stri
   const system = workerSystem(team, book, s);
   const user = briefText(brief, book, rules);
   const res = s.research === "light"
-    ? await agentLoop(key, { model, system, user, schema: BALLOT_SCHEMA, tools, maxCalls: 1, maxTokens: 2500, deadline, reasoning: "off" })
-    : { ...(await callModel(key, { model, system, user, schema: BALLOT_SCHEMA, maxTokens: 2500, deadline, reasoning: "off" })), checked: [] as string[] };
+    ? await agentLoop(key, { model, system, user, schema: BALLOT_SCHEMA, tools, maxCalls: 1, maxTokens: 2500, deadline, reasoning: workerReasoning(model) })
+    : { ...(await callModel(key, { model, system, user, schema: BALLOT_SCHEMA, maxTokens: 2500, deadline, reasoning: workerReasoning(model) })), checked: [] as string[] };
   const j = res.json ?? {};
   const ballot: Ballot = {
     model, role: "worker", stance: j.stance === "take" ? "take" : "pass", confidence: Math.min(0.99, Math.max(0.01, num(j.confidence, 0.5))),
@@ -468,7 +478,7 @@ async function frontierDecide(uid: string, key: string, team: TeamRow, model: st
     const votes = it.ballots.map((v) => v.error ? `  ${v.model}: no answer` : `  ${v.model}: ${v.stance} at ${(v.confidence * 100).toFixed(0)}% — ${v.thesis}${v.wrong_if ? ` (wrong if: ${v.wrong_if})` : ""}${v.stop && v.stop !== num(b.stop) ? ` · stop ${v.stop}` : ""}${v.target && v.target !== num(b.target) ? ` · target ${v.target}` : ""}${v.checked.length ? ` · looked at ${v.checked.join(", ")}` : ""}`).join("\n");
     return `CANDIDATE ${i + 1} (id ${it.decisionId})\n${briefText(it.brief, book, rules)}\nTHE WORKERS' BALLOTS\n${votes}`;
   }).join("\n\n");
-  const res = await callModel(key, { model, system: frontierSystem(team, book, s), user, schema: FRONTIER_SCHEMA, maxTokens: 2500, deadline, reasoning: acting ? "off" : "low" });
+  const res = await callModel(key, { model, system: frontierSystem(team, book, s), user, schema: FRONTIER_SCHEMA, maxTokens: 2500, deadline, reasoning: acting ? workerReasoning(model) : "low" });
   const out: Record<string, Verdict> = {};
   const list = Array.isArray(res.json?.decisions) ? (res.json!.decisions as J[]) : [];
   for (const d of list) {
@@ -788,7 +798,7 @@ async function sessionTeam(uid: string, body: J): Promise<J> {
   const user = `NEWS SINCE THE LAST SESSION (cite by [index])\n${digest.join("\n") || "(quiet)"}\n\nTAPE\n${context}\n\nSETUPS THE SCAN HAS ON THE TABLE (candidates already go to the team; propose something else, or one of these at a better level)\n${setups.join("\n") || "(none)"}\n\n${bookText(book)}`;
   // the workers propose, all at once
   const ideas = await Promise.all(team.workers.map(async (model) => {
-    const res = await callModel(key, { model, system: PROPOSE_SYSTEM(team, book, s), user, schema: PROPOSE_SCHEMA, maxTokens: 1200, deadline: Math.min(deadline - 60_000, t0 + 45_000), reasoning: "off" });
+    const res = await callModel(key, { model, system: PROPOSE_SYSTEM(team, book, s), user, schema: PROPOSE_SCHEMA, maxTokens: 1200, deadline: Math.min(deadline - 60_000, t0 + 45_000), reasoning: workerReasoning(model) });
     const j = res.json ?? {};
     const symbol = str(j.symbol, 20).toUpperCase().replace(/\s+/g, "");
     const venue = j.venue === "blofin" ? "blofin" : "robinhood";
@@ -988,7 +998,7 @@ async function councilTeam(uid: string, body: J): Promise<J> {
   const voters = [team.frontier, ...team.seniors.filter((m) => team.workers.includes(m))].slice(0, 3);
   const votes = await Promise.all(voters.map(async (model) => {
     const role = model === team.frontier ? "frontier" : "senior worker";
-    const res = await callModel(key, { model, system: COUNCIL_SYSTEM(team, book, role, s), user, schema: COUNCIL_SCHEMA, maxTokens: 1200, deadline: Math.min(deadline - 15_000, t0 + 70_000), reasoning: role === "frontier" ? "low" : "off" });
+    const res = await callModel(key, { model, system: COUNCIL_SYSTEM(team, book, role, s), user, schema: COUNCIL_SCHEMA, maxTokens: 1200, deadline: Math.min(deadline - 15_000, t0 + 70_000), reasoning: role === "frontier" ? "low" : workerReasoning(model) });
     const list = (Array.isArray(res.json?.votes) ? (res.json!.votes as J[]) : []).map((v) => ({ member: str(v.member, 120), vote: v.vote === "kick" ? "kick" : "keep", reason: str(v.reason, 300) })).filter((v) => members.includes(v.member) && v.member !== model);
     await saveOpinion(uid, null, model, role, "council", res, { votes: list });
     return { model, role, votes: list, error: res.error, cost: res.cost };
