@@ -126,6 +126,14 @@ async function sync(uid: string, force: { mark?: boolean } = {}): Promise<SyncRe
     if (Number.isFinite(p)) { quoteCache[symbol] = p; return p; }
     return null;
   }
+  // nine teams hold the same names: one candle fetch per symbol and interval per sync, shared by the fills and the exits
+  const barsCache = new Map<string, Promise<Bar[]>>();
+  function candles(t: Trade, args: J): Promise<Bar[]> {
+    const k = `${t.symbol}|${JSON.stringify(args)}`;
+    let p = barsCache.get(k);
+    if (!p) { p = tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, ...args }).then(toBars); barsCache.set(k, p); }
+    return p;
+  }
 
   /* ── fills ─────────────────────────────────────────────────────────── */
   for (const t of trades.filter((x) => x.status === "pending")) {
@@ -145,15 +153,15 @@ async function sync(uid: string, force: { mark?: boolean } = {}): Promise<SyncRe
         if (!b) continue;
         const after = Math.max(decidedMs, b.openMs);
         if (today === fillDay && nowMs < after + 60_000) continue;
-        const intraday = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "5m", range: fillDay === today ? "1d" : "5d" }));
+        const intraday = await candles(t, { interval: "5m", range: fillDay === today ? "1d" : "5d" });
         bar = intraday.find((x) => x.t >= after && x.t < b.closeMs);
         if (!bar && nowMs > after + 30 * 60_000) {
-          const daily = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "1d", range: "5d" }));
+          const daily = await candles(t, { interval: "1d", range: "5d" });
           bar = daily.find((x) => etDate(x.t) === fillDay);
         }
         if (!bar) continue;
         if (after === b.openMs) {
-          const daily = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "1d", range: "5d" }));
+          const daily = await candles(t, { interval: "1d", range: "5d" });
           const prev = daily.filter((x) => etDate(x.t) < fillDay).pop();
           gap = prev && prev.c > 0 ? bar.o / prev.c - 1 : 0;
         }
@@ -161,7 +169,7 @@ async function sync(uid: string, force: { mark?: boolean } = {}): Promise<SyncRe
         if (nowMs - decidedMs > 48 * 3_600_000) { await patchTrade(t.id, { status: "cancelled", exit_reason: "cancelled", review: { note: "no candle within 48 hours" } }); continue; }
         // the next five-minute candle after the decision (hourly if the decision is more than a day old)
         const stale = nowMs - decidedMs > 24 * 3_600_000;
-        const bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: stale ? "1h" : "5m", limit: 300 }));
+        const bars = await candles(t, { interval: stale ? "1h" : "5m", limit: 300 });
         bar = bars.find((x) => x.t > decidedMs);
         if (!bar) continue;
       }
@@ -205,16 +213,12 @@ async function sync(uid: string, force: { mark?: boolean } = {}): Promise<SyncRe
         if (!inWindow && !timeStopDue(t, nowMs, today)) continue;
         if (inWindow) {
           const range = etDate(from) < today ? "5d" : "1d";
-          bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "5m", range }));
+          bars = await candles(t, { interval: "5m", range });
         }
       } else if (nowMs - from > 24 * 3_600_000) {
         barMs = 3_600_000;
-        const hours = Math.min(300, Math.ceil((nowMs - from) / 3_600_000) + 2);
-        bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "1h", limit: Math.max(3, hours) }));
-      } else {
-        const fives = Math.min(300, Math.ceil((nowMs - from) / 300_000) + 2);
-        bars = toBars(await tape(uid, { mode: "bars", symbol: t.symbol, venue: t.venue, instrument: t.instrument, interval: "5m", limit: Math.max(3, fives) }));
-      }
+        bars = await candles(t, { interval: "1h", limit: 300 });
+      } else bars = await candles(t, { interval: "5m", limit: 300 });
       const done = bars.filter((b) => b.t >= from && b.t + barMs <= nowMs);
       let exitPrice: number | null = null, reason: Trade["exit_reason"] = null, exitAt = nowMs, ambiguous = false;
       const ev = t.close_requested_at ? null : scanBars(t, done);

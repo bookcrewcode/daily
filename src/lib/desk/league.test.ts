@@ -6,7 +6,7 @@ test("the draft deals nine unique teams, four distinct workers each, every worke
   const teams = draftTeams(DEFAULT_LEAGUE);
   assert.equal(teams.length, 9);
   assert.equal(new Set(teams.map((t) => t.combo)).size, 9);
-  assert.equal(new Set(teams.map((t) => t.frontier)).size, 9);
+  assert.equal(new Set(teams.map((t) => t.frontier)).size, Math.min(9, DEFAULT_LEAGUE.frontier_pool.length)); // eight frontiers: one leads two teams
   for (const t of teams) { assert.equal(t.workers.length, 4); assert.equal(new Set(t.workers).size, 4); assert.equal(t.combo, comboKey(t.frontier, t.workers)); }
   const use = new Map<string, number>();
   for (const t of teams) for (const w of t.workers) use.set(w, (use.get(w) ?? 0) + 1);
@@ -41,6 +41,7 @@ test("names, standing, the death line, session windows, settings ranges", () => 
   assert.equal(poolStanding("a/x", teams), -5);
   assert.equal(poolStanding("b/y", teams), -1); // (0.5·−5 + 0.5·3) / 1
   assert.equal(poolStanding("nobody", teams), null);
+  assert.equal(poolStanding("c/w", [{ frontier: "c/w", workers: [], status: "live", return_pct: 0, score: -1 }]), -1); // a passive team stands by its ranked return
   assert.equal(deathLine(100000, 5), 95000);
   assert.equal(sessionDue(8, 46, ["08:45", "15:15"]), "08:45");
   assert.equal(sessionDue(8, 51, ["08:45"]), null);

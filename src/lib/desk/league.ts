@@ -22,8 +22,8 @@ export type LeagueSettings = {
 };
 
 export const DEFAULT_LEAGUE: LeagueSettings = {
-  frontier_pool: ["anthropic/claude-opus-5", "openai/gpt-6-astra", "anthropic/claude-fable-5.1", "google/gemini-3.1-pro-preview", "moonshotai/kimi-k3", "x-ai/grok-4.6", "anthropic/claude-sonnet-5", "openai/gpt-5.6-terra", "deepseek/deepseek-v4-pro-0813"],
-  worker_pool: ["google/gemini-3.8-flash", "openai/gpt-5.6-luna", "deepseek/deepseek-v4-flash-0731", "x-ai/grok-4.3", "qwen/qwen3.8-flash", "anthropic/claude-haiku-4.5", "google/gemini-3.5-flash-lite", "minimax/minimax-m3", "moonshotai/kimi-k2.6", "mistralai/mistral-medium-3-5", "z-ai/glm-5.3", "meta/muse-spark-1.3", "qwen/qwen3.8-max-0902"],
+  frontier_pool: ["anthropic/claude-opus-5", "openai/gpt-6-astra", "anthropic/claude-fable-5.1", "google/gemini-3.1-pro-preview", "moonshotai/kimi-k3", "x-ai/grok-4.6", "anthropic/claude-sonnet-5", "openai/gpt-5.6-terra"],
+  worker_pool: ["google/gemini-3.8-flash", "openai/gpt-5.6-luna", "deepseek/deepseek-v4-flash-0731", "x-ai/grok-4.3", "qwen/qwen3.8-flash", "anthropic/claude-haiku-4.5", "google/gemini-3.5-flash-lite", "minimax/minimax-m3", "moonshotai/kimi-k2.6", "mistralai/mistral-medium-3-5", "z-ai/glm-5.3", "qwen/qwen3.8-max-0902"],
   teams_per_tier: 3, workers_per_team: 4, death_pct: 5, risk_max_pct: 3, budget_usd_day: 25, research: "light",
   session_times: ["08:45", "15:15", "21:30"], season_days: 14,
   min_takes_day: 2, min_heat_pct: 4, passive_penalty_pct: 1,
@@ -111,12 +111,15 @@ export function draftTeams(s: LeagueSettings): { frontier: string; workers: stri
   return out;
 }
 
-/** A model's standing in the pool: the mean percent return of the teams it has been on, living or dead, a frontier's teams counting in full and a worker's at half. Null until it has been on a team. */
+/** A team's ranked return: the score (percent return less passive days) when it has one, the plain return until then. */
+const scoreOf = (t: TeamLike): number => (typeof t.score === "number" && Number.isFinite(t.score) ? t.score : t.return_pct);
+
+/** A model's standing in the pool: the mean ranked return of the teams it has been on, living or dead, a frontier's teams counting in full and a worker's at half. Null until it has been on a team. */
 export function poolStanding(model: string, teams: TeamLike[]): number | null {
   let w = 0, sum = 0;
   for (const t of teams) {
-    if (t.frontier === model) { w += 1; sum += t.return_pct; }
-    else if (t.workers.includes(model)) { w += 0.5; sum += 0.5 * t.return_pct; }
+    if (t.frontier === model) { w += 1; sum += scoreOf(t); }
+    else if (t.workers.includes(model)) { w += 0.5; sum += 0.5 * scoreOf(t); }
   }
   return w > 0 ? sum / w : null;
 }
@@ -164,8 +167,7 @@ export function rankScore(returnPct: number, passiveDays: number, s: LeagueSetti
 }
 /** Live teams ranked by their score (the ranked return; percent return when no score is set), older team first on a tie; the top third Diamond, the next Gold, the rest Bronze. */
 export function rankTiers(teams: TeamLike[], perTier: number): { id: string; rank: number; tier: Tier }[] {
-  const sc = (t: TeamLike) => (typeof t.score === "number" && Number.isFinite(t.score) ? t.score : t.return_pct);
-  const live = teams.filter((t) => t.status === "live" && t.id).sort((a, b) => sc(b) - sc(a) || String(a.formed_at ?? "").localeCompare(String(b.formed_at ?? "")));
+  const live = teams.filter((t) => t.status === "live" && t.id).sort((a, b) => scoreOf(b) - scoreOf(a) || String(a.formed_at ?? "").localeCompare(String(b.formed_at ?? "")));
   return live.map((t, i) => ({ id: String(t.id), rank: i + 1, tier: i < perTier ? "diamond" : i < 2 * perTier ? "gold" : "bronze" }));
 }
 

@@ -96,7 +96,7 @@ const usageOf = (d: J | null) => { const u = (d?.usage as J) ?? {}; return { cos
 const messageOf = (d: J | null): J => ((((d?.choices as J[]) ?? [])[0]?.message as J) ?? {});
 
 /** One structured answer: json_schema strict when the provider can, plain JSON otherwise; a retry on the first network or 5xx failure. */
-async function callModel(key: string, c: { model: string; system: string; user?: string; messages?: Msg[]; schema: Schema; maxTokens: number; deadline: number }): Promise<Res> {
+async function callModel(key: string, c: { model: string; system: string; user?: string; messages?: Msg[]; schema: Schema; maxTokens: number; deadline: number; reasoning?: "low" | "off" }): Promise<Res> {
   const t0 = Date.now();
   let cost = 0, tokensIn = 0, tokensOut = 0;
   let opts = { schema: true, reasoning: true, maxTokens: c.maxTokens };
@@ -105,7 +105,7 @@ async function callModel(key: string, c: { model: string; system: string; user?:
     const system = opts.schema ? c.system : `${c.system}\n\nReturn ONLY a JSON object matching this JSON Schema, no prose:\n${JSON.stringify(c.schema.schema)}`;
     const messages: Msg[] = c.messages ? [{ role: "system", content: system }, ...c.messages.filter((m) => m.role !== "system")] : [{ role: "system", content: system }, { role: "user", content: c.user ?? "" }];
     const body: J = { model: c.model, messages, max_tokens: opts.maxTokens };
-    if (opts.reasoning) body.reasoning = { effort: "low", exclude: true };
+    if (opts.reasoning) body.reasoning = c.reasoning === "off" ? { enabled: false } : { effort: "low", exclude: true }; // hidden reasoning can eat the whole answer budget: workers run without it
     if (opts.schema) { body.response_format = { type: "json_schema", json_schema: { name: c.schema.name, strict: true, schema: c.schema.schema } }; body.provider = { require_parameters: true }; }
     last = await chat(key, body, c.deadline);
     const u = usageOf(last.data); cost += u.cost; tokensIn += u.tin; tokensOut += u.tout;
@@ -127,7 +127,7 @@ async function callModel(key: string, c: { model: string; system: string; user?:
 
 type Tool = { name: string; description: string; parameters: J; run: (args: J) => Promise<string> };
 /** A worker that may look things up: tool rounds (at most maxCalls), then one structured answer. Models without tool support fall back to the plain call. */
-async function agentLoop(key: string, c: { model: string; system: string; user: string; schema: Schema; tools: Tool[]; maxCalls: number; maxTokens: number; deadline: number }): Promise<Res & { checked: string[] }> {
+async function agentLoop(key: string, c: { model: string; system: string; user: string; schema: Schema; tools: Tool[]; maxCalls: number; maxTokens: number; deadline: number; reasoning?: "low" | "off" }): Promise<Res & { checked: string[] }> {
   const t0 = Date.now();
   const checked: string[] = [];
   let cost = 0, tokensIn = 0, tokensOut = 0;
@@ -136,7 +136,7 @@ async function agentLoop(key: string, c: { model: string; system: string; user: 
   let noTools = c.tools.length === 0 || c.maxCalls <= 0;
   for (let round = 0; round <= c.maxCalls && !noTools; round++) {
     if (c.deadline - Date.now() < 12_000) break;
-    const body: J = { model: c.model, messages, max_tokens: c.maxTokens, tools, tool_choice: round < c.maxCalls ? "auto" : "none", reasoning: { effort: "low", exclude: true } };
+    const body: J = { model: c.model, messages, max_tokens: c.maxTokens, tools, tool_choice: round < c.maxCalls ? "auto" : "none", reasoning: c.reasoning === "off" ? { enabled: false } : { effort: "low", exclude: true } };
     const r = await chat(key, body, c.deadline);
     const u = usageOf(r.data); cost += u.cost; tokensIn += u.tin; tokensOut += u.tout;
     if (r.status === 402) return { json: null, raw: "", cost, tokensIn, tokensOut, latency: Date.now() - t0, error: "OpenRouter credits are out", checked };
@@ -167,10 +167,10 @@ async function agentLoop(key: string, c: { model: string; system: string; user: 
     }
   }
   // the structured answer, with whatever was looked up still in the thread; a provider that rejects the tool thread gets a plain summary instead
-  let final = await callModel(key, { model: c.model, system: c.system, messages: [...messages.filter((m) => m.role !== "system"), { role: "user", content: "Answer now with ONLY the JSON." }], schema: c.schema, maxTokens: c.maxTokens, deadline: c.deadline });
+  let final = await callModel(key, { model: c.model, system: c.system, messages: [...messages.filter((m) => m.role !== "system"), { role: "user", content: "Answer now with ONLY the JSON." }], schema: c.schema, maxTokens: c.maxTokens, deadline: c.deadline, reasoning: c.reasoning });
   if (!final.json && c.deadline - Date.now() > 12_000) {
     const looked = messages.filter((m) => m.role === "tool").map((m, i) => `LOOK-UP ${i + 1} (${checked[i] ?? ""})\n${m.content}`).join("\n\n");
-    const again = await callModel(key, { model: c.model, system: c.system, user: `${c.user}${looked ? `\n\nWHAT YOU LOOKED UP\n${looked}` : ""}\n\nAnswer now with ONLY the JSON.`, schema: c.schema, maxTokens: c.maxTokens, deadline: c.deadline });
+    const again = await callModel(key, { model: c.model, system: c.system, user: `${c.user}${looked ? `\n\nWHAT YOU LOOKED UP\n${looked}` : ""}\n\nAnswer now with ONLY the JSON.`, schema: c.schema, maxTokens: c.maxTokens, deadline: c.deadline, reasoning: c.reasoning });
     final = { ...again, cost: again.cost + final.cost, tokensIn: again.tokensIn + final.tokensIn, tokensOut: again.tokensOut + final.tokensOut };
   }
   return { ...final, cost: final.cost + cost, tokensIn: final.tokensIn + tokensIn, tokensOut: final.tokensOut + tokensOut, latency: Date.now() - t0, checked };
@@ -222,7 +222,7 @@ const PROPOSE_SYSTEM = (team: TeamRow, b: BookState, s: LeagueSettings) => `You 
 ${bookText(b)}`;
 const SESSION_SYSTEM = (team: TeamRow, b: BookState, s: LeagueSettings) => `You are the frontier of team "${team.name}" (${team.tier} league) in a paper-trading tournament run by Ben, 19, who is learning markets by watching you. ${COMPETITION(s)} A session: first review every open position with fresh prices and headlines and answer hold, close or tighten (a tighter stop or target only; never wider) with a reason. Then judge your workers' proposals: take or pass each with a reason; for a take set risk_pct (0.5 to ${s.risk_max_pct}) and leverage (1 to the venue's limit for a perp; 1 for stocks). At most two takes. The team dies ${s.death_pct}% below its start. Write in English. Return ONLY JSON matching the schema.
 ${bookText(b)}`;
-const COUNCIL_SYSTEM = (team: TeamRow, b: BookState, role: string, s: LeagueSettings) => `You are the ${role} of team "${team.name}" (${team.tier} league) and you sit on its council with two others. ${COMPETITION(s)} The team dies ${b.distance_pct.toFixed(2)}% from here (at $${b.death_line.toFixed(0)}); it is at ${b.return_pct >= 0 ? "+" : ""}${b.return_pct.toFixed(2)}%${b.passive_days ? ` and has ${b.passive_days} passive day${b.passive_days === 1 ? "" : "s"} against it` : ""}. A frontier that plays to survive is a reason to kick it. Every member's record is below: scored votes, how often they were right, calibration (Brier: 0 perfect, 0.25 coin-flipping), and what the trades they backed made or lost. Vote "kick" or "keep" on every OTHER member with one sentence why. A kick needs two of three votes; one kick a day; the replacement comes from the sideline. Kick for the record, not for style; a member with fewer than five scored votes has no record yet. Write in English. Return ONLY JSON matching the schema.`;
+const COUNCIL_SYSTEM = (team: TeamRow, b: BookState, role: string, s: LeagueSettings) => `You are the ${role} of team "${team.name}" (${team.tier} league) and you sit on its council with two others. ${COMPETITION(s)} The team dies ${b.distance_pct.toFixed(2)}% from here (at $${b.death_line.toFixed(0)}); it is at ${b.return_pct >= 0 ? "+" : ""}${b.return_pct.toFixed(2)}%${b.passive_days ? ` and has ${b.passive_days} passive day${b.passive_days === 1 ? "" : "s"} against it` : ""}. A frontier that plays to survive is a reason to kick it. Every member's record is below: scored votes, how often they were right, calibration (Brier: 0 perfect, 0.25 coin-flipping), and what the trades they backed made or lost. Vote "kick" or "keep" on every OTHER member with one sentence why. A kick needs two of three votes; one kick a day; the replacement comes from the sideline. Kick for the record, not for style; a member with fewer than five scored votes has no record yet, but a member that keeps giving no answer at all is dead weight whatever its record: kick it. Write in English. Return ONLY JSON matching the schema.`;
 
 /* ── data ─────────────────────────────────────────────────────────────── */
 type TeamRow = { id: string; name: string; frontier: string; workers: string[]; seniors: string[]; combo: string; tier: Tier; status: "live" | "dead"; season: number; formed_at: string; start_equity: number; equity: number; peak: number; return_pct: number; stats: J };
@@ -314,7 +314,7 @@ async function dieTeam(uid: string, s: LeagueSettings, all: TeamRow[], team: Tea
   await log(uid, team.name, "died", team.frontier, "", reason);
   const pick = replacementTeam(s, all.map(teamLike));
   if (!pick) { await log(uid, "the pool", "no replacement", "", "", "the pools cannot make a set of models that has not been used before"); return { replacement: null }; }
-  const made = await insertTeam(uid, s, all, pick, "bronze", season, `replaces ${team.name} (${reason})`);
+  const made = await insertTeam(uid, s, all, pick, team.tier, season, `replaces ${team.name} (${reason})`); // the replacement takes the vacated slot; the daily cut re-ranks
   return { replacement: made };
 }
 /** Every live team's equity at live marks; a team at or below its death line dies here and a replacement forms. */
@@ -450,8 +450,8 @@ async function workerBallot(uid: string, key: string, team: TeamRow, model: stri
   const system = workerSystem(team, book, s);
   const user = briefText(brief, book, rules);
   const res = s.research === "light"
-    ? await agentLoop(key, { model, system, user, schema: BALLOT_SCHEMA, tools, maxCalls: 1, maxTokens: 1500, deadline })
-    : { ...(await callModel(key, { model, system, user, schema: BALLOT_SCHEMA, maxTokens: 1500, deadline })), checked: [] as string[] };
+    ? await agentLoop(key, { model, system, user, schema: BALLOT_SCHEMA, tools, maxCalls: 1, maxTokens: 2500, deadline, reasoning: "off" })
+    : { ...(await callModel(key, { model, system, user, schema: BALLOT_SCHEMA, maxTokens: 2500, deadline, reasoning: "off" })), checked: [] as string[] };
   const j = res.json ?? {};
   const ballot: Ballot = {
     model, role: "worker", stance: j.stance === "take" ? "take" : "pass", confidence: Math.min(0.99, Math.max(0.01, num(j.confidence, 0.5))),
@@ -468,7 +468,7 @@ async function frontierDecide(uid: string, key: string, team: TeamRow, model: st
     const votes = it.ballots.map((v) => v.error ? `  ${v.model}: no answer` : `  ${v.model}: ${v.stance} at ${(v.confidence * 100).toFixed(0)}% — ${v.thesis}${v.wrong_if ? ` (wrong if: ${v.wrong_if})` : ""}${v.stop && v.stop !== num(b.stop) ? ` · stop ${v.stop}` : ""}${v.target && v.target !== num(b.target) ? ` · target ${v.target}` : ""}${v.checked.length ? ` · looked at ${v.checked.join(", ")}` : ""}`).join("\n");
     return `CANDIDATE ${i + 1} (id ${it.decisionId})\n${briefText(it.brief, book, rules)}\nTHE WORKERS' BALLOTS\n${votes}`;
   }).join("\n\n");
-  const res = await callModel(key, { model, system: frontierSystem(team, book, s), user, schema: FRONTIER_SCHEMA, maxTokens: 2500, deadline });
+  const res = await callModel(key, { model, system: frontierSystem(team, book, s), user, schema: FRONTIER_SCHEMA, maxTokens: 2500, deadline, reasoning: acting ? "off" : "low" });
   const out: Record<string, Verdict> = {};
   const list = Array.isArray(res.json?.decisions) ? (res.json!.decisions as J[]) : [];
   for (const d of list) {
@@ -650,7 +650,7 @@ async function cycle(uid: string, body: J): Promise<J> {
 
 /* ── child: one team, up to four candidates ───────────────────────────── */
 async function decide(uid: string, body: J): Promise<J> {
-  const t0 = Date.now(), deadline = t0 + 128_000; // the gateway cuts at 150s: workers get 55s, the frontier 45s, execution the rest
+  const t0 = Date.now(), deadline = t0 + 128_000; // the gateway cuts at 150s: workers get 55s, the frontier 45s, a stand-in 30s when the frontier is silent, execution the rest
   const teamId = str(body.team_id, 64);
   const ids = (Array.isArray(body.decision_ids) ? (body.decision_ids as unknown[]) : []).map((x) => str(x, 64)).filter((x) => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 4);
   const [acct, team] = await Promise.all([loadAccount(uid), loadTeam(uid, teamId)]);
@@ -694,11 +694,19 @@ async function decide(uid: string, body: J): Promise<J> {
   let verdicts: Record<string, Verdict> = {};
   if (consult.length && deadline - Date.now() > 30_000) {
     const items = consult.map((j) => ({ decisionId: String(j.d.id), brief: j.d.brief as J, ballots: j.ballots }));
-    verdicts = await frontierDecide(uid, key, team, team.frontier, false, items, book, rules, s, Math.min(deadline - 25_000, Date.now() + 45_000));
+    verdicts = await frontierDecide(uid, key, team, team.frontier, false, items, book, rules, s, Math.min(deadline - 30_000, Date.now() + 45_000));
     const silent = items.filter((it) => verdicts[it.decisionId]?.error);
-    if (silent.length && deadline - Date.now() > 45_000 && team.seniors[0]) {
-      const acting = await frontierDecide(uid, key, team, team.seniors[0], true, silent, book, rules, s, Math.min(deadline - 20_000, Date.now() + 25_000));
-      for (const [id, v] of Object.entries(acting)) if (!v.error) verdicts[id] = v;
+    if (silent.length && deadline - Date.now() > 15_000) {
+      // the stand-in: a senior (else any worker) that answered this batch, the fastest first, reasoning off so it fits the time left
+      const lat: Record<string, number[]> = {};
+      for (const j of jobs) for (const b of j.ballots) if (!b.error) (lat[b.model] ??= []).push(b.latency_ms);
+      const mean = (m: string) => lat[m].reduce((a, v) => a + v, 0) / lat[m].length;
+      const senior = (m: string) => (team.seniors.includes(m) ? 0 : 1);
+      const standIn = [...team.seniors, ...team.workers].filter((m, i, a) => a.indexOf(m) === i && lat[m]?.length).sort((a, b) => senior(a) - senior(b) || mean(a) - mean(b))[0];
+      if (standIn) {
+        const acting = await frontierDecide(uid, key, team, standIn, true, silent, book, rules, s, Math.min(deadline - 5_000, Date.now() + 30_000));
+        for (const [id, v] of Object.entries(acting)) if (!v.error) verdicts[id] = v;
+      }
     }
   }
   const out: J = { team: team.name, decided: 0, taken: 0, cost: 0 };
@@ -958,16 +966,18 @@ async function councilTeam(uid: string, body: J): Promise<J> {
   const decisions = rows(await rest(`desk_decisions?team_id=eq.${team.id}&status=eq.done&kind=in.(candidate,session)&select=ballots,outcome,verdict&order=created_at.desc&limit=300`));
   const trades = await teamTrades(uid, team.id, "closed");
   const recordOf = (m: string) => {
-    let n = 0, takes = 0, right = 0, scored = 0, backedPnl = 0, backed = 0;
+    let n = 0, takes = 0, right = 0, scored = 0, backedPnl = 0, backed = 0, silent = 0;
     for (const d of decisions) {
-      const bs = (Array.isArray(d.ballots) ? (d.ballots as J[]) : []).filter((b) => b.model === m && !b.error);
+      const mine = (Array.isArray(d.ballots) ? (d.ballots as J[]) : []).filter((b) => b.model === m);
+      const bs = mine.filter((b) => !b.error);
+      silent += mine.length - bs.length;
       for (const b of bs) { n++; if (b.stance === "take") takes++; if (typeof b.right === "boolean") { scored++; if (b.right) right++; } }
       const o = (d.outcome as J) ?? {};
       if (o.taken === true && bs.some((b) => b.stance === "take")) { const tr = trades.find((t) => t.id === String(o.trade_id)); if (tr && tr.pnl !== null) { backed++; backedPnl += tr.pnl; } }
     }
     const r = ratings.find((x) => x.model === m);
     const brier = r && num(r.brier_n) ? num(r.brier_sum) / num(r.brier_n) : null;
-    return `${n} votes on this team (${takes} take), ${scored ? `${right} of ${scored} scored right` : "none scored yet"}; backed ${backed} closed trade${backed === 1 ? "" : "s"} worth ${backedPnl >= 0 ? "+" : "-"}$${Math.abs(backedPnl).toFixed(0)}; pool Elo ${r ? num(r.elo, 1500).toFixed(0) : "1500"}${brier !== null ? `, Brier ${brier.toFixed(2)}` : ""}`;
+    return `${n} votes on this team (${takes} take)${silent ? `, ${silent} time${silent === 1 ? "" : "s"} it gave no answer at all` : ""}, ${scored ? `${right} of ${scored} scored right` : "none scored yet"}; backed ${backed} closed trade${backed === 1 ? "" : "s"} worth ${backedPnl >= 0 ? "+" : "-"}$${Math.abs(backedPnl).toFixed(0)}; pool Elo ${r ? num(r.elo, 1500).toFixed(0) : "1500"}${brier !== null ? `, Brier ${brier.toFixed(2)}` : ""}`;
   };
   const records = members.map((m) => ({ model: m, role: m === team.frontier ? "frontier" : team.seniors.includes(m) ? "senior worker" : "worker", record: recordOf(m) }));
   const all = await loadTeams(uid);
@@ -1035,6 +1045,19 @@ async function form(uid: string): Promise<J> {
   return { formed: made, season: season.n };
 }
 
+/** Retires a live team by hand (a seat that can never answer, a model gone from OpenRouter): it dies with the reason given and a replacement forms. */
+async function retire(uid: string, body: J): Promise<J> {
+  const acct = await loadAccount(uid);
+  if (!acct) return { error: "no account" };
+  const s = leagueSettings(acct.league as Partial<LeagueSettings>);
+  const all = await loadTeams(uid);
+  const team = all.find((t) => t.id === str(body.team_id, 64) && t.status === "live");
+  if (!team) return { error: "no live team" };
+  const season = await currentSeason(uid, s, etDate(Date.now()));
+  const r = await dieTeam(uid, s, all, team, str(body.reason, 300) || "retired by hand", num(season.n, 1));
+  return { retired: team.name, replacement: r.replacement ? { name: r.replacement.name, frontier: r.replacement.frontier, workers: r.replacement.workers, tier: r.replacement.tier } : null };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   const ok = (o: unknown) => new Response(JSON.stringify(o), { headers: { ...cors, "Content-Type": "application/json" } });
@@ -1051,6 +1074,7 @@ Deno.serve(async (req) => {
     if (!/^[0-9a-f-]{36}$/i.test(uid)) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const internal = isService || !!cronSecret;
     if (mode === "form") return ok(await form(uid));
+    if (mode === "retire") return ok(internal ? await retire(uid, body) : { error: "the desk retires teams" });
     if (mode === "cycle") return ok(internal ? await cycle(uid, body) : { error: "the tick runs the cycle" });
     if (mode === "decide") return ok(internal ? await decide(uid, body) : { error: "children are launched by the desk" });
     if (mode === "session") return ok(await session(uid, body));
