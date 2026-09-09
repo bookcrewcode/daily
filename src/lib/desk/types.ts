@@ -11,7 +11,7 @@ export type Owner = string; // "desk" or a model id such as "anthropic/claude-so
 export type Bar = { t: number; o: number; h: number; l: number; c: number; v: number }; // t = epoch ms of the bar's OPEN
 export type PresetKey = "aggressive" | "very_aggressive" | "moderate" | "no_limits";
 export type Timeframe = "scalp" | "swing" | "position"; // hours, days, weeks
-export type TradeSource = "nightly" | "sit" | "shadow";
+export type TradeSource = "nightly" | "sit" | "shadow" | "league";
 
 export type Rules = {
   risk_pct: number;          // % of equity at risk per trade (entry → stop)
@@ -55,6 +55,8 @@ export type Trade = {
   exit_price: number | null; exit_at: string | null; exit_reason: ExitReason | null; ambiguous_bar: boolean;
   pnl: number | null; pnl_pct: number | null; r_multiple: number | null; mae_r: number | null; mfe_r: number | null;
   spy_entry: number | null; spy_exit: number | null; review: Record<string, unknown> | null;
+  // phase 7: the ticket (everything that went into the trade) and a frontier's request to close at the next quote
+  ticket?: Record<string, unknown> | null; close_requested_at?: string | null; close_reason?: string | null;
 };
 
 export type TapeCard = {

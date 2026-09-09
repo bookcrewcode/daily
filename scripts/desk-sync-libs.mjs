@@ -2,13 +2,14 @@
 // relative imports to Deno's explicit ".ts" form, and fails when a copy drifts.
 // Run after every change to src/lib/desk/*; the build check runs it with --check.
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-const MODS = ["types", "clock", "ta", "risk", "rules", "ledger", "stats", "vote", "playbook", "scan"];
+const MODS = ["types", "clock", "ta", "risk", "rules", "ledger", "stats", "vote", "playbook", "scan", "league"];
 const TARGETS = {
   tape: ["types", "clock", "ta"],
   desk: ["types", "clock", "risk", "rules", "vote", "playbook", "stats", "ledger", "ta", "scan"],
   "desk-scan": ["types", "clock", "risk", "rules", "ledger", "ta", "scan"],
   "desk-sync": ["types", "clock", "ledger", "risk"],
-  "desk-review": ["types", "stats", "playbook"],
+  "desk-review": ["types", "stats", "playbook", "league"],
+  "desk-league": ["types", "clock", "risk", "rules", "ledger", "stats", "scan", "ta", "league"],
 };
 const check = process.argv.includes("--check");
 let drift = 0;

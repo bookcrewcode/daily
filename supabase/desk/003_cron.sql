@@ -46,3 +46,9 @@ $$);
 
 -- 2026-09-08, phase 6: the coach became the daily macro review (with the standard applied first).
 --   select cron.alter_job(job_id := 12, schedule := '5 5 * * *');   -- desk-coach, 01:05 ET every day
+
+-- 2026-09-09, phase 7 (the leagues): the nightly nine-seat ladder is retired; the tick now runs the league cycle
+-- (marks, deaths, every fresh setup to every team) and the cycle launches the sessions at 08:45, 15:15 and
+-- 21:30 ET and the daily cut after 16:06 ET. The sit collector no longer runs. desk-coach stays at 05:05 UTC
+-- and now writes the tournament's macro review.
+select cron.unschedule('desk-run');

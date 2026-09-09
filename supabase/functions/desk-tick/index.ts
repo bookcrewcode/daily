@@ -1,8 +1,8 @@
 // desk-tick — the Desk's five-minute heartbeat. It runs the ledger sync
-// (fills, exits, funding, marks), collects finished sits and places their
-// trades, and every fifteen minutes launches the news feed and the technical
-// scan as their own invocations so no call runs long (the gateway cuts any
-// invocation at 150s). Cron: `1-59/5 * * * *` — one minute past each
+// (fills, exits, funding, marks), runs the leagues' cycle (marks, deaths,
+// candidates to every team), and every fifteen minutes launches the news feed
+// and the technical scan as their own invocations so no call runs long (the
+// gateway cuts any invocation at 150s). Cron: `1-59/5 * * * *` — one minute past each
 // five-minute mark, after the exchanges have opened the new candle.
 //
 // verify_jwt=false; callers checked here: the cron's vault secret or the
@@ -51,7 +51,9 @@ Deno.serve(async (req) => {
     const t0 = Date.now();
     const out: J = { at: new Date(t0).toISOString() };
     out.sync = await call("desk-sync", { mode: "sync", userId: uid }, 90_000);
-    if (body.collect !== false) out.sits = await call("desk", { mode: "collect", userId: uid }, 40_000);
+    // The leagues: marks and deaths, then every fresh setup to every team (one child per team); the cycle
+    // itself launches the sessions at their minutes and the daily cut after 16:06 ET.
+    if (body.league !== false) out.league = await call("desk-league", { mode: "cycle", userId: uid }, 50_000);
     // The quarter-hour: the feed and the scan run in their own invocations.
     const minute = new Date().getUTCMinutes();
     const quarter = minute % 15 === 1 || body.force === true;

@@ -22,6 +22,7 @@
 
 import { binOf, calibration, eloK, eloUpdate, shrink, tstat, standingOf, DEFAULT_CUT_RULES, type CalibBin, type CutRules } from "./lib/stats.ts";
 import { templateName } from "./lib/playbook.ts";
+import { leagueSettings, poolStanding, type LeagueSettings, type TeamLike } from "./lib/league.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -140,7 +141,12 @@ async function settle(uid: string, tradeId: string, key: string): Promise<J> {
   const owner = String(t.owner);
   if (!ratingsDone && owner.startsWith("strat:")) {
     out.sit = await scoreSit(uid, t, won);
+    out.decisions = await scoreDecisions(uid, t, won, r);
     out.strategy = await rateStrategy(uid, owner.slice(6));
+    ratingsDone = true;
+  }
+  if (!ratingsDone && owner.startsWith("team:")) {
+    out.decision = await settleTeamTrade(uid, t, won, r);
     ratingsDone = true;
   }
 
@@ -182,7 +188,7 @@ async function settle(uid: string, tradeId: string, key: string): Promise<J> {
   }
 
   let prose = review;
-  if (t.owner === "desk" && (!review.text || review.text === "")) {
+  if ((t.owner === "desk" || owner.startsWith("team:")) && (!review.text || review.text === "")) {
     prose = await postmortem(uid, t, key);
   }
   const merged = { ...review, ...prose, settled: true, settled_at: new Date().toISOString() };
@@ -224,6 +230,65 @@ async function scoreSit(uid: string, t: J, won: boolean): Promise<J> {
   return { scored: ballots.length, matches, won };
 }
 
+// Every team that saw this setup: each worker's vote and the frontier's verdict is a Brier and calibration entry against what the
+// strategy's own book did; takers play passers for Elo inside the same team; the ballot is marked right or wrong for the council.
+async function scoreDecisions(uid: string, t: J, won: boolean, r: number): Promise<J> {
+  const setup = (rows(await rest(`desk_setups?shadow_trade_id=eq.${t.id}&select=id`)))[0];
+  if (!setup) return { scored: 0, why: "no setup" };
+  const ds = rows(await rest(`desk_decisions?setup_id=eq.${setup.id}&status=eq.done&select=id,ballots,outcome`));
+  const ratings = new Map<string, Rating>();
+  const ratingOf = async (m: string) => { if (!ratings.has(m)) ratings.set(m, await loadRating(uid, m)); return ratings.get(m)!; };
+  let scored = 0, matches = 0;
+  for (const d of ds) {
+    const ballots = (Array.isArray(d.ballots) ? (d.ballots as J[]) : []);
+    const valid = ballots.filter((b) => !b.error && (b.stance === "take" || b.stance === "pass"));
+    for (const b of valid) {
+      const me = await ratingOf(String(b.model));
+      const right = (b.stance === "take") === won;
+      me.n_sits++; if (right) me.n_sit_right++;
+      const p = Math.min(0.99, Math.max(0.01, num(b.confidence, 0.5)));
+      me.brier_sum += (p - (won ? 1 : 0)) ** 2; me.brier_n++;
+      me.calib = addToCalib(me.calib, p, won);
+      b.right = right; scored++;
+    }
+    for (const a of valid.filter((b) => b.stance === "take")) for (const c of valid.filter((b) => b.stance === "pass")) {
+      if (a.model === c.model) continue;
+      const me = await ratingOf(String(a.model)), other = await ratingOf(String(c.model));
+      const k = eloK(Math.min(me.n_matches, other.n_matches));
+      const res = eloUpdate(me.elo, other.elo, won ? 1 : 0, k);
+      me.elo = res.ra; other.elo = res.rb; me.n_matches++; other.n_matches++; matches++;
+    }
+    const outcome = { ...((d.outcome as J) ?? {}), result: { won, r, from: "the strategy's own book" } };
+    await rest(`desk_decisions?id=eq.${d.id}`, { method: "PATCH", body: JSON.stringify({ ballots, outcome, updated_at: new Date().toISOString() }) });
+  }
+  for (const x of ratings.values()) await saveRating(uid, x);
+  return { scored, matches, decisions: ds.length, won };
+}
+// A team's own trade closed: its decision carries the result, the ballots are marked, and a session idea (no strategy book to score it) scores its voters here.
+async function settleTeamTrade(uid: string, t: J, won: boolean, r: number): Promise<J> {
+  const d = rows(await rest(`desk_decisions?id=eq.${t.proposal_id}&select=id,setup_id,ballots,outcome`))[0];
+  if (!d) return { why: "no decision" };
+  const ballots = (Array.isArray(d.ballots) ? (d.ballots as J[]) : []);
+  const scoreHere = !d.setup_id;
+  const ratings = new Map<string, Rating>();
+  for (const b of ballots) {
+    if (b.error || !(b.stance === "take" || b.stance === "pass")) continue;
+    b.right = (b.stance === "take") === won;
+    if (scoreHere) {
+      const m = String(b.model);
+      if (!ratings.has(m)) ratings.set(m, await loadRating(uid, m));
+      const me = ratings.get(m)!;
+      me.n_sits++; if (b.right) me.n_sit_right++;
+      const p = Math.min(0.99, Math.max(0.01, num(b.confidence, 0.5)));
+      me.brier_sum += (p - (won ? 1 : 0)) ** 2; me.brier_n++; me.calib = addToCalib(me.calib, p, won);
+    }
+  }
+  for (const x of ratings.values()) await saveRating(uid, x);
+  const outcome = { ...((d.outcome as J) ?? {}), result: { won, r, pnl: num(t.pnl), from: "the team's trade" } };
+  await rest(`desk_decisions?id=eq.${d.id}`, { method: "PATCH", body: JSON.stringify({ ballots, outcome, updated_at: new Date().toISOString() }) });
+  return { decision: d.id, won, r };
+}
+
 // A strategy earns size from its own shadow book, never from a story: twenty closed trades and a
 // positive shrunk R is worth 1.5x, forty and +0.2R worth 2x; twenty and a negative R is a week on the bench.
 async function rateStrategy(uid: string, id: string): Promise<J> {
@@ -262,7 +327,13 @@ const PM_SCHEMA: J = {
 // own book did with the same setup: the review reads these, so "why" is grounded, not guessed.
 async function tradeContext(uid: string, t: J): Promise<{ jury: string; headlines: string; shadow: string }> {
   let jury = "";
-  if (t.sit_id) {
+  if (t.source === "league" && t.proposal_id) {
+    const d = rows(await rest(`desk_decisions?id=eq.${t.proposal_id}&select=ballots,verdict`))[0];
+    const ballots = (Array.isArray(d?.ballots) ? (d!.ballots as J[]) : []).filter((b) => !b.error && b.stance);
+    const v = (d?.verdict as J) ?? null;
+    jury = [...ballots.map((b) => `${b.model} (${b.role ?? "worker"}): ${b.stance} at ${(num(b.confidence) * 100).toFixed(0)}%${b.thesis ? ` — ${str(b.thesis, 300)}` : ""}${b.wrong_if ? ` (wrong if: ${str(b.wrong_if, 160)})` : ""}${Array.isArray(b.checked) && (b.checked as string[]).length ? ` [looked at ${(b.checked as string[]).join(", ")}]` : ""}`),
+      ...(v ? [`the frontier ${v.model}${v.acting ? " (a senior worker acting for a silent frontier)" : ""}: ${v.action}${v.risk_pct ? ` at ${v.risk_pct}% risk` : ""}${v.leverage && num(v.leverage) > 1 ? `, ${v.leverage}x` : ""} — ${str(v.reason, 400)}`] : [])].join("\n");
+  } else if (t.sit_id) {
     const sR = await rest(`desk_sits?id=eq.${t.sit_id}&select=votes`);
     const votes = ((sR.ok ? (sR.json as J[]) : [])[0]?.votes as J[] | undefined) ?? [];
     jury = votes.filter((v) => !v.error && v.stance).map((v) => `${v.model}: ${v.stance} at ${(num(v.confidence) * 100).toFixed(0)}%${v.thesis ? ` — ${str(v.thesis, 300)}` : ""}${v.what_would_prove_me_wrong ? ` (wrong if: ${str(v.what_would_prove_me_wrong, 160)})` : ""}`).join("\n");
@@ -309,7 +380,11 @@ async function postmortem(uid: string, t: J, key: string): Promise<J> {
 "what_happened": two or three sentences on the path from entry to exit: where it went first, how far it ran against and for the trade (the excursions), how it ended, and what the headlines say was driving it.
 "why": one paragraph on the mechanism that made it work or fail: was the setup's reason still true, did the news overtake it, was the level wrong, was the clock wrong, did the jury's tightening help or hurt against the strategy's own book.
 Then separate WAS THE REASONING SOUND from DID IT MAKE MONEY: a winner on a broken thesis is luck; a loser on a sound thesis is variance. Grade the PROCESS (A–F) on its own: was the thesis specific and falsifiable, did the stop and target follow the rules, was the size right, did the exit follow the plan. "quadrant": earned = good process, good outcome; bad_luck = good process, bad outcome; dumb_luck = bad process, good outcome; deserved = bad process, bad outcome. "lesson": one transferable rule in the form "when X, do Y", no tickers, no dates. "lesson_key": a short kebab-case slug for that rule so repeats can be counted. "text": the verdict in under 120 words, blunt and concrete, no hedging, no disclaimers. Return ONLY JSON matching the schema.`;
-  const user = `${t.symbol} ${t.side}${t.instrument === "crypto_perp" ? ` ${t.leverage}x perp` : ""} · template ${t.template ? `${t.template} ${templateName(num(t.template))}` : "none"} · regime ${t.regime} · from ${t.source === "sit" ? "an intraday sit" : "the nightly jury"}${t.strategy ? ` on a ${t.strategy} setup` : ""} · a ${t.timeframe ?? "swing"} trade${t.horizon_hours ? ` on a ${t.horizon_hours}-hour clock` : ""}
+  let from = t.source === "sit" ? "an intraday sit" : "the nightly jury";
+  if (String(t.owner).startsWith("team:")) { const tm = rows(await rest(`desk_teams?id=eq.${String(t.owner).slice(5)}&select=name,tier`))[0]; from = tm ? `team ${tm.name} (${tm.tier} league)` : "a team"; }
+  else if (t.source === "league") from = "the champion team, mirrored to the desk";
+  const closedBy = (t.review as J)?.closed_by ? ` Closed on request: ${str((t.review as J).closed_by, 200)}.` : "";
+  const user = `${t.symbol} ${t.side}${t.instrument === "crypto_perp" ? ` ${t.leverage}x perp` : ""} · template ${t.template ? `${t.template} ${templateName(num(t.template))}` : "none"} · regime ${t.regime} · from ${from}${t.strategy ? ` on a ${t.strategy} setup` : ""} · a ${t.timeframe ?? "swing"} trade${t.horizon_hours ? ` on a ${t.horizon_hours}-hour clock` : ""}${closedBy}
 Entry ${t.entry_price} → exit ${t.exit_price} (${t.exit_reason}${t.ambiguous_bar ? ", both stop and target touched in one bar — stop assumed" : ""}). Stop ${t.stop}, target ${t.target}, horizon ${t.horizon_days}d, confidence stated ${pct(t.confidence)}.${held !== null ? ` Held ${held < 48 ? `${held.toFixed(1)} hours` : `${(held / 24).toFixed(1)} days`}.` : ""}
 P/L ${num(t.pnl).toFixed(2)} (${pct(t.pnl_pct)}), ${num(t.r_multiple).toFixed(2)}R. Worst excursion ${num(t.mae_r).toFixed(2)}R, best ${num(t.mfe_r).toFixed(2)}R. Fees ${num(t.fees).toFixed(2)}${t.instrument === "crypto_perp" ? `, funding ${num(t.funding).toFixed(2)}` : ""}. ${spy}
 Catalyst: ${t.catalyst}
@@ -430,71 +505,86 @@ function cellStats(c: Cell) {
   return { n: c.n, hit: c.n ? c.wins / c.n : null, mean_r: mean, shrunk_r: sh, profit_factor: c.gross_loss > 0 ? c.gross_win / c.gross_loss : null, t, label };
 }
 async function coach(uid: string, key: string, today: string, acct: J): Promise<J> {
-  const r = await rest(`desk_trades?user_id=eq.${uid}&status=eq.closed&select=id,symbol,side,owner,template,instrument,regime,pnl,r_multiple,confidence,exit_reason,review,strategy,timeframe,source,entry_at,exit_at&order=exit_at.asc&limit=5000`);
-  const rows = (r.ok ? (r.json as J[]) : []);
-  const groups: Record<string, Record<string, Cell>> = { template: {}, instrument: {}, regime: {}, model: {}, exit: {}, strategy: {}, timeframe: {}, source: {}, shadow: {} };
+  const s = leagueSettings(acct.league as Partial<LeagueSettings>);
+  const dayStart = `${today}T04:00:00Z`;
+  const [teamsR, tradesR, decR, councilR, seasonR, ratR, stratR] = await Promise.all([
+    rest(`desk_teams?user_id=eq.${uid}&select=*&order=formed_at.asc`),
+    rest(`desk_trades?user_id=eq.${uid}&owner=like.team:*&select=id,owner,symbol,side,strategy,timeframe,status,pnl,r_multiple,exit_reason,exit_at,review&order=created_at.desc&limit=3000`),
+    rest(`desk_decisions?user_id=eq.${uid}&created_at=gte.${dayStart}&select=team_id,kind,outcome,cost_usd&limit=3000`),
+    rest(`desk_councils?user_id=eq.${uid}&day=eq.${today}&select=team_id,kicked,replaced_by,reason,cost_usd`),
+    rest(`desk_seasons?user_id=eq.${uid}&select=*&order=n.desc&limit=3`),
+    rest(`desk_ratings?user_id=eq.${uid}&select=model,elo,n_sits,n_sit_right,brier_sum,brier_n`),
+    rest(`desk_trades?user_id=eq.${uid}&owner=like.strat:*&status=eq.closed&select=owner,pnl,r_multiple&limit=3000`),
+  ]);
+  const teams = rows(teamsR), trades = rows(tradesR), decs = rows(decR), councils = rows(councilR), seasons = rows(seasonR), ratings = rows(ratR), stratTrades = rows(stratR);
+  const nameOf = (id: string) => String(teams.find((t) => String(t.id) === id)?.name ?? id.slice(0, 8));
+  const teamLikes: TeamLike[] = teams.map((t) => ({ id: String(t.id), frontier: String(t.frontier), workers: Array.isArray(t.workers) ? (t.workers as string[]) : [], status: t.status === "dead" ? "dead" : "live", return_pct: num(t.return_pct), formed_at: String(t.formed_at ?? "") }));
+  const daysBetween = (from: string, to: string) => Math.max(0, Math.round((Date.parse(to + "T12:00:00Z") - Date.parse(from.slice(0, 10) + "T12:00:00Z")) / 86_400_000));
+  const tierOrder: Record<string, number> = { diamond: 0, gold: 1, bronze: 2 };
+  const liveOrDiedToday = teams.filter((t) => t.status === "live" || String(t.died_at ?? "") >= dayStart);
+  const teamCards = liveOrDiedToday.map((t) => {
+    const id = String(t.id);
+    const mine = decs.filter((d) => String(d.team_id) === id);
+    const reads = mine.filter((d) => d.kind === "candidate" || d.kind === "session");
+    const takes = reads.filter((d) => ((d.outcome as J) ?? {}).taken === true).length;
+    const stats = (t.stats as J) ?? {};
+    return {
+      id, name: String(t.name), tier: String(t.tier), rank: 0, status: String(t.status), frontier: String(t.frontier), workers: Array.isArray(t.workers) ? t.workers : [], seniors: Array.isArray(t.seniors) ? t.seniors : [],
+      return_pct: num(t.return_pct), rank_score: num(stats.rank_score, num(t.return_pct)), passive_days: num(stats.passive_days), equity: num(t.equity), days_alive: daysBetween(String(t.formed_at), today),
+      open: trades.filter((x) => x.owner === `team:${id}` && (x.status === "open" || x.status === "pending")).length,
+      decisions: reads.length, takes, passes: reads.length - takes, closes: mine.filter((d) => d.kind === "close").length, kicks: councils.filter((c) => String(c.team_id) === id && c.kicked).length,
+      death_reason: str(t.death_reason, 200),
+    };
+  }).sort((a, b) => (a.status === "dead" ? 1 : 0) - (b.status === "dead" ? 1 : 0) || tierOrder[a.tier] - tierOrder[b.tier] || b.rank_score - a.rank_score);
+  let rank = 0; for (const c of teamCards) if (c.status === "live") c.rank = ++rank;
+  const groups: Record<string, Record<string, Cell>> = { strategy: {}, tier: {}, book: {} };
   const add = (g: string, k: string, x: J) => {
     const c = (groups[g][k] ??= { n: 0, wins: 0, rs: [], gross_win: 0, gross_loss: 0 });
     const pnl = num(x.pnl), rr = num(x.r_multiple);
     c.n++; if (pnl > 0) { c.wins++; c.gross_win += pnl; } else c.gross_loss += -pnl; c.rs.push(rr);
   };
-  for (const x of rows) {
-    const owner = String(x.owner);
-    if (owner === "desk") {
-      add("template", x.template ? `${x.template} ${templateName(num(x.template))}` : "no template", x);
-      add("instrument", String(x.instrument), x);
-      add("regime", String(x.regime || "unknown"), x);
-      add("exit", String(x.exit_reason || "?"), x);
-      add("strategy", String(x.strategy || "jury only"), x);
-      add("timeframe", String(x.timeframe || "swing"), x);
-      add("source", String(x.source || "nightly"), x);
-    } else if (owner.startsWith("strat:")) add("shadow", owner.slice(6), x);
-    else add("model", owner, x);
+  const closedTeam = trades.filter((x) => x.status === "closed");
+  for (const x of closedTeam) {
+    add("strategy", String(x.strategy || "session idea"), x);
+    const tm = teams.find((t) => `team:${t.id}` === x.owner);
+    add("tier", String(tm?.tier ?? "unknown"), x);
   }
-  // The last trades one per line, with their micro reviews, so the review reasons across them rather than averaging them.
-  const recent = rows.filter((x) => x.owner === "desk").slice(-25).reverse().map((x) => {
+  for (const x of stratTrades) add("book", String(x.owner).slice(6), x);
+  const cells = (g: string) => Object.fromEntries(Object.entries(groups[g]).map(([k, c]) => [k, cellStats(c)]));
+  const recent = closedTeam.slice(0, 25).map((x) => {
     const rv = (x.review as J) ?? {};
-    return { symbol: x.symbol, side: x.side, source: x.source || "nightly", strategy: x.strategy || "", timeframe: x.timeframe || "swing", r: num(x.r_multiple), pnl: num(x.pnl), exit: x.exit_reason, closed: String(x.exit_at ?? "").slice(0, 16), quadrant: rv.quadrant ?? "", grade: rv.grade ?? "", lesson: str(rv.lesson, 160), why: str(rv.why, 240) };
+    return { team: nameOf(String(x.owner).slice(5)), symbol: x.symbol, side: x.side, strategy: x.strategy || "session idea", timeframe: x.timeframe || "swing", r: num(x.r_multiple), pnl: num(x.pnl), exit: x.exit_reason, closed: String(x.exit_at ?? "").slice(0, 16), quadrant: rv.quadrant ?? "", grade: rv.grade ?? "", lesson: str(rv.lesson, 160), why: str(rv.why, 240) };
   });
-  const [openR, sitR, stratR] = await Promise.all([
-    rest(`desk_trades?user_id=eq.${uid}&owner=eq.desk&status=in.(pending,open)&select=symbol,side,strategy,timeframe,source`),
-    rest(`desk_sits?user_id=eq.${uid}&status=eq.done&created_at=gte.${new Date(Date.now() - 7 * 86_400_000).toISOString()}&select=decision`),
-    rest(`desk_strategies?user_id=eq.${uid}&select=id,size_mult,benched_until,stats`),
-  ]);
-  const open = (openR.ok ? (openR.json as J[]) : []).map((x) => `${x.symbol} ${x.side} (${x.strategy || x.source})`);
-  const sits = (sitR.ok ? (sitR.json as J[]) : []);
-  const sits_week = { n: sits.length, taken: sits.filter((s) => ((s.decision as J) ?? {}).taken === true).length };
-  const strategy_rules = Object.fromEntries((stratR.ok ? (stratR.json as J[]) : []).map((s) => [String(s.id), { size_mult: num(s.size_mult, 1), benched_until: s.benched_until ?? null, label: str(((s.stats as J) ?? {}).label, 20) }]));
-  const roster = await rosterReview(uid, acct, today);
-  const card: J = { as_of: today, day: today, desk: {} as J, models: {} as J, strategies: {} as J, strategy_rules, trades: recent, open, sits_week, standing: roster.standings, roster_changes: roster.changes, roster: roster.roster, sit_roster: roster.sit_roster };
-  for (const g of ["template", "instrument", "regime", "exit", "strategy", "timeframe", "source"]) {
-    (card.desk as J)[g] = Object.fromEntries(Object.entries(groups[g]).map(([k, c]) => [k, cellStats(c)]));
-  }
-  // Each strategy's own book: the pure rule, no jury. Read against desk.strategy to see what the jury adds or costs.
-  card.strategies = Object.fromEntries(Object.entries(groups.shadow).map(([k, c]) => [k, cellStats(c)]));
-  const standingOfModel = (m: string) => (roster.standings as J[]).filter((s) => s.model === m).map((s) => `${s.seat}: ${s.label}${(s.reasons as string[]).length ? ` (${(s.reasons as string[]).join("; ")})` : ""}`).join(" · ");
-  const ratR = await rest(`desk_ratings?user_id=eq.${uid}&select=model,elo,n_trades,n_wins,sum_r,brier_sum,brier_n,n_matches,n_sits,n_sit_right,status`);
-  for (const m of (ratR.ok ? (ratR.json as J[]) : [])) {
-    if (String(m.model).startsWith("strat:")) continue;
-    const c = groups.model[String(m.model)];
-    (card.models as J)[String(m.model)] = { ...(c ? cellStats(c) : { n: 0 }), elo: num(m.elo, 1500), brier: num(m.brier_n) ? num(m.brier_sum) / num(m.brier_n) : null, matches: num(m.n_matches), sits: num(m.n_sits), sit_right: num(m.n_sits) ? num(m.n_sit_right) / num(m.n_sits) : null, status: m.status, standing: standingOfModel(String(m.model)) };
-  }
-  const deskAll: Cell = { n: 0, wins: 0, rs: [], gross_win: 0, gross_loss: 0 };
-  for (const x of rows.filter((y) => y.owner === "desk")) { const pnl = num(x.pnl); deskAll.n++; if (pnl > 0) { deskAll.wins++; deskAll.gross_win += pnl; } else deskAll.gross_loss += -pnl; deskAll.rs.push(num(x.r_multiple)); }
-  (card.desk as J).overall = cellStats(deskAll);
-
+  const liveSeats = (m: string) => teams.filter((t) => t.status === "live" && (t.frontier === m || (Array.isArray(t.workers) && (t.workers as string[]).includes(m)))).length;
+  const pool = [...s.frontier_pool.map((m) => ({ m, role: "frontier" })), ...s.worker_pool.map((m) => ({ m, role: "worker" }))].map(({ m, role }) => {
+    const r = ratings.find((x) => x.model === m);
+    return { model: m, role, standing: poolStanding(m, teamLikes), live_teams: liveSeats(m), elo: r ? num(r.elo, 1500) : 1500, brier: r && num(r.brier_n) ? num(r.brier_sum) / num(r.brier_n) : null, sits: r ? num(r.n_sits) : 0, sit_right: r && num(r.n_sits) ? num(r.n_sit_right) / num(r.n_sits) : null };
+  });
+  const running = seasons.find((x) => x.status === "running") ?? null;
+  const lastDone = seasons.find((x) => x.status === "done" && x.champion_team) ?? null;
+  const season = running ? { n: num(running.n), day_of: daysBetween(String(running.start_day), today) + 1, days: s.season_days, start_day: String(running.start_day), end_day: String(running.end_day), champion: lastDone ? nameOf(String(lastDone.champion_team)) : null } : null;
+  const spend = decs.reduce((a, d) => a + num(d.cost_usd), 0) + councils.reduce((a, c) => a + num(c.cost_usd), 0);
+  const card: J = {
+    as_of: today, day: today, season, teams: teamCards,
+    dead_today: teams.filter((t) => String(t.died_at ?? "") >= dayStart).map((t) => ({ name: t.name, reason: str(t.death_reason, 200), return_pct: num(t.return_pct) })),
+    formed_today: teams.filter((t) => String(t.formed_at ?? "") >= dayStart).map((t) => ({ name: t.name, frontier: t.frontier, workers: t.workers })),
+    councils_today: councils.map((c) => ({ team: nameOf(String(c.team_id)), kicked: c.kicked ?? null, replaced_by: c.replaced_by ?? null, reason: str(c.reason, 300) })),
+    by_strategy: cells("strategy"), by_tier: cells("tier"), strategy_books: cells("book"), pool, trades: recent, spend_today: Number(spend.toFixed(3)),
+    rules: { death_pct: s.death_pct, min_takes_day: s.min_takes_day, min_heat_pct: s.min_heat_pct, passive_penalty_pct: s.passive_penalty_pct, season_days: s.season_days },
+  };
   let review = "";
   let cost = 0;
-  if (rows.length > 0 || roster.changes.length > 0) {
+  if (teams.length) {
     const model = await smartModel();
-    const system = `You are the daily macro review for a paper-trading desk run by Ben, 19, who is learning markets. You are handed the measured record: the desk's closed trades grouped by strategy, timeframe, source (intraday sits versus the nightly jury), template, instrument, regime and exit; each coded strategy's own shadow book ("strategies": the pure rule with no jury, so the gap to desk.strategy is what the jury adds or costs) and the size it has earned ("strategy_rules"); every juror's Elo, Brier and sit record with its standing against the standard (fresh, meeting the standard, on notice, cut); the last trades one per line with their micro reviews ("trades"); what is open; how many sits the week had and how many were taken; and any roster changes made today. Mean R is shrunk toward zero for small samples, and "too few to trust" means exactly that.
-Write about 350 words in four short parts with these headings on their own lines: WHAT IS WORKING, WHAT IS NOT, WHAT THESE TRADES TEACH, HOW TO PROCEED. Reason across trades, strategies and jurors: patterns, not single trades. In HOW TO PROCEED be concrete: which strategies deserve size or a bench and why, which jurors are on notice or were cut and who took the seat, one rule to add or change, and what is still too thin to judge. Numbers, not adjectives. Plain words, no advice framing, no hedging boilerplate. Never tell him what to do with real money.`;
-    const res = await callModel(key, model, system, JSON.stringify(card).slice(0, 16000), 1600);
+    const system = `You are the daily macro review of a paper-trading tournament run by Ben, 19, who is learning markets. Nine teams, each one frontier model that decides and four worker models that research and vote, run a $100k paper book each. The tiers rank by ranked return (percent return less ${s.passive_penalty_pct}% for every passive day): the top three are Diamond, the next three Gold, the rest Bronze. Every day the worst team in Bronze is replaced by a set of models never used before; a team ${s.death_pct}% below its start dies at once; a team that takes fewer than ${s.min_takes_day} trades in a day and keeps less than ${s.min_heat_pct}% of its book at risk is playing to survive and is cut first. Each team's council (frontier plus two senior workers) can kick a member daily. The objective is to make as much as possible; survival alone ranks nothing.
+You are handed the measured record: the standings ("teams", with days alive, takes and passes today, kicks, passive days), who died and who formed today, today's councils, the teams' closed trades grouped by strategy (with each strategy's rule-only book beside it in "strategy_books", so the gap is what the teams add or cost) and by tier, the pool's standings (mean return of the teams a model has been on; Elo and Brier from its scored votes), the last closed trades with their micro reviews, and today's spend. Mean R is shrunk toward zero for small samples; "too few to trust" means exactly that.
+Write about 350 words in four short parts with these headings on their own lines: WHAT IS WORKING, WHAT IS NOT, WHAT THESE TRADES TEACH, HOW TO PROCEED. Reason across teams and days: which frontiers and which worker combinations are winning and why, which strategies pay in which tier, what the dead did wrong, who is playing to survive, where the councils were right or wrong. In HOW TO PROCEED be concrete: which teams look like champions, which councils should kick whom and who from the pool deserves a seat, one rule to add or change, and what is still too thin to judge. Numbers, not adjectives. Plain words, no advice framing, no hedging boilerplate. Never tell him what to do with real money.`;
+    const res = await callModel(key, model, system, JSON.stringify(card).slice(0, 18000), 1700);
     review = res.text || (res.error ? `The review could not be written today (${res.error}).` : "");
     cost = res.cost;
-  } else review = "No closed trades yet. The review writes itself once the book has closed a few positions; the standard is applied to every seat daily regardless.";
+  } else review = "No teams yet. Form them under League and the review writes itself from the first day's record.";
   const up = await rest("desk_cards?on_conflict=user_id,day", { method: "POST", headers: { Prefer: "resolution=merge-duplicates" }, body: JSON.stringify({ user_id: uid, day: today, week_start: weekStart(today), card, review }) });
-  return { day: today, closed: rows.length, ok: up.ok, cost, review, roster_changes: roster.changes.length };
+  return { day: today, teams: teamCards.length, closed: closedTeam.length, ok: up.ok, cost, review };
 }
 function weekStart(date: string): string {
   const [y, m, d] = date.split("-").map(Number);

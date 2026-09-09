@@ -1,11 +1,9 @@
 "use client";
 
-// The Desk — the space. Six gears: Now (the desk this minute, and the
-// nightly verdict under it), Feed (the news funnel), Debate (the sits and the
-// nightly argument), Book (the ledger), League (models and strategies against
-// each other, and against the standard), Learn (the journal, the macro review,
-// the strategies and the lessons). Paper money on every
-// screen, said plainly.
+// The Desk — the space. Three gears: Feed (the news every team reads), League
+// (nine teams of models trading their own books against each other, Ben's own
+// desk under them, and the rules) and Learn (the journal, the macro review,
+// the strategies and the lessons). Paper money on every screen, said plainly.
 //
 // This shell owns the account row and the live marks; the gears render.
 // A failed read never looks like an empty account (GRADING.md rule 2), and
@@ -13,22 +11,17 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { todayStr } from "@/lib/supabase";
-import { Card, Eyebrow, SectionTitle, Segmented } from "../ui";
+import { Card, Eyebrow, Segmented } from "../ui";
 import { ensureAccount, loadEquity, callFn, SYNC_FN, fmtMoney, fmtPct, type Account, type EquityPoint } from "@/lib/desk/api";
-import Book from "./Book";
-import Tonight from "./Tonight";
-import Debate from "./Debate";
-import League from "./League";
+import Leagues from "./Leagues";
 import Learn from "./Learn";
-import DeskSettings from "./DeskSettings";
 import Feed from "./Feed";
-import Now from "./Now";
 
-type Gear = "now" | "feed" | "debate" | "book" | "league" | "lessons";
+type Gear = "feed" | "league" | "learn";
 export type LiveMarks = { quotes: Record<string, { price?: number; at?: number; error?: string }>; marks: { owner: string; equity: number; unrealized: number; gross: number }[]; at: number };
 
 export default function DeskSpace({ uid }: { uid: string }) {
-  const [gear, setGear] = useState<Gear>("now");
+  const [gear, setGear] = useState<Gear>("league");
   const [account, setAccount] = useState<Account | null>(null);
   const [curve, setCurve] = useState<EquityPoint[]>([]);
   const [live, setLive] = useState<LiveMarks | null>(null);
@@ -84,7 +77,6 @@ export default function DeskSpace({ uid }: { uid: string }) {
   const deskLive = live?.marks.find((m) => m.owner === "desk");
   const equity = deskLive?.equity ?? account.equity;
   const last = curve[curve.length - 1];
-  const prevClose = curve.length >= 2 ? curve[curve.length - 2].equity : account.starting_equity;
   const todayPnl = last?.day === today ? last.pnl_day + (deskLive ? equity - last.equity : 0) : equity - (last?.equity ?? account.starting_equity);
   const allTime = equity - account.starting_equity;
   const halted = !!account.halted_until && account.halted_until >= today;
@@ -113,7 +105,8 @@ export default function DeskSpace({ uid }: { uid: string }) {
         </div>
         <p className="text-[10px] text-[var(--text-4)] mt-2.5 leading-relaxed">
           Started at {fmtMoney(account.starting_equity)}. Today is the change since yesterday&apos;s 4pm mark{live ? ", including open positions at live prices" : ""}.
-          {prevClose !== account.starting_equity && curve.length < 2 ? "" : ""} Nothing here is money you can lose; that is the point of the first hundred trades.
+          {" "}This desk takes nothing new of its own: it waits until a season ends and a champion team exists, and from then on it mirrors the champion trade for trade.
+          {" "}Nothing here is money you can lose; that is the point of the first hundred trades.
         </p>
         {halted && (
           <div className="mt-3 rounded-lg bg-orange-500/[0.08] border border-orange-500/30 px-3 py-2.5">
@@ -126,24 +119,14 @@ export default function DeskSpace({ uid }: { uid: string }) {
 
       <div className="mt-3">
         <Segmented value={gear} onChange={setGear} options={[
-          { key: "now", label: "Now" }, { key: "feed", label: "Feed" }, { key: "debate", label: "Debate" }, { key: "book", label: "Book" }, { key: "league", label: "League" }, { key: "lessons", label: "Learn" },
+          { key: "feed", label: "Feed" }, { key: "league", label: "League" }, { key: "learn", label: "Learn" },
         ]} />
       </div>
 
       <div key={gear} className="tab-enter">
-        {gear === "now" && (
-          <>
-            <Now uid={uid} account={account} live={live} today={today} onRefresh={() => { load(); refreshLive(); }} />
-            <SectionTitle>The nightly jury</SectionTitle>
-            <Tonight uid={uid} account={account} today={today} onRan={() => { load(); refreshLive(); }} />
-            <DeskSettings key={account.preset + account.roster.join(",") + account.judge + account.budget_usd_per_run + String(account.leverage_cap_override)} uid={uid} account={account} onSaved={load} />
-          </>
-        )}
         {gear === "feed" && <Feed />}
-        {gear === "debate" && <Debate uid={uid} />}
-        {gear === "book" && <Book uid={uid} account={account} curve={curve} live={live} today={today} onRefresh={() => { load(); refreshLive(); }} />}
-        {gear === "league" && <League uid={uid} account={account} live={live} onChanged={load} />}
-        {gear === "lessons" && <Learn uid={uid} account={account} live={live} onSaved={load} />}
+        {gear === "league" && <Leagues uid={uid} account={account} live={live} curve={curve} today={today} onChanged={() => { load(); refreshLive(); }} />}
+        {gear === "learn" && <Learn uid={uid} account={account} live={live} onSaved={load} />}
       </div>
     </div>
   );

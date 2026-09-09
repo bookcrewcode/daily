@@ -70,6 +70,7 @@ function toTrade(x: J): Trade {
     exit_reason: (x.exit_reason as Trade["exit_reason"]) ?? null, ambiguous_bar: x.ambiguous_bar === true, pnl: nul(x.pnl), pnl_pct: nul(x.pnl_pct),
     r_multiple: nul(x.r_multiple), mae_r: nul(x.mae_r), mfe_r: nul(x.mfe_r), spy_entry: nul(x.spy_entry), spy_exit: nul(x.spy_exit),
     review: (x.review as J | null) ?? null,
+    close_requested_at: x.close_requested_at ? String(x.close_requested_at) : null, close_reason: x.close_reason ? String(x.close_reason) : null,
   };
 }
 const toBars = (j: J): Bar[] => (Array.isArray(j.bars) ? (j.bars as J[]).map((b) => ({ t: num(b.t), o: num(b.o), h: num(b.h), l: num(b.l), c: num(b.c), v: num(b.v) })) : []);
@@ -216,8 +217,12 @@ async function sync(uid: string, force: { mark?: boolean } = {}): Promise<SyncRe
       }
       const done = bars.filter((b) => b.t >= from && b.t + barMs <= nowMs);
       let exitPrice: number | null = null, reason: Trade["exit_reason"] = null, exitAt = nowMs, ambiguous = false;
-      const ev = scanBars(t, done);
-      if (ev) { exitPrice = ev.price; reason = ev.reason; exitAt = ev.t + barMs; ambiguous = ev.ambiguous; }
+      const ev = t.close_requested_at ? null : scanBars(t, done);
+      if (t.close_requested_at) {
+        // a frontier, or a dead team, asked for the exit: out at the next quote, no bar scan
+        const q = await quote(t.symbol, t.venue);
+        if (q !== null) { exitPrice = q; reason = "thesis_broke"; }
+      } else if (ev) { exitPrice = ev.price; reason = ev.reason; exitAt = ev.t + barMs; ambiguous = ev.ambiguous; }
       else if (timeStopDue(t, nowMs, today)) {
         const q = await quote(t.symbol, t.venue);
         if (q !== null) { exitPrice = q; reason = "time"; }
@@ -231,6 +236,7 @@ async function sync(uid: string, force: { mark?: boolean } = {}): Promise<SyncRe
           status: "closed", exit_price: c.exit_price, exit_at: iso(exitAt), exit_reason: reason, ambiguous_bar: ambiguous,
           pnl: c.pnl, pnl_pct: c.pnl_pct, r_multiple: c.r_multiple, mae_r: ex.mae_r, mfe_r: ex.mfe_r, fees: c.fees_total, spy_exit: spy,
           checked_until: iso(exitAt),
+          ...(t.close_requested_at ? { review: { ...((t.review as J | null) ?? {}), closed_by: t.close_reason ?? "requested" } } : {}),
         };
         if (!(await patchTrade(t.id, patch))) { out.errors.push(`close write failed for ${t.symbol}`); continue; }
         if (t.owner === "desk") cashDelta += c.cash_delta;
