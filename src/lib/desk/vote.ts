@@ -14,7 +14,9 @@ const clamp01 = (x: number) => (Number.isFinite(x) ? Math.min(1, Math.max(0, x))
 
 export function tally(proposals: { id: string; plan: Plan }[], ballots: Ballot[], weights: Weight[], minVoters = 3): Tally[] {
   const w = new Map(weights.map((x) => [x.model, x]));
-  const totalW = weights.reduce((a, x) => a + x.weight, 0);
+  // The bar is half the weight of the jurors who actually voted. A silent seat (timed out, no ballot) is not an opposing vote.
+  const present = new Set(ballots.map((b) => b.model));
+  const totalW = [...present].reduce((a, m) => a + (w.get(m)?.weight ?? 1), 0);
   const out: Tally[] = proposals.map(({ id, plan }) => {
     let score = 0, voters = 0, support = 0, oppose = 0;
     for (const b of ballots) {

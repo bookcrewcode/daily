@@ -40,3 +40,16 @@ test("playbook has 12 templates and renders", () => {
   assert.equal(templateName(7), "Merger-arb spread on a friendly cash deal");
   assert.equal(templateName(99), "no template");
 });
+
+test("silent jurors do not count as opposition: the candidate bar is half the weight of the jurors who voted", () => {
+  const props = [{ id: "A1", plan: plan("AAPL") }, { id: "B1", plan: plan("XOM") }];
+  const w = equalWeights(["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9"]);
+  const six = ["m1", "m2", "m3", "m4", "m5", "m6"];
+  const ballots = six.map((m, i) => ({ juror: "ABCDEF"[i], model: m, stances: { A1: { stance: "support", confidence: 0.7 }, B1: { stance: i < 2 ? "support" : "oppose", confidence: 0.9 } } }));
+  const t = tally(props, ballots as never, w);
+  assert.equal(t[0].proposal_id, "A1");
+  assert.ok(Math.abs(t[0].score - 4.2) < 1e-9);
+  assert.equal(t[0].candidate, true); // 4.2 ≥ 0.5 × 6 voters, not 0.5 × 9 seats
+  assert.equal(t[1].proposal_id, "B1");
+  assert.equal(t[1].candidate, false); // 2 of 6 at 0.9 = −1.8
+});
