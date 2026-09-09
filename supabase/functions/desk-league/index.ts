@@ -131,7 +131,7 @@ async function agentLoop(key: string, c: { model: string; system: string; user: 
   const t0 = Date.now();
   const checked: string[] = [];
   let cost = 0, tokensIn = 0, tokensOut = 0;
-  const messages: Msg[] = [{ role: "system", content: `${c.system}\n\nYou may call the tools first (at most ${c.maxCalls} calls). When you are done looking, answer with ONLY a JSON object matching this schema, no prose:\n${JSON.stringify(c.schema.schema)}` }, { role: "user", content: c.user }];
+  const messages: Msg[] = [{ role: "system", content: `${c.system}\n\nYou may call the tools first (at most ${c.maxCalls} call${c.maxCalls === 1 ? "" : "s"}; answer straight away if the brief is enough). When you are done looking, answer with ONLY a JSON object matching this schema, no prose:\n${JSON.stringify(c.schema.schema)}` }, { role: "user", content: c.user }];
   const tools = c.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
   let noTools = c.tools.length === 0 || c.maxCalls <= 0;
   for (let round = 0; round <= c.maxCalls && !noTools; round++) {
@@ -450,7 +450,7 @@ async function workerBallot(uid: string, key: string, team: TeamRow, model: stri
   const system = workerSystem(team, book, s);
   const user = briefText(brief, book, rules);
   const res = s.research === "light"
-    ? await agentLoop(key, { model, system, user, schema: BALLOT_SCHEMA, tools, maxCalls: 2, maxTokens: 1500, deadline })
+    ? await agentLoop(key, { model, system, user, schema: BALLOT_SCHEMA, tools, maxCalls: 1, maxTokens: 1500, deadline })
     : { ...(await callModel(key, { model, system, user, schema: BALLOT_SCHEMA, maxTokens: 1500, deadline })), checked: [] as string[] };
   const j = res.json ?? {};
   const ballot: Ballot = {
@@ -650,7 +650,7 @@ async function cycle(uid: string, body: J): Promise<J> {
 
 /* ── child: one team, up to four candidates ───────────────────────────── */
 async function decide(uid: string, body: J): Promise<J> {
-  const t0 = Date.now(), deadline = t0 + 135_000;
+  const t0 = Date.now(), deadline = t0 + 128_000; // the gateway cuts at 150s: workers get 55s, the frontier 45s, execution the rest
   const teamId = str(body.team_id, 64);
   const ids = (Array.isArray(body.decision_ids) ? (body.decision_ids as unknown[]) : []).map((x) => str(x, 64)).filter((x) => /^[0-9a-f-]{36}$/i.test(x)).slice(0, 4);
   const [acct, team] = await Promise.all([loadAccount(uid), loadTeam(uid, teamId)]);
@@ -673,24 +673,31 @@ async function decide(uid: string, body: J): Promise<J> {
   ]);
   const funding = ((fundR.rates as Record<string, number>) ?? {});
   (book as unknown as J).funding = funding;
-  // every worker on every candidate, all at once
+  // every worker on every candidate, all at once; a ballot already paid for on an earlier try is reused, not re-asked
+  const prior = rows(await rest(`desk_opinions?decision_id=in.(${ids.join(",")})&round=eq.worker&error=eq.&select=decision_id,model,content`));
   const jobs: { d: J; ballots: Ballot[] }[] = decisions.map((d) => ({ d, ballots: [] }));
   await Promise.all(jobs.flatMap((job) => {
     const brief = job.d.brief as J;
     const setup = brief.setup as J;
     if (openSyms.has(String(setup.symbol))) return [];
     const tools = toolsFor(uid, setup, cache, feed, funding, String(brief.record ?? ""), book);
-    return team.workers.map(async (model) => { const b = await workerBallot(uid, key, team, model, String(job.d.id), brief, book, rules, s, tools, Math.min(deadline - 40_000, t0 + 75_000)); job.ballots.push(b); });
+    return team.workers.map(async (model) => {
+      const had = prior.find((o) => String(o.decision_id) === String(job.d.id) && o.model === model && (o.content as J)?.stance);
+      const b = had ? ({ ...(had.content as J), model, role: "worker", error: "", cost_usd: 0 } as Ballot) : await workerBallot(uid, key, team, model, String(job.d.id), brief, book, rules, s, tools, t0 + 55_000);
+      job.ballots.push(b);
+    });
   }));
+  // the ballots are on the record before the frontier is asked, so a cut-off child loses nothing
+  await Promise.all(jobs.map((job) => finish(job.d, { ballots: job.ballots.map((b) => ({ ...b })) })));
   const champion = (await championId(uid)) === team.id;
   const consult = jobs.filter((j) => j.ballots.some((b) => b.stance === "take" && !b.error));
   let verdicts: Record<string, Verdict> = {};
-  if (consult.length && deadline - Date.now() > 25_000) {
+  if (consult.length && deadline - Date.now() > 30_000) {
     const items = consult.map((j) => ({ decisionId: String(j.d.id), brief: j.d.brief as J, ballots: j.ballots }));
-    verdicts = await frontierDecide(uid, key, team, team.frontier, false, items, book, rules, s, Math.min(deadline - 12_000, Date.now() + 60_000));
+    verdicts = await frontierDecide(uid, key, team, team.frontier, false, items, book, rules, s, Math.min(deadline - 25_000, Date.now() + 45_000));
     const silent = items.filter((it) => verdicts[it.decisionId]?.error);
-    if (silent.length && deadline - Date.now() > 35_000 && team.seniors[0]) {
-      const acting = await frontierDecide(uid, key, team, team.seniors[0], true, silent, book, rules, s, Math.min(deadline - 10_000, Date.now() + 30_000));
+    if (silent.length && deadline - Date.now() > 45_000 && team.seniors[0]) {
+      const acting = await frontierDecide(uid, key, team, team.seniors[0], true, silent, book, rules, s, Math.min(deadline - 20_000, Date.now() + 25_000));
       for (const [id, v] of Object.entries(acting)) if (!v.error) verdicts[id] = v;
     }
   }
@@ -747,7 +754,7 @@ async function session(uid: string, body: J): Promise<J> {
   return { session: keyOf, launched, ms: Date.now() - t0 };
 }
 async function sessionTeam(uid: string, body: J): Promise<J> {
-  const t0 = Date.now(), deadline = t0 + 135_000;
+  const t0 = Date.now(), deadline = t0 + 128_000;
   const [acct, team] = await Promise.all([loadAccount(uid), loadTeam(uid, str(body.team_id, 64))]);
   if (!acct || !team || team.status !== "live") return { error: "no live team" };
   const s = leagueSettings(acct.league as Partial<LeagueSettings>);
@@ -773,7 +780,7 @@ async function sessionTeam(uid: string, body: J): Promise<J> {
   const user = `NEWS SINCE THE LAST SESSION (cite by [index])\n${digest.join("\n") || "(quiet)"}\n\nTAPE\n${context}\n\nSETUPS THE SCAN HAS ON THE TABLE (candidates already go to the team; propose something else, or one of these at a better level)\n${setups.join("\n") || "(none)"}\n\n${bookText(book)}`;
   // the workers propose, all at once
   const ideas = await Promise.all(team.workers.map(async (model) => {
-    const res = await callModel(key, { model, system: PROPOSE_SYSTEM(team, book, s), user, schema: PROPOSE_SCHEMA, maxTokens: 1200, deadline: Math.min(deadline - 50_000, t0 + 60_000) });
+    const res = await callModel(key, { model, system: PROPOSE_SYSTEM(team, book, s), user, schema: PROPOSE_SCHEMA, maxTokens: 1200, deadline: Math.min(deadline - 60_000, t0 + 45_000) });
     const j = res.json ?? {};
     const symbol = str(j.symbol, 20).toUpperCase().replace(/\s+/g, "");
     const venue = j.venue === "blofin" ? "blofin" : "robinhood";
@@ -801,7 +808,7 @@ async function sessionTeam(uid: string, body: J): Promise<J> {
   const positions = book.openTrades.filter((t) => t.status === "open").map((t) => { const m = marks[t.symbol] ?? t.entry_price ?? t.entry_ref; const u = unrealized(t, m); return `trade ${t.id}: ${t.symbol} ${t.side}${t.instrument === "crypto_perp" ? ` ${t.leverage}x` : ""} in at ${t.entry_price} now ${m} (${u >= 0 ? "+" : ""}$${u.toFixed(0)}, ${((u / Math.max(1, t.margin)) * 100).toFixed(1)}% of margin) stop ${t.stop} target ${t.target} · ${t.strategy || "session idea"} · until ${t.expires_on ?? "?"}\n    thesis: ${str(t.thesis, 240)}`; });
   const propText = proposals.map((p, i) => `PROPOSAL ${i} (from ${p.model}): ${p.symbol} ${p.side}${p.instrument === "crypto_perp" ? ` ${p.leverage}x` : ""} (${p.venue}) price ${p.entry_ref} stop ${p.stop} target ${p.target} · ${p.horizon_days}d · conf ${(p.confidence * 100).toFixed(0)}%\n    thesis: ${p.thesis}\n    catalyst: ${p.catalyst}\n    wrong if: ${p.wrong_if}\n    evidence: ${p.evidence.join(" | ")}`);
   const fUser = `${digest.length ? `NEWS SINCE THE LAST SESSION\n${digest.slice(0, 20).join("\n")}\n\n` : ""}TAPE\n${context}\n\nOPEN POSITIONS\n${positions.join("\n") || "(none)"}\n\nPROPOSALS\n${propText.join("\n") || "(no worker had one" + (ideas.some((x) => x.reason) ? ": " + ideas.map((x) => `${x.model}: ${x.reason || x.error || "no idea"}`).join("; ") : "") + ")"}\n\n${bookText(book)}`;
-  const fRes = await callModel(key, { model: team.frontier, system: SESSION_SYSTEM(team, book, s), user: fUser, schema: SESSION_SCHEMA, maxTokens: 2500, deadline: Math.min(deadline - 15_000, Date.now() + 60_000) });
+  const fRes = await callModel(key, { model: team.frontier, system: SESSION_SYSTEM(team, book, s), user: fUser, schema: SESSION_SCHEMA, maxTokens: 2500, deadline: Math.min(deadline - 25_000, Date.now() + 50_000) });
   const fj = fRes.json ?? {};
   await saveOpinion(uid, null, team.frontier, "frontier", "review", fRes, fRes.json ? { positions: fj.positions, takes: fj.takes, note: str(fj.note, 600) } : {});
   const out: J = { team: team.name, proposals: proposals.length, closes: 0, tightened: 0, taken: 0, error: fRes.error };
