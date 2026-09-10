@@ -892,12 +892,25 @@ async function sessionAll(uid: string, body: J): Promise<J> {
     if (busy >= 2) await new Promise<void>((res) => queue.push(res)); else busy++;
     try { return await fn(); } finally { const next = queue.shift(); if (next) next(); else busy--; }
   };
+  // When the source says "retry after N ms", every look-up waits out that one window together, unless the wait would run past the child's deadline.
+  let coolUntil = 0;
+  const retryMs = (v: J): number => { const m = /retry after (\d+)\s*ms/i.exec(str(v.error)); return m ? Math.min(35_000, Number(m[1]) + 1500) : 8000; };
+  const cooled = async (): Promise<boolean> => {
+    if (coolUntil <= Date.now()) return true;
+    if (coolUntil > deadline - 15_000) return false;
+    await new Promise((r) => setTimeout(r, coolUntil - Date.now()));
+    return true;
+  };
   const looked = new Map<string, Promise<{ v: J; card: J | undefined }>>();
   const lookup = (sym: string, venue: string): Promise<{ v: J; card: J | undefined }> => {
     const k = `${venue}:${sym}`;
     if (!looked.has(k)) looked.set(k, withSlot(async () => {
+      if (!(await cooled())) return { v: { ok: false, error: "rate limit: the tape is cooling down and the session has no time left to wait" }, card: undefined };
       let v = await tape(uid, { mode: "validate", symbol: sym, venue }, 20000);
-      if (v.ok !== true && /rate limit/i.test(str(v.error))) { await new Promise((r) => setTimeout(r, 6000)); v = await tape(uid, { mode: "validate", symbol: sym, venue }, 20000); }
+      if (v.ok !== true && /rate limit/i.test(str(v.error))) {
+        coolUntil = Math.max(coolUntil, Date.now() + retryMs(v));
+        if (await cooled()) v = await tape(uid, { mode: "validate", symbol: sym, venue }, 20000);
+      }
       if (v.ok !== true) return { v, card: undefined };
       const snap = await tape(uid, { mode: "snapshot", symbols: [{ symbol: sym, venue: String(v.venue) }] }, 30000);
       return { v, card: ((snap.cards as Record<string, J>) ?? {})[sym] };
@@ -983,6 +996,7 @@ async function sessionAll(uid: string, body: J): Promise<J> {
       let outcome: Exec | null = null, plan: Plan | null = null, atr: number | null = null;
       if (openSyms.has(sym)) outcome = { taken: false, reasons: [`${sym} is already on the team's book`], pass_reason: "already held", by: "guardrail" };
       else if (taken + ownTaken >= 3) outcome = { taken: false, reasons: ["three new positions a session is the limit"], pass_reason: "three new positions a session", by: "guardrail" };
+      else if (Date.now() > deadline - 12_000) outcome = { taken: false, reasons: ["the session ran out of time before this idea could be placed"], pass_reason: "no time left in the session", by: "guardrail" };
       else {
         const { v, card } = await lookup(sym, venue0);
         if (v.ok !== true) outcome = { taken: false, reasons: [`${sym}: ${str(v.error, 120) || "not a symbol the desk can trade"}`], pass_reason: /rate limit/i.test(str(v.error)) ? "the tape was busy" : "not a symbol the desk can trade", by: "guardrail" };
