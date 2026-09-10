@@ -15,9 +15,9 @@ export const TIER_LABEL: Record<Tier, string> = { diamond: "Diamond", gold: "Gol
 /** The one line under each tier heading, sized to the settings so it never lies. */
 export function tierMeaning(tier: Tier, perTier: number): string {
   const n = perTier === 1 ? "book" : `${perTier} books`;
-  if (tier === "diamond") return `Diamond: the best ${n} by percent return since each team was formed.`;
+  if (tier === "diamond") return `Diamond: the best ${n} by ranked return since each team was formed, re-sorted every day at 16:06 New York time.`;
   if (tier === "gold") return `Gold: the next ${n} down the same list.`;
-  return "Bronze: everyone below them. At the daily cut the worst book here dies, if it has been alive at least a day, and a new team takes its place.";
+  return "Bronze: everyone below them. A frontier whose team dies comes back here with a new life and a fresh book.";
 }
 
 export const tone = (v: number) => (v > 0 ? "var(--ok)" : v < 0 ? "var(--bad)" : "var(--text-3)");

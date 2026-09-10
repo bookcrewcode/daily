@@ -1,9 +1,10 @@
 "use client";
 
-// The leagues. Nine teams of five models, three tiers, one book each, and a
-// season that ends with a champion the desk then copies. Everything on this
-// screen is paper money and every word that could be jargon is explained
-// where it sits, because the point is to learn how any of this works.
+// The leagues. Nine teams, each one frontier model on the crew every team
+// shares, three tiers, one book each, and a season that ends with a champion
+// the desk then copies. Everything on this screen is paper money and every
+// word that could be jargon is explained where it sits, because the point is
+// to learn how any of this works.
 
 import { useCallback, useEffect, useState } from "react";
 import { Card, Eyebrow, SectionTitle } from "../ui";
@@ -12,8 +13,8 @@ import LeagueSide from "./LeagueSide";
 import LeagueSettings from "./LeagueSettings";
 import { Note, TIER_COLOR, TIER_LABEL, dayLabel, daysSince, onDay, tierMeaning } from "./LeagueBits";
 import {
-  loadTeams, loadSeasons, loadDecisions, loadCouncils, loadTrades, loadRatings, loadStrategies, loadRosterLog, loadLatestEquity,
-  callFn, LEAGUE_FN, fmtMoney, type Account, type CouncilRow, type DecisionRow, type EquityPoint, type Rating, type RosterLogRow,
+  loadTeams, loadSeasons, loadDecisions, loadTrades, loadRatings, loadStrategies, loadRosterLog, loadLatestEquity,
+  callFn, LEAGUE_FN, fmtMoney, type Account, type DecisionRow, type EquityPoint, type Rating, type RosterLogRow,
   type SeasonRow, type StrategyRow, type TeamRow,
 } from "@/lib/desk/api";
 import { leagueSettings, TIERS, type TeamLike, type Tier } from "@/lib/desk/league";
@@ -26,7 +27,6 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
   const [teams, setTeams] = useState<TeamRow[]>([]);
   const [seasons, setSeasons] = useState<SeasonRow[]>([]);
   const [decisions, setDecisions] = useState<DecisionRow[]>([]);
-  const [councils, setCouncils] = useState<CouncilRow[]>([]);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [ratings, setRatings] = useState<Rating[]>([]);
   const [strategies, setStrategies] = useState<StrategyRow[]>([]);
@@ -39,22 +39,20 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
   const [formNote, setFormNote] = useState("");
 
   const load = useCallback(async () => {
-    const [t, s, d, c, tr, r, g, l, e] = await Promise.all([
+    const [t, s, d, tr, r, g, l, e] = await Promise.all([
       loadTeams(uid),
       loadSeasons(uid),
       loadDecisions(uid, { sinceHours: 24, limit: 500 }),
-      loadCouncils(uid, { limit: 40 }),
       loadTrades(uid, { ownerLike: "team:%", status: ["pending", "open"], limit: 500 }),
       loadRatings(uid),
       loadStrategies(uid),
       loadRosterLog(uid, 40),
       loadLatestEquity(uid),
     ]);
-    setErr(t.error || s.error || d.error || c.error || tr.error || r.error || g.error || l.error || e.error);
+    setErr(t.error || s.error || d.error || tr.error || r.error || g.error || l.error || e.error);
     if (!t.error) setTeams(t.teams);
     if (!s.error) setSeasons(s.seasons);
     if (!d.error) setDecisions(d.decisions);
-    if (!c.error) setCouncils(c.councils);
     if (!tr.error) setTrades(tr.trades);
     if (!r.error) setRatings(r.ratings);
     if (!g.error) setStrategies(g.strategies);
@@ -70,7 +68,7 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
     const r = await callFn<Record<string, unknown>>(LEAGUE_FN, { mode: "form" }, 120_000);
     if (r.error) setFormNote(r.error);
     else {
-      setFormNote("The teams are formed. Their first candidates come at the next five-minute tick.");
+      setFormNote("The teams are formed. Their first candidates come at the next five-minute tick inside trading hours.");
       await load();
       onChanged();
     }
@@ -80,10 +78,12 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
   if (!loaded) return <div className="pt-3"><div className="skeleton h-32" /><div className="skeleton h-24 mt-3" /><div className="skeleton h-48 mt-3" /></div>;
 
   const settings = leagueSettings(account.league);
+  const nTeams = settings.teams_per_tier * 3;
+  const crewSize = settings.worker_pool.length;
   const equityOf = (t: TeamRow) => live?.marks.find((m) => m.owner === `team:${t.id}`)?.equity ?? t.equity;
   const retOf = (t: TeamRow) => (t.start_equity > 0 ? (equityOf(t) - t.start_equity) / t.start_equity : 0);
   // Pool standing is worked out from percent returns; feed it the same live numbers this screen shows.
-  const teamLikes: TeamLike[] = teams.map((t) => ({ id: t.id, frontier: t.frontier, workers: t.workers, status: t.status, return_pct: retOf(t) * 100, formed_at: t.formed_at }));
+  const teamLikes: TeamLike[] = teams.map((t) => ({ id: t.id, frontier: t.frontier, workers: t.workers, status: t.status, return_pct: retOf(t) * 100, formed_at: t.formed_at, score: typeof t.stats.rank_score === "number" ? (t.stats.rank_score as number) : undefined }));
 
   const liveTeams = teams.filter((t) => t.status === "live");
   const running = seasons.find((s) => s.status === "running") ?? seasons[0] ?? null;
@@ -102,19 +102,19 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
         <Eyebrow className="mb-1.5">How the leagues work</Eyebrow>
         <div className="text-[11.5px] text-[var(--text-2)] leading-relaxed space-y-2">
           <p>
-            Three leagues — Diamond, Gold and Bronze — with {settings.teams_per_tier} team{settings.teams_per_tier === 1 ? "" : "s"} in each. A team is one frontier model, which decides and barely does any of the brute work, and {settings.workers_per_team} worker models, which read every candidate, research it and vote take or pass. Every team has its own {fmtMoney(100000)} paper book.
+            Three leagues — Diamond, Gold and Bronze — with {settings.teams_per_tier} team{settings.teams_per_tier === 1 ? "" : "s"} in each. A team is one frontier model: the strong model that decides. Every team shares the same crew of {crewSize} cheap worker models, which read every candidate once, research it and vote take or pass; only the frontier differs between teams. Every team has its own {fmtMoney(100000)} paper book.
           </p>
           <p>
-            A team dies the moment its book touches {settings.death_pct}% below its start — {fmtMoney(100000 * (1 - settings.death_pct / 100))} — at any tick, not just at the close. Every day at the 16:06 New York cut the live teams are ranked by percent return: the top {settings.teams_per_tier} are Diamond, the next {settings.teams_per_tier} are Gold, the rest are Bronze, and the worst team in Bronze, if it has been alive at least a day, dies and is replaced by a new combination of models. No two teams, living or dead, may ever share the same set of members. It is a competition, and survival alone ranks nothing: a team that takes fewer than {settings.min_takes_day} trades in a day and keeps less than {settings.min_heat_pct}% of its book at risk is playing to survive; every such day docks {settings.passive_penalty_pct}% from its ranked return, it cannot climb that day, and it is cut before any active team.
+            A team dies the moment its book touches {settings.death_pct}% below its start — {fmtMoney(100000 * (1 - settings.death_pct / 100))} — at any tick, not just at the close. Its frontier comes straight back with a new life: a fresh {fmtMoney(100000)} book in Bronze and the next numeral after its name, so Astra II is the second life of GPT-6 Astra, and the dead team keeps its record. Every day at 16:06 New York time the live teams are ranked by ranked return: the top {settings.teams_per_tier} are Diamond, the next {settings.teams_per_tier} are Gold, the rest are Bronze. It is a competition, and survival alone ranks nothing: a team that takes fewer than {settings.min_takes_day} trades in a day and keeps less than {settings.min_heat_pct}% of its book at risk is playing to survive; every such day docks {settings.passive_penalty_pct}% from its ranked return.
           </p>
           <p>
-            Each team is ruled by an oligarchy: the frontier and its two senior workers. Once a day the three of them vote on whether to kick a member. Two votes of the three remove someone, at most one member a day, and the replacement is pulled off the sideline.
+            New decisions and sessions only happen inside trading hours: stocks {settings.hours.stocks[0]} to {settings.hours.stocks[1]} and crypto {settings.hours.crypto[0]} to {settings.hours.crypto[1]}, New York time. Positions are managed round the clock: fills, stops, targets and funding are checked at every five-minute tick.
           </p>
           <p>
-            A season is {settings.season_days} days. At the last daily cut the team on top is the champion, and Ben&apos;s own desk mirrors it from then on. The news feed is shared by every team, so nobody wins on better information. The strategy books at the bottom are rule-only shadow books with no models in them at all: they are the baseline every team has to beat.
+            A season is {settings.season_days} days. At the last daily ranking the team on top is the champion, and Ben&apos;s own desk mirrors it from then on. The news feed is shared by every team, so nobody wins on better information. The strategy books at the bottom are rule-only shadow books with no models in them at all: they are the baseline every team has to beat.
           </p>
           <p className="text-[var(--text-3)]">
-            Percent return means the change in a team&apos;s book since the day that team was formed. Paper money throughout: there is no broker key anywhere in this app.
+            Ranked return is the change in a team&apos;s book since the day that team was formed, less the passive-day penalty. Paper money throughout: there is no broker key anywhere in this app.
           </p>
         </div>
       </Card>
@@ -126,7 +126,7 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
             <p className="text-[13px] font-semibold">
               Season {running.n} · day {seasonDay} of {settings.season_days} · started {dayLabel(running.start_day)}
             </p>
-            <Note className="mt-1">The cut on {dayLabel(running.end_day)} crowns the champion. Until then every daily cut just re-sorts the tiers and kills the bottom of Bronze.</Note>
+            <Note className="mt-1">The ranking on {dayLabel(running.end_day)} crowns the champion. Until then every daily ranking just re-sorts the tiers.</Note>
           </>
         ) : (
           <p className="text-[13px] font-semibold">No season has started yet.</p>
@@ -147,7 +147,7 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
         {liveTeams.length === 0 && (
           <div className="mt-3 pt-3 border-t border-[var(--border-1)]">
             <p className="text-[11.5px] text-[var(--text-2)] leading-relaxed">
-              No teams are alive. Forming deals {settings.teams_per_tier * 3} teams out of the pools: each frontier gets {settings.workers_per_team} workers, the sets are spread so no worker sits on every team, and every set is checked against every team that has ever existed so no combination repeats. Each one opens a fresh {fmtMoney(100000)} book.
+              No teams are alive. Forming deals one team per frontier in the pool: {nTeams} teams, every one on the same crew of {crewSize}, each with a fresh {fmtMoney(100000)} book. The tiers are dealt in turn, so no tier starts with all the strongest frontiers.
             </p>
             <button onClick={form} disabled={forming} className="mt-2.5 rounded-lg bg-[var(--neon)] text-black text-xs font-bold px-4 py-2 active:scale-95 disabled:opacity-40">
               {forming ? "Forming…" : "Form the teams"}
@@ -175,7 +175,7 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
               <div className="space-y-2">
                 {rows.map((t, i) => (
                   <TeamCard key={t.id} uid={uid} team={t} rank={i + 1} live={live} settings={settings} today={today}
-                    trades={trades} decisions={decisions} councils={councils} ratings={ratings}
+                    trades={trades} decisions={decisions} ratings={ratings}
                     expanded={openTeam === t.id} onToggle={() => setOpenTeam(openTeam === t.id ? null : t.id)} />
                 ))}
               </div>

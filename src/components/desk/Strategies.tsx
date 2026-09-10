@@ -3,10 +3,12 @@
 // Strategies — the eight coded rules the scan runs, each explained: what it
 // does, why it might work, when it fails, the exact checks, and its record
 // from its own shadow book. This is the technical-analysis textbook of the
-// desk, written as things the code actually does rather than as theory.
+// desk, written as things the code actually does rather than as theory, with
+// every trading word explained until Ben has learned it.
 
 import { useCallback, useEffect, useState } from "react";
 import { Card, Eyebrow } from "../ui";
+import { Lingo, lingo } from "./Term";
 import { loadTrades, updateAccount, fmtMoney, fmtR, type Account } from "@/lib/desk/api";
 import { STRATEGIES, type StrategyDef } from "@/lib/desk/scan";
 import { tradeStats, shrink } from "@/lib/desk/stats";
@@ -47,7 +49,7 @@ export default function Strategies({ uid, account, onSaved }: { uid: string; acc
       <Card>
         <Eyebrow className="mb-1.5">The strategies</Eyebrow>
         <p className="text-[11.5px] text-[var(--text-2)] leading-relaxed">
-          Eight rules in code, scanned every fifteen minutes across the watchlist and the top BloFin perps. Each one runs its own shadow book with no jury, so its raw record can be read against the desk&apos;s juried trades. A rule with twenty closed trades and a positive shrunk R earns bigger size; a losing one gets benched. Switch any of them off here.
+          <Lingo text="Eight rules in code, scanned every fifteen minutes across the watchlist and the top BloFin perps. Each one runs its own shadow book with no models in it, so its raw record can be read against what the teams did with the same setups. A rule with twenty closed trades and a positive shrunk R earns bigger size; a losing one gets benched. Switch any of them off here." />
         </p>
       </Card>
       <div className="mt-2 space-y-2">
@@ -66,11 +68,12 @@ export default function Strategies({ uid, account, onSaved }: { uid: string; acc
                   <span className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)]">{TF[s.timeframe]}</span>
                   {off && <span className="mono text-[9px] uppercase tracking-widest text-orange-400">off</span>}
                 </div>
-                <p className="text-[11.5px] text-[var(--text-2)] mt-1 leading-snug">{s.what}</p>
-                <p className="mono text-[10px] text-[var(--text-4)] mt-1.5">
-                  <Record st={st} n={closed.length} /> · {live.length} riding · {s.venues.join(" and ")}{s.venues.includes("perps") ? ` · up to ${s.leverage}x` : ""}
+                <p className="mono text-[10px] text-[var(--text-4)] mt-1">
+                  <Record st={st} n={closed.length} /> · {live.length} riding · {s.venues.join(" and ")}{s.venues.includes("perps") ? ` · up to ${s.leverage}x` : ""} · {isOpen ? "tap to close" : "tap for the rules"}
                 </p>
               </button>
+              {/* The sentence sits outside the button because its "got it" taps must not toggle the card. */}
+              <p className="text-[11.5px] text-[var(--text-2)] mt-1 leading-snug"><Lingo text={s.what} /></p>
               {isOpen && <Detail s={s} closed={closed} off={off} busy={busy === s.id} onToggle={() => toggle(s.id)} />}
             </Card>
           );
@@ -88,13 +91,15 @@ function Record({ st, n }: { st: ReturnType<typeof tradeStats>; n: number }) {
 
 function Detail({ s, closed, off, busy, onToggle }: { s: StrategyDef; closed: Trade[]; off: boolean; busy: boolean; onToggle: () => void }) {
   const pnl = closed.reduce((a, t) => a + (t.pnl ?? 0), 0);
+  // One `seen` across why, fails and the rules, so each word is explained once per strategy.
+  const seen = new Set<string>();
   return (
     <div className="mt-2.5 pt-2.5 border-t border-[var(--border-1)] rise-in space-y-2">
-      <p className="text-[11.5px] leading-relaxed"><span className="text-[var(--text-4)]">Why it might work:</span> {s.why}</p>
-      <p className="text-[11.5px] leading-relaxed"><span className="text-[var(--text-4)]">When it fails:</span> {s.fails}</p>
+      <p className="text-[11.5px] leading-relaxed"><span className="text-[var(--text-4)]">Why it might work:</span> {lingo(s.why, seen, "w")}</p>
+      <p className="text-[11.5px] leading-relaxed"><span className="text-[var(--text-4)]">When it fails:</span> {lingo(s.fails, seen, "f")}</p>
       <div>
         <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mb-1">The checks, exactly as the code runs them</p>
-        <ol className="text-[11.5px] leading-relaxed list-decimal pl-4 space-y-0.5">{s.rules.map((r, i) => <li key={i}>{r}</li>)}</ol>
+        <ol className="text-[11.5px] leading-relaxed list-decimal pl-4 space-y-0.5">{s.rules.map((r, i) => <li key={i}>{lingo(r, seen, `r${i}`)}</li>)}</ol>
       </div>
       {closed.length > 0 && <p className="mono text-[10px] text-[var(--text-3)]">shadow book: {closed.length} closed, {pnl >= 0 ? "+" : "-"}{fmtMoney(Math.abs(pnl))} on $100k, best {fmtR(Math.max(...closed.map((t) => t.r_multiple ?? 0)))}, worst {fmtR(Math.min(...closed.map((t) => t.r_multiple ?? 0)))}</p>}
       <button onClick={onToggle} disabled={busy} className={`rounded-lg text-xs font-semibold px-3 py-1.5 active:scale-95 disabled:opacity-50 ${off ? "bg-[var(--neon)]/15 text-[var(--neon)]" : "bg-white/5 text-[var(--text-2)]"}`}>

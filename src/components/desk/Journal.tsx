@@ -1,11 +1,11 @@
 "use client";
 
 // Journal — everything the leagues did, on the record. Decisions: every
-// candidate the teams read, every session, every close and every council,
-// with the reason a team passed sitting next to the reason another took it.
-// Trades: the ones that became real positions, each with its thesis, its
-// team's ballots, where it stands or what happened, and its micro review.
-// Paper money on every line; every label explained where it sits.
+// candidate the teams read, every session and every close, with the reason a
+// team passed sitting next to the reason another took it. Trades: the ones
+// that became real positions, each on its chart, with everything it used and
+// why, the crew's ballots, where it stands or what happened, and its micro
+// review. Paper money on every line; every label explained where it sits.
 
 import { useCallback, useEffect, useState } from "react";
 import { Card, Eyebrow, Pill, Segmented } from "../ui";
@@ -17,17 +17,16 @@ import type { Trade } from "@/lib/desk/types";
 import type { LiveMarks } from "./DeskSpace";
 
 type View = "decisions" | "trades";
-type Kind = "all" | "taken" | "passed" | "closes" | "sessions" | "council";
+type Kind = "all" | "taken" | "passed" | "closes" | "sessions";
 type TradeFilter = "all" | "running" | "closed";
 
-const KINDS: Kind[] = ["all", "taken", "passed", "closes", "sessions", "council"];
+const KINDS: Kind[] = ["all", "taken", "passed", "closes", "sessions"];
 const KIND_HELP: Record<Kind, string> = {
   all: "Everything the teams were asked and answered in the last three days, newest first.",
   taken: "The decisions that became a real paper position.",
   passed: "The candidates and sessions a team looked at and did not act on. The reason is recorded either way.",
   closes: "A frontier asking to close a position early, before its stop, target or clock.",
-  sessions: "The scheduled reviews of a team's open positions, three times a trading day.",
-  council: "The frontier and its two senior workers voting on whether to kick a member of their own team.",
+  sessions: "The scheduled reviews of a team's open positions and the crew's new ideas, three times a trading day.",
 };
 const TF: Record<string, string> = { scalp: "scalp · hours", swing: "swing · days", position: "position · weeks" };
 const stratName = (id?: string) => (id ? STRATEGIES.find((s) => s.id === id)?.name ?? id : "");
@@ -118,7 +117,6 @@ export default function Journal({ uid, live }: { uid: string; live: LiveMarks | 
     if (kind === "passed") return (d.kind === "candidate" || d.kind === "session") && !o.taken;
     if (kind === "closes") return d.kind === "close";
     if (kind === "sessions") return d.kind === "session";
-    if (kind === "council") return d.kind === "council";
     return true;
   };
   const shownDecisions = decisions.filter((d) => matchesKind(d) && (teamSel === "all" || d.team_id === teamSel));
@@ -154,13 +152,12 @@ export default function Journal({ uid, live }: { uid: string; live: LiveMarks | 
           <Card className="mt-3">
             <Eyebrow>Every decision, on the record</Eyebrow>
             <p className="text-[11.5px] text-[var(--text-2)] leading-relaxed mt-1.5">
-              A decision is one moment a team was asked something and answered in writing. Four worker models read the same brief and vote; the frontier model that leads the team decides. Nothing here is real money.
+              A decision is one moment a team was asked something and answered in writing. The crew, the same four cheap worker models for every team, reads the brief once and votes; the frontier model that leads each team decides for itself. Nothing here is real money.
             </p>
             <ul className="text-[11.5px] text-[var(--text-2)] leading-relaxed mt-2 space-y-1">
-              <li><span className="mono text-[10px] text-[var(--neon)]">candidate</span> — a setup the scan found, put to the whole team: take it or pass.</li>
-              <li><span className="mono text-[10px] text-[var(--neon)]">session</span> — a scheduled look at the positions the team already holds, three times a trading day.</li>
+              <li><span className="mono text-[10px] text-[var(--neon)]">candidate</span> — a setup the scan found, put to every team: take it or pass.</li>
+              <li><span className="mono text-[10px] text-[var(--neon)]">session</span> — a scheduled look at the positions the team already holds and the crew&apos;s new ideas, three times a trading day.</li>
               <li><span className="mono text-[10px] text-[var(--neon)]">close</span> — the frontier asking to end a position early, before its stop, target or clock.</li>
-              <li><span className="mono text-[10px] text-[var(--neon)]">council</span> — the frontier and its two senior workers voting on whether to kick one of their own.</li>
             </ul>
             <p className="text-[11.5px] text-[var(--text-2)] leading-relaxed mt-2">
               A pass is written down with its reason, exactly like a take. The trades a team refused teach as much as the ones it made.
@@ -186,7 +183,7 @@ export default function Journal({ uid, live }: { uid: string; live: LiveMarks | 
                   </Pill>
                 ))}
               </div>
-              <p className="text-[10px] text-[var(--text-4)] leading-relaxed mt-0.5">A team is one frontier model that decides and four workers that read and vote. The dot is its league: Diamond, Gold or Bronze.</p>
+              <p className="text-[10px] text-[var(--text-4)] leading-relaxed mt-0.5">A team is one frontier model that decides; every team shares the same crew of four workers that read and vote. The dot is its league: Diamond, Gold or Bronze.</p>
             </>
           )}
 
@@ -238,14 +235,14 @@ export default function Journal({ uid, live }: { uid: string; live: LiveMarks | 
                           </div>
                         );
                       })}
-                      <p className="text-[10px] text-[var(--text-4)] leading-relaxed mt-1.5">Workers x of 4 take is how the team voted; the frontier still decides alone. The rule line is what the strategy would have done with no team at all, so a pass that dodged a loss reads as plainly as a take that won.</p>
+                      <p className="text-[10px] text-[var(--text-4)] leading-relaxed mt-1.5">Workers x of 4 take is how the shared crew voted, once, for every team; each frontier still decides alone. The rule line is what the strategy would have done with no team at all, so a pass that dodged a loss reads as plainly as a take that won.</p>
                     </Card>
                   );
                 })}
               </div>
             )
           ) : shownDecisions.length === 0 ? (
-            <Card className="mt-2"><p className="text-[12px] text-[var(--text-3)] leading-relaxed">Nothing here yet. The teams write a decision every time the scan hands them a candidate, at every session, at every close and at the daily council.</p></Card>
+            <Card className="mt-2"><p className="text-[12px] text-[var(--text-3)] leading-relaxed">Nothing here yet. The teams write a decision every time the scan hands them a candidate inside trading hours, at every session and at every close.</p></Card>
           ) : (
             <div className="mt-2 space-y-2">
               {shownDecisions.map((d) => (
@@ -259,7 +256,7 @@ export default function Journal({ uid, live }: { uid: string; live: LiveMarks | 
           <Card className="mt-3">
             <Eyebrow>The trades the teams took</Eyebrow>
             <p className="text-[11.5px] text-[var(--text-2)] leading-relaxed mt-1.5">
-              Every decision that became a real position, newest first. Open one for the thesis it was taken on, what each worker said and what the frontier decided; while it runs, where it stands at live prices; once it closes, what happened and whether the reasoning held apart from the money. Paper money only — that is the point of the first hundred trades.
+              Every decision that became a real position, newest first. Open one for the trade on its chart, everything that went into it and why each piece mattered, what the crew said and what the frontier decided; while it runs, where it stands at live prices; once it closes, what happened and whether the reasoning held apart from the money. Paper money only — that is the point of the first hundred trades.
             </p>
             <p className="mono text-[10px] text-[var(--text-4)] mt-2">{trades.length} trades · {closedTrades.length} closed · {reviewed} reviewed{neverFilled ? ` · ${neverFilled} never filled` : ""}</p>
           </Card>

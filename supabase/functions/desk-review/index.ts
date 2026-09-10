@@ -6,14 +6,16 @@
 //   settle     ratings for the model that owned the trade (Brier, calibration
 //              bins, Elo matches against jurors who took the other side or
 //              abstained); a strategy's shadow trade scores its sit's ballots
-//              and re-rates the strategy; then for desk trades the micro
-//              review (what happened, why, was the reasoning sound) and its
-//              lesson. Idempotent: a trade is settled once.
+//              and re-rates the strategy; then for desk and team trades the
+//              micro review (what happened, why, was the reasoning sound,
+//              every input the trade used and what each term means, all in
+//              plain words) and its lesson. Idempotent: a trade is settled once.
 //   postmortem rewrite the micro review for one trade
-//   coach      the daily macro review: the measured record by strategy,
-//              timeframe, source and juror, the last trades one per line, the
-//              standard applied to every seat, and about 350 words on what is
-//              working, what is not, what it teaches and how to proceed
+//   coach      the daily macro review: the measured record by strategy, tier
+//              and frontier, the last trades one per line, and about 400 words
+//              in plain English (every term explained where it first appears)
+//              on what is working, what is not, what it teaches and how to
+//              proceed
 //   roster     apply the standard now: cut what is below it, seat the bench
 //   ask        a question about a night, answered with the packet and the
 //              transcript in hand
@@ -37,6 +39,8 @@ const num = (v: unknown, d = 0): number => { const n = Number(v); return Number.
 const str = (v: unknown, max = 2000): string => String(v ?? "").slice(0, max);
 const okModel = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._:-]+$/.test(v) && v.length <= 100;
 const arr = (v: unknown): string[] => (Array.isArray(v) ? (v as unknown[]).map(String).filter((m) => okModel(m)) : []);
+// A REST result as a list of rows, empty on any error (the same helper desk-league uses).
+const rows = (r: { ok: boolean; json: unknown }): J[] => (r.ok && Array.isArray(r.json) ? (r.json as J[]) : []);
 const etToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 
 async function rest(path: string, init?: RequestInit): Promise<{ ok: boolean; json: unknown; status: number }> {
@@ -311,9 +315,14 @@ async function rateStrategy(uid: string, id: string): Promise<J> {
 }
 
 /* ── the micro review ──────────────────────────────────────────────────── */
+// Strict JSON (no extra keys, every key required) so the structured-output
+// ladder in callModel can enforce it. "teach" is the beginner's layer: every
+// input the trade used with its value, its meaning and what it meant here, and
+// every term the review uses with a one-line meaning. The app has no tooltips,
+// so this is the only explanation Ben gets.
 const PM_SCHEMA: J = {
   type: "object", additionalProperties: false,
-  required: ["what_happened", "why", "thesis_right", "timing_right", "sizing_right", "rules_followed", "verdict", "grade", "quadrant", "tags", "lesson", "lesson_key", "text"],
+  required: ["what_happened", "why", "thesis_right", "timing_right", "sizing_right", "rules_followed", "verdict", "grade", "quadrant", "tags", "lesson", "lesson_key", "text", "teach"],
   properties: {
     what_happened: { type: "string" }, why: { type: "string" },
     thesis_right: { type: "boolean" }, timing_right: { type: "boolean" }, sizing_right: { type: "boolean" }, rules_followed: { type: "boolean" },
@@ -321,6 +330,13 @@ const PM_SCHEMA: J = {
     quadrant: { type: "string", enum: ["earned", "bad_luck", "dumb_luck", "deserved"] },
     tags: { type: "array", items: { type: "string", enum: ["chased", "no_catalyst", "ignored_calendar", "stop_too_tight", "size_too_big", "leverage_too_high", "thesis_vague", "wrong_instrument", "moved_stop", "held_past_time", "funding_ignored", "luck", "none"] } },
     lesson: { type: "string" }, lesson_key: { type: "string" }, text: { type: "string" },
+    teach: {
+      type: "object", additionalProperties: false, required: ["inputs", "terms"],
+      properties: {
+        inputs: { type: "array", items: { type: "object", additionalProperties: false, required: ["name", "value", "meaning", "why"], properties: { name: { type: "string" }, value: { type: "string" }, meaning: { type: "string" }, why: { type: "string" } } } },
+        terms: { type: "array", items: { type: "object", additionalProperties: false, required: ["term", "meaning"], properties: { term: { type: "string" }, meaning: { type: "string" } } } },
+      },
+    },
   },
 };
 // What the jury said at the time, the headlines while the trade was held, and what the strategy's
@@ -332,7 +348,7 @@ async function tradeContext(uid: string, t: J): Promise<{ jury: string; headline
     const ballots = (Array.isArray(d?.ballots) ? (d!.ballots as J[]) : []).filter((b) => !b.error && b.stance);
     const v = (d?.verdict as J) ?? null;
     jury = [...ballots.map((b) => `${b.model} (${b.role ?? "worker"}): ${b.stance} at ${(num(b.confidence) * 100).toFixed(0)}%${b.thesis ? ` — ${str(b.thesis, 300)}` : ""}${b.wrong_if ? ` (wrong if: ${str(b.wrong_if, 160)})` : ""}${Array.isArray(b.checked) && (b.checked as string[]).length ? ` [looked at ${(b.checked as string[]).join(", ")}]` : ""}`),
-      ...(v ? [`the frontier ${v.model}${v.acting ? " (a senior worker acting for a silent frontier)" : ""}: ${v.action}${v.risk_pct ? ` at ${v.risk_pct}% risk` : ""}${v.leverage && num(v.leverage) > 1 ? `, ${v.leverage}x` : ""} — ${str(v.reason, 400)}`] : [])].join("\n");
+      ...(v ? [`the frontier ${v.model}${v.acting ? " (a crew member acting for a silent frontier)" : ""}: ${v.action}${v.risk_pct ? ` at ${v.risk_pct}% risk` : ""}${v.leverage && num(v.leverage) > 1 ? `, ${v.leverage}x` : ""} — ${str(v.reason, 400)}`] : [])].join("\n");
   } else if (t.sit_id) {
     const sR = await rest(`desk_sits?id=eq.${t.sit_id}&select=votes`);
     const votes = ((sR.ok ? (sR.json as J[]) : [])[0]?.votes as J[] | undefined) ?? [];
@@ -373,39 +389,61 @@ async function tradeContext(uid: string, t: J): Promise<{ jury: string; headline
 async function postmortem(uid: string, t: J, key: string): Promise<J> {
   const model = await smartModel();
   const pct = (v: unknown) => `${(num(v) * 100).toFixed(1)}%`;
-  const spy = num(t.spy_entry) > 0 && num(t.spy_exit) > 0 ? `SPY moved ${pct(num(t.spy_exit) / num(t.spy_entry) - 1)} over the same days.` : "";
+  const show = (v: unknown, unit = "") => (v === null || v === undefined || v === "" ? "not on file" : `${v}${unit}`);
+  const spy = num(t.spy_entry) > 0 && num(t.spy_exit) > 0 ? `SPY (the S&P 500 fund, the whole market in one ticker) moved ${pct(num(t.spy_exit) / num(t.spy_entry) - 1)} over the same days.` : "";
   const held = t.entry_at && t.exit_at ? (Date.parse(String(t.exit_at)) - Date.parse(String(t.entry_at))) / 3_600_000 : null;
   const ctx = await tradeContext(uid, t);
-  const system = `You are writing the micro review of one closed PAPER trade for Ben, 19, who is learning markets by watching this desk. Three parts, in plain words.
-"what_happened": two or three sentences on the path from entry to exit: where it went first, how far it ran against and for the trade (the excursions), how it ended, and what the headlines say was driving it.
-"why": one paragraph on the mechanism that made it work or fail: was the setup's reason still true, did the news overtake it, was the level wrong, was the clock wrong, did the jury's tightening help or hurt against the strategy's own book.
-Then separate WAS THE REASONING SOUND from DID IT MAKE MONEY: a winner on a broken thesis is luck; a loser on a sound thesis is variance. Grade the PROCESS (A–F) on its own: was the thesis specific and falsifiable, did the stop and target follow the rules, was the size right, did the exit follow the plan. "quadrant": earned = good process, good outcome; bad_luck = good process, bad outcome; dumb_luck = bad process, good outcome; deserved = bad process, bad outcome. "lesson": one transferable rule in the form "when X, do Y", no tickers, no dates. "lesson_key": a short kebab-case slug for that rule so repeats can be counted. "text": the verdict in under 120 words, blunt and concrete, no hedging, no disclaimers. Return ONLY JSON matching the schema.`;
+  const system = `You are writing the micro review of one closed PAPER trade for Ben, 19, a smart beginner who is learning markets by watching this desk. He reads only what you write: the app has no tooltips and no glossary, so this review is the only explanation he gets.
+HOW TO WRITE. Short sentences. Plain words. Every piece of trading lingo gets a parenthesis with its plain meaning the first time it appears in a field, like "ATR (average true range, the size of a typical daily move)", "funding (the fee longs and shorts pay each other on a perpetual every eight hours)", "R (the result measured in units of the planned risk: +2R made twice what the stop would have lost, -1R lost exactly the planned amount)". Apply this rule inside "what_happened", "why", "text", "lesson" and "teach" alike. Say what a number means, not only what it is. Never assume he knows a word.
+THE PARTS.
+"what_happened": two or three sentences on the path from entry to exit: where the price went first, how far it moved against the trade at its worst (the worst excursion) and in its favour at its best (the best excursion), how it ended (the stop, the target, the clock, or a request to close), and what the headlines say was driving it.
+"why": one short paragraph on the mechanism that made it work or fail: was the setup's reason still true while the trade was on, did the news overtake it, was the entry or the stop at the wrong level, was the time horizon wrong, and did the frontier's changes (a tighter stop or target, a lower leverage) help or hurt against the strategy's own rule-only book.
+Then separate WAS THE REASONING SOUND from DID IT MAKE MONEY: a winner on a broken thesis is luck; a loser on a sound thesis is variance (the normal swing of results around a good process). "thesis_right", "timing_right", "sizing_right", "rules_followed": true or false each. "verdict": held, broke or unclear, about the reasoning only. "grade": the PROCESS, A to F, on its own: was the thesis specific and testable, did the stop and target follow the rules, was the size right, did the exit follow the plan. "quadrant": earned = good process, good outcome; bad_luck = good process, bad outcome; dumb_luck = bad process, good outcome; deserved = bad process, bad outcome. "tags": what went wrong, from the list, or "none". "lesson": one transferable rule in the form "when X, do Y", no tickers, no dates. "lesson_key": a short kebab-case slug for that rule so repeats can be counted. "text": the verdict in under 140 words, blunt and concrete, no hedging, no disclaimers, the parenthesis rule still applied.
+"teach": the trade taken apart so he learns everything it used. "inputs" is every input this trade actually used, one entry each, from the ticket and the trade, in this order when present: the strategy and the rule that fired; the entry level; the stop and why it sits where it sits; the target and the reward-to-risk; the size (the percent of the book risked and the dollars at risk); for a perp, the leverage, the margin and the liquidation price; the catalyst or headline if there was one; for a perp, the funding rate; the workers' vote (how many said take, at what confidence); the frontier's reason for taking it; the time horizon. Leave out an input the trade did not have: a stock has no leverage, margin, liquidation or funding; a trade with no catalyst has none. In each entry "name" is the input in two or three words, "value" is the number or fact from the ticket in Ben's words with its units, "meaning" is what that input is in one plain sentence, and "why" is what it meant for this particular trade in one sentence. "terms" is every jargon word used anywhere in this review, each with a one-line plain meaning: RSI, EMA, ATR, perp, notional, margin, liquidation, funding, slippage, basis points, R multiple, stop, target, confluence, regime, drawdown, and any other term you used. Every term you used must be in the list.
+Return ONLY JSON matching the schema.`;
   let from = t.source === "sit" ? "an intraday sit" : "the nightly jury";
   if (String(t.owner).startsWith("team:")) { const tm = rows(await rest(`desk_teams?id=eq.${String(t.owner).slice(5)}&select=name,tier`))[0]; from = tm ? `team ${tm.name} (${tm.tier} league)` : "a team"; }
   else if (t.source === "league") from = "the champion team, mirrored to the desk";
   const closedBy = (t.review as J)?.closed_by ? ` Closed on request: ${str((t.review as J).closed_by, 200)}.` : "";
-  const user = `${t.symbol} ${t.side}${t.instrument === "crypto_perp" ? ` ${t.leverage}x perp` : ""} · template ${t.template ? `${t.template} ${templateName(num(t.template))}` : "none"} · regime ${t.regime} · from ${from}${t.strategy ? ` on a ${t.strategy} setup` : ""} · a ${t.timeframe ?? "swing"} trade${t.horizon_hours ? ` on a ${t.horizon_hours}-hour clock` : ""}${closedBy}
+  const perp = t.instrument === "crypto_perp";
+  // The ticket is everything code put into the order when it was written (book, risk, stop distance,
+  // reward-to-risk, size, leverage, margin, liquidation, funding, the vote count, the frontier's reason,
+  // the checks). The review teaches from it, so it goes in whole, clipped only for size.
+  const ticket = t.ticket && typeof t.ticket === "object" ? JSON.stringify(t.ticket).slice(0, 4000) : "";
+  const user = `THE TRADE
+${t.symbol} ${t.side}${perp ? ` ${t.leverage}x perp` : ""} · template ${t.template ? `${t.template} ${templateName(num(t.template))}` : "none"} · regime ${t.regime} · from ${from}${t.strategy ? ` on a ${t.strategy} setup` : ""} · a ${t.timeframe ?? "swing"} trade${t.horizon_hours ? ` on a ${t.horizon_hours}-hour clock` : ""}${closedBy}
 Entry ${t.entry_price} → exit ${t.exit_price} (${t.exit_reason}${t.ambiguous_bar ? ", both stop and target touched in one bar — stop assumed" : ""}). Stop ${t.stop}, target ${t.target}, horizon ${t.horizon_days}d, confidence stated ${pct(t.confidence)}.${held !== null ? ` Held ${held < 48 ? `${held.toFixed(1)} hours` : `${(held / 24).toFixed(1)} days`}.` : ""}
-P/L ${num(t.pnl).toFixed(2)} (${pct(t.pnl_pct)}), ${num(t.r_multiple).toFixed(2)}R. Worst excursion ${num(t.mae_r).toFixed(2)}R, best ${num(t.mfe_r).toFixed(2)}R. Fees ${num(t.fees).toFixed(2)}${t.instrument === "crypto_perp" ? `, funding ${num(t.funding).toFixed(2)}` : ""}. ${spy}
+Size as written: risk ${show(t.risk_pct, "%")} of the book, ${show(t.qty)} ${show(t.unit)}${num(t.contract_value, 1) !== 1 ? ` (each contract is ${t.contract_value} of the coin)` : ""}, notional ${show(t.notional)}, margin ${show(t.margin)}${perp ? `, leverage ${show(t.leverage, "x")}, liquidation price ${show(t.liq_price)}` : ""}. Slippage allowed ${show(t.slippage_bps, " bps")}.
+P/L ${num(t.pnl).toFixed(2)} (${pct(t.pnl_pct)}), ${num(t.r_multiple).toFixed(2)}R. Worst excursion ${num(t.mae_r).toFixed(2)}R, best ${num(t.mfe_r).toFixed(2)}R. Fees ${num(t.fees).toFixed(2)}${perp ? `, funding paid ${num(t.funding).toFixed(2)}` : ""}. ${spy}
 Catalyst: ${t.catalyst}
 Thesis: ${t.thesis}
 It would have been wrong if: ${t.falsifier}
 
-WHAT THE JURY SAID AT THE TIME
+THE TICKET (everything code put into the order when it was written; "workers" is the vote count and score, "frontier" the decision and its reason, "checks" the rules the order had to pass; null means not known or not applicable)
+${ticket || "(no ticket on file for this trade; use the numbers above)"}
+
+THE VOTES AT THE TIME (each worker's ballot with its confidence, then the frontier's call when there was one)
 ${ctx.jury || "(no ballots on record)"}
 
 HEADLINES WHILE IT WAS HELD (the day before entry to the exit)
 ${ctx.headlines || "(nothing tagged on this symbol; no high-impact macro)"}${ctx.shadow ? `\n\n${ctx.shadow}` : ""}`;
-  const res = await callModel(key, model, system, user, 3000, PM_SCHEMA);
+  const res = await callModel(key, model, system, user, 5000, PM_SCHEMA);
   const j = res.json ?? {};
   const tags = (Array.isArray(j.tags) ? (j.tags as string[]) : []).filter((x) => x !== "none").slice(0, 5);
+  // The teaching layer, tolerant of a model that skips a piece: whatever is there is kept, clipped and capped.
+  const tj = j.teach && typeof j.teach === "object" && !Array.isArray(j.teach) ? (j.teach as J) : {};
+  const teach = {
+    inputs: (Array.isArray(tj.inputs) ? (tj.inputs as unknown[]) : []).filter((x) => x && typeof x === "object").map((x) => { const i = x as J; return { name: str(i.name, 240), value: str(i.value, 240), meaning: str(i.meaning, 240), why: str(i.why, 240) }; }).filter((i) => i.name).slice(0, 12),
+    terms: (Array.isArray(tj.terms) ? (tj.terms as unknown[]) : []).filter((x) => x && typeof x === "object").map((x) => { const i = x as J; return { term: str(i.term, 160), meaning: str(i.meaning, 160) }; }).filter((i) => i.term).slice(0, 20),
+  };
   const review: J = {
-    what_happened: str(j.what_happened, 700), why: str(j.why, 900),
+    what_happened: str(j.what_happened, 900), why: str(j.why, 1100),
     thesis_right: j.thesis_right === true, timing_right: j.timing_right === true, sizing_right: j.sizing_right === true, rules_followed: j.rules_followed !== false,
     verdict: ["held", "broke", "unclear"].includes(String(j.verdict)) ? String(j.verdict) : "unclear",
     grade: ["A", "B", "C", "D", "F"].includes(String(j.grade)) ? String(j.grade) : "",
     quadrant: ["earned", "bad_luck", "dumb_luck", "deserved"].includes(String(j.quadrant)) ? String(j.quadrant) : "",
     tags, lesson: str(j.lesson, 300), lesson_key: str(j.lesson_key, 60).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-|-$/g, ""),
+    teach,
     text: str(j.text, 1200) || (res.error ? `The review could not be written (${res.error}).` : ""), model, cost: res.cost,
   };
   if (review.lesson && review.lesson_key) await recordLesson(uid, String(review.lesson_key), String(review.lesson), { template: num(t.template), instrument: String(t.instrument), strategy: str(t.strategy, 40), timeframe: str(t.timeframe, 12), source: str(t.source, 12) }, String(t.id));
@@ -507,16 +545,15 @@ function cellStats(c: Cell) {
 async function coach(uid: string, key: string, today: string, acct: J): Promise<J> {
   const s = leagueSettings(acct.league as Partial<LeagueSettings>);
   const dayStart = `${today}T04:00:00Z`;
-  const [teamsR, tradesR, decR, councilR, seasonR, ratR, stratR] = await Promise.all([
+  const [teamsR, tradesR, decR, seasonR, ratR, stratR] = await Promise.all([
     rest(`desk_teams?user_id=eq.${uid}&select=*&order=formed_at.asc`),
     rest(`desk_trades?user_id=eq.${uid}&owner=like.team:*&select=id,owner,symbol,side,strategy,timeframe,status,pnl,r_multiple,exit_reason,exit_at,review&order=created_at.desc&limit=3000`),
     rest(`desk_decisions?user_id=eq.${uid}&created_at=gte.${dayStart}&select=team_id,kind,outcome,cost_usd&limit=3000`),
-    rest(`desk_councils?user_id=eq.${uid}&day=eq.${today}&select=team_id,kicked,replaced_by,reason,cost_usd`),
     rest(`desk_seasons?user_id=eq.${uid}&select=*&order=n.desc&limit=3`),
     rest(`desk_ratings?user_id=eq.${uid}&select=model,elo,n_sits,n_sit_right,brier_sum,brier_n`),
     rest(`desk_trades?user_id=eq.${uid}&owner=like.strat:*&status=eq.closed&select=owner,pnl,r_multiple&limit=3000`),
   ]);
-  const teams = rows(teamsR), trades = rows(tradesR), decs = rows(decR), councils = rows(councilR), seasons = rows(seasonR), ratings = rows(ratR), stratTrades = rows(stratR);
+  const teams = rows(teamsR), trades = rows(tradesR), decs = rows(decR), seasons = rows(seasonR), ratings = rows(ratR), stratTrades = rows(stratR);
   const nameOf = (id: string) => String(teams.find((t) => String(t.id) === id)?.name ?? id.slice(0, 8));
   const teamLikes: TeamLike[] = teams.map((t) => ({ id: String(t.id), frontier: String(t.frontier), workers: Array.isArray(t.workers) ? (t.workers as string[]) : [], status: t.status === "dead" ? "dead" : "live", return_pct: num(t.return_pct), formed_at: String(t.formed_at ?? "") }));
   const daysBetween = (from: string, to: string) => Math.max(0, Math.round((Date.parse(to + "T12:00:00Z") - Date.parse(from.slice(0, 10) + "T12:00:00Z")) / 86_400_000));
@@ -532,7 +569,7 @@ async function coach(uid: string, key: string, today: string, acct: J): Promise<
       id, name: String(t.name), tier: String(t.tier), rank: 0, status: String(t.status), frontier: String(t.frontier), workers: Array.isArray(t.workers) ? t.workers : [], seniors: Array.isArray(t.seniors) ? t.seniors : [],
       return_pct: num(t.return_pct), rank_score: num(stats.rank_score, num(t.return_pct)), passive_days: num(stats.passive_days), equity: num(t.equity), days_alive: daysBetween(String(t.formed_at), today),
       open: trades.filter((x) => x.owner === `team:${id}` && (x.status === "open" || x.status === "pending")).length,
-      decisions: reads.length, takes, passes: reads.length - takes, closes: mine.filter((d) => d.kind === "close").length, kicks: councils.filter((c) => String(c.team_id) === id && c.kicked).length,
+      decisions: reads.length, takes, passes: reads.length - takes, closes: mine.filter((d) => d.kind === "close").length,
       death_reason: str(t.death_reason, 200),
     };
   }).sort((a, b) => (a.status === "dead" ? 1 : 0) - (b.status === "dead" ? 1 : 0) || tierOrder[a.tier] - tierOrder[b.tier] || b.rank_score - a.rank_score);
@@ -555,20 +592,20 @@ async function coach(uid: string, key: string, today: string, acct: J): Promise<
     const rv = (x.review as J) ?? {};
     return { team: nameOf(String(x.owner).slice(5)), symbol: x.symbol, side: x.side, strategy: x.strategy || "session idea", timeframe: x.timeframe || "swing", r: num(x.r_multiple), pnl: num(x.pnl), exit: x.exit_reason, closed: String(x.exit_at ?? "").slice(0, 16), quadrant: rv.quadrant ?? "", grade: rv.grade ?? "", lesson: str(rv.lesson, 160), why: str(rv.why, 240) };
   });
-  const liveSeats = (m: string) => teams.filter((t) => t.status === "live" && (t.frontier === m || (Array.isArray(t.workers) && (t.workers as string[]).includes(m)))).length;
-  const pool = [...s.frontier_pool.map((m) => ({ m, role: "frontier" })), ...s.worker_pool.map((m) => ({ m, role: "worker" }))].map(({ m, role }) => {
+  // Every team shares the same crew of workers, so only the frontiers have a standing of their own.
+  const leading = (m: string) => teams.filter((t) => t.status === "live" && t.frontier === m).length;
+  const pool = s.frontier_pool.map((m) => {
     const r = ratings.find((x) => x.model === m);
-    return { model: m, role, standing: poolStanding(m, teamLikes), live_teams: liveSeats(m), elo: r ? num(r.elo, 1500) : 1500, brier: r && num(r.brier_n) ? num(r.brier_sum) / num(r.brier_n) : null, sits: r ? num(r.n_sits) : 0, sit_right: r && num(r.n_sits) ? num(r.n_sit_right) / num(r.n_sits) : null };
+    return { model: m, role: "frontier", standing: poolStanding(m, teamLikes), live_teams: leading(m), elo: r ? num(r.elo, 1500) : 1500, brier: r && num(r.brier_n) ? num(r.brier_sum) / num(r.brier_n) : null, sits: r ? num(r.n_sits) : 0, sit_right: r && num(r.n_sits) ? num(r.n_sit_right) / num(r.n_sits) : null };
   });
   const running = seasons.find((x) => x.status === "running") ?? null;
   const lastDone = seasons.find((x) => x.status === "done" && x.champion_team) ?? null;
   const season = running ? { n: num(running.n), day_of: daysBetween(String(running.start_day), today) + 1, days: s.season_days, start_day: String(running.start_day), end_day: String(running.end_day), champion: lastDone ? nameOf(String(lastDone.champion_team)) : null } : null;
-  const spend = decs.reduce((a, d) => a + num(d.cost_usd), 0) + councils.reduce((a, c) => a + num(c.cost_usd), 0);
+  const spend = decs.reduce((a, d) => a + num(d.cost_usd), 0);
   const card: J = {
     as_of: today, day: today, season, teams: teamCards,
     dead_today: teams.filter((t) => String(t.died_at ?? "") >= dayStart).map((t) => ({ name: t.name, reason: str(t.death_reason, 200), return_pct: num(t.return_pct) })),
     formed_today: teams.filter((t) => String(t.formed_at ?? "") >= dayStart).map((t) => ({ name: t.name, frontier: t.frontier, workers: t.workers })),
-    councils_today: councils.map((c) => ({ team: nameOf(String(c.team_id)), kicked: c.kicked ?? null, replaced_by: c.replaced_by ?? null, reason: str(c.reason, 300) })),
     by_strategy: cells("strategy"), by_tier: cells("tier"), strategy_books: cells("book"), pool, trades: recent, spend_today: Number(spend.toFixed(3)),
     rules: { death_pct: s.death_pct, min_takes_day: s.min_takes_day, min_heat_pct: s.min_heat_pct, passive_penalty_pct: s.passive_penalty_pct, season_days: s.season_days },
   };
@@ -576,10 +613,11 @@ async function coach(uid: string, key: string, today: string, acct: J): Promise<
   let cost = 0;
   if (teams.length) {
     const model = await smartModel();
-    const system = `You are the daily macro review of a paper-trading tournament run by Ben, 19, who is learning markets. Nine teams, each one frontier model that decides and four worker models that research and vote, run a $100k paper book each. The tiers rank by ranked return (percent return less ${s.passive_penalty_pct}% for every passive day): the top three are Diamond, the next three Gold, the rest Bronze. Every day the worst team in Bronze is replaced by a set of models never used before; a team ${s.death_pct}% below its start dies at once; a team that takes fewer than ${s.min_takes_day} trades in a day and keeps less than ${s.min_heat_pct}% of its book at risk is playing to survive and is cut first. Each team's council (frontier plus two senior workers) can kick a member daily. The objective is to make as much as possible; survival alone ranks nothing.
-You are handed the measured record: the standings ("teams", with days alive, takes and passes today, kicks, passive days), who died and who formed today, today's councils, the teams' closed trades grouped by strategy (with each strategy's rule-only book beside it in "strategy_books", so the gap is what the teams add or cost) and by tier, the pool's standings (mean return of the teams a model has been on; Elo and Brier from its scored votes), the last closed trades with their micro reviews, and today's spend. Mean R is shrunk toward zero for small samples; "too few to trust" means exactly that.
-Write about 350 words in four short parts with these headings on their own lines: WHAT IS WORKING, WHAT IS NOT, WHAT THESE TRADES TEACH, HOW TO PROCEED. Reason across teams and days: which frontiers and which worker combinations are winning and why, which strategies pay in which tier, what the dead did wrong, who is playing to survive, where the councils were right or wrong. In HOW TO PROCEED be concrete: which teams look like champions, which councils should kick whom and who from the pool deserves a seat, one rule to add or change, and what is still too thin to judge. Numbers, not adjectives. Plain words, no advice framing, no hedging boilerplate. Never tell him what to do with real money.`;
-    const res = await callModel(key, model, system, JSON.stringify(card).slice(0, 18000), 1700);
+    const system = `You are the daily review of a paper-trading tournament run by Ben, 19, a smart beginner who is learning markets by watching it. He reads only what you write: the app has no tooltips and no glossary, so every piece of trading lingo gets a parenthesis with its plain meaning the first time it appears, like "drawdown (how far the book has fallen from its high)", "R (a result measured in units of the planned risk: +2R made twice what the stop would have lost)", "Brier (how well a model's stated confidence matched what happened; lower is better)", "Elo (a rating that rises by beating rated opponents, here the models that voted the other way)". Short sentences. Plain words. Numbers, not adjectives. Never assume he knows a word.
+THE TOURNAMENT. Nine teams. Each team is one frontier model (a strong, expensive model) that makes the decisions, and every team shares the same crew of four cheap worker models that research each candidate and vote take or pass. The teams differ only in the frontier, so the tournament is a test of which frontier decides best on the same information. Each team runs its own $100k paper book (pretend money at real prices). The tiers rank by ranked return (the percent return less ${s.passive_penalty_pct}% for every passive day): the top three are Diamond, the next three Gold, the rest Bronze. A team ${s.death_pct}% below its start dies at once and its frontier starts again with a fresh book and a death on its record; a team that takes fewer than ${s.min_takes_day} trades in a day and keeps less than ${s.min_heat_pct}% of its book at risk is passive (playing to survive), and every passive day docks ${s.passive_penalty_pct}% from its ranked return. Nothing is cut: the tiers are re-ranked every day at 16:06 New York time and the season's champion is the top team on the last day. The objective is to make as much as possible; survival alone ranks nothing.
+WHAT YOU ARE HANDED. The measured record: the standings ("teams", each with its frontier, days alive, takes and passes today, passive days), who died and who formed today, the teams' closed trades grouped by strategy and by tier, with each strategy's rule-only book beside it in "strategy_books" (the book that takes every setup the rule fires with no model in the loop, so the gap between the two is what the frontiers add or cost), the frontier pool's standings (the mean ranked return of the teams each frontier has led; its Elo and Brier from its scored decisions), the last closed trades with their micro reviews, and today's spend on model calls. In the grouped cells: "hit" is the share of trades that won, "mean_r" the average result in units of planned risk, "shrunk_r" that average pulled toward zero for small samples, "profit_factor" dollars won divided by dollars lost, "t" how many standard errors the average sits from zero (past 2 it is unlikely to be luck); "too few to trust" means exactly that.
+WRITE about 400 words in four short parts with these headings on their own lines: WHAT IS WORKING, WHAT IS NOT, WHAT THESE TRADES TEACH, HOW TO PROCEED. Reason across teams and days: which frontiers are winning and why, which strategies pay in which tier, what the dead did wrong, who is playing to survive, where the frontiers beat or lagged the rule-only books. In WHAT THESE TRADES TEACH, take two or three trades from the list and walk through what they used and what the result says, the way a patient coach would. In HOW TO PROCEED be concrete: which teams look like champions, which frontiers deserve a seat and which do not, one rule to add or change, and what is still too thin to judge. Plain words, no advice framing, no hedging boilerplate. Never tell him what to do with real money.`;
+    const res = await callModel(key, model, system, JSON.stringify(card).slice(0, 18000), 2200);
     review = res.text || (res.error ? `The review could not be written today (${res.error}).` : "");
     cost = res.cost;
   } else review = "No teams yet. Form them under League and the review writes itself from the first day's record.";

@@ -43,6 +43,7 @@ export type Account = {
   sit_roster: string[]; sit_budget_usd: number; cooldown_hours: number; strategies_off: string[];
   bench: string[]; sit_bench: string[]; cut_rules: Partial<CutRules>;
   league: Partial<LeagueSettings>;
+  learned_terms: string[]; // glossary ids Ben has tapped "got it" on; the parenthesis stops showing for these
 };
 
 const n = (v: unknown, d = 0) => { const x = Number(v); return Number.isFinite(x) ? x : d; };
@@ -60,6 +61,7 @@ function toAccount(row: Record<string, unknown>): Account {
     bench: Array.isArray(row.bench) ? (row.bench as string[]) : [], sit_bench: Array.isArray(row.sit_bench) ? (row.sit_bench as string[]) : [],
     cut_rules: (row.cut_rules as Partial<CutRules>) ?? {},
     league: (row.league as Partial<LeagueSettings>) ?? {},
+    learned_terms: Array.isArray(row.learned_terms) ? (row.learned_terms as unknown[]).map(String) : [],
   };
 }
 
@@ -258,7 +260,7 @@ export async function loadRosterLog(uid: string, limit = 20): Promise<{ log: Ros
 }
 
 /* ── settings ───────────────────────────────────────────────────────────── */
-export type AccountPatch = { preset?: PresetKey; roster?: string[]; judge?: string; budget_usd_per_run?: number; leverage_cap_override?: number | null; rules?: Partial<Rules>; sit_roster?: string[]; sit_budget_usd?: number; cooldown_hours?: number; strategies_off?: string[]; bench?: string[]; sit_bench?: string[]; league?: Partial<LeagueSettings> };
+export type AccountPatch = { preset?: PresetKey; roster?: string[]; judge?: string; budget_usd_per_run?: number; leverage_cap_override?: number | null; rules?: Partial<Rules>; sit_roster?: string[]; sit_budget_usd?: number; cooldown_hours?: number; strategies_off?: string[]; bench?: string[]; sit_bench?: string[]; league?: Partial<LeagueSettings>; learned_terms?: string[] };
 export async function updateAccount(uid: string, patch: AccountPatch): Promise<{ error: string }> {
   const { error } = await supabase.from("desk_accounts").update(patch).eq("user_id", uid);
   return { error: error ? "Couldn't save the desk settings." : "" };
@@ -395,6 +397,9 @@ export async function loadSitVotes(ids: string[]): Promise<{ votes: Record<strin
 }
 
 /* ── phase 7: the leagues ─────────────────────────────────────────────── */
+// A team is one frontier that decides plus the crew every team shares. `combo` is the team's
+// key (the frontier and which of its lives this is). `seniors` only exists on rows from before
+// the crew was shared; nothing renders it.
 export type TeamRow = {
   id: string; name: string; frontier: string; workers: string[]; seniors: string[]; combo: string; tier: Tier; status: "live" | "dead"; season: number;
   formed_at: string; died_at: string | null; death_reason: string; start_equity: number; equity: number; peak: number; return_pct: number; marked_at: string | null;
@@ -421,7 +426,7 @@ export type Ballot = {
   stop: number | null; target: number | null; leverage: number | null; tags: string[]; checked: string[]; error: string; cost_usd: number; latency_ms: number;
 };
 export type TeamVerdict = { action: "take" | "pass" | "close" | "tighten" | "hold"; reason: string; risk_pct?: number; leverage?: number; stop?: number; target?: number; model: string; error?: string; acting?: boolean };
-export type DecisionKind = "candidate" | "session" | "close" | "council";
+export type DecisionKind = "candidate" | "session" | "close";
 export type DecisionRow = {
   id: string; team_id: string; kind: DecisionKind; setup_id: string | null; symbol: string; strategy: string; timeframe: string; status: "launched" | "done" | "failed";
   brief: Record<string, unknown>; ballots: Ballot[]; verdict: TeamVerdict | null; outcome: Record<string, unknown> | null; cost_usd: number; created_at: string; updated_at: string;
@@ -451,21 +456,6 @@ export async function loadDecisions(uid: string, opts: { teamId?: string; setupI
   const { data, error } = await q;
   if (error) return { decisions: [], error: "Couldn't load the decisions." };
   return { decisions: ((data ?? []) as Record<string, unknown>[]).map(toDecision), error: "" };
-}
-
-export type CouncilVote = { model: string; role: string; votes: { member: string; vote: "kick" | "keep"; reason: string }[]; error?: string };
-export type CouncilRow = { id: string; team_id: string; day: string; votes: CouncilVote[]; kicked: string | null; replaced_by: string | null; reason: string; cost_usd: number; created_at: string };
-export async function loadCouncils(uid: string, opts: { teamId?: string; limit?: number } = {}): Promise<{ councils: CouncilRow[]; error: string }> {
-  let q = supabase.from("desk_councils").select("*").eq("user_id", uid).order("created_at", { ascending: false }).limit(opts.limit ?? 60);
-  if (opts.teamId) q = q.eq("team_id", opts.teamId);
-  const { data, error } = await q;
-  if (error) return { councils: [], error: "Couldn't load the councils." };
-  return {
-    councils: ((data ?? []) as Record<string, unknown>[]).map((x) => ({
-      id: String(x.id), team_id: String(x.team_id), day: String(x.day), votes: Array.isArray(x.votes) ? (x.votes as CouncilVote[]) : [], kicked: x.kicked ? String(x.kicked) : null,
-      replaced_by: x.replaced_by ? String(x.replaced_by) : null, reason: String(x.reason ?? ""), cost_usd: n(x.cost_usd), created_at: String(x.created_at ?? ""),
-    })), error: "",
-  };
 }
 
 export type SeasonRow = { id: string; n: number; start_day: string; end_day: string; champion_team: string | null; status: "running" | "done" };

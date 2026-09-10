@@ -1,9 +1,9 @@
 "use client";
 
 // Every decision this team has made, newest first. A candidate is a setup the
-// scan flagged and the four workers read; a session is the frontier's own
-// review of what it already holds; a close is the frontier calling a position
-// off; a council is the daily vote on the team's own members.
+// scan flagged and the shared crew read; a session is the frontier's own
+// review of what it already holds and of the crew's ideas; a close is the
+// frontier calling a position off.
 
 import { useCallback, useEffect, useState } from "react";
 import { Pill } from "../ui";
@@ -11,11 +11,11 @@ import DecisionCard from "./DecisionCard";
 import { Note } from "./LeagueBits";
 import { loadDecisions, type DecisionRow, type TeamRow } from "@/lib/desk/api";
 
-type Filter = "all" | "taken" | "passed" | "closes" | "sessions" | "council";
+type Filter = "all" | "taken" | "passed" | "closes" | "sessions";
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: "all", label: "All" }, { key: "taken", label: "Taken" }, { key: "passed", label: "Passed" },
-  { key: "closes", label: "Closes" }, { key: "sessions", label: "Sessions" }, { key: "council", label: "Council" },
+  { key: "closes", label: "Closes" }, { key: "sessions", label: "Sessions" },
 ];
 
 const MEANING: Record<Filter, string> = {
@@ -23,8 +23,7 @@ const MEANING: Record<Filter, string> = {
   taken: "The candidates where the frontier said take, and a position was opened.",
   passed: "The candidates the team read and left alone. Most of them are these.",
   closes: "Positions the frontier decided to close before the stop or the target got there.",
-  sessions: "The scheduled reviews, where the frontier looks over everything it holds.",
-  council: "The daily vote inside the team on whether to kick one of its own.",
+  sessions: "The scheduled reviews, where the frontier looks over everything it holds and the crew's new ideas.",
 };
 
 const took = (d: DecisionRow) => d.outcome !== null && (d.outcome as Record<string, unknown>).taken === true;
@@ -49,8 +48,7 @@ export default function TeamDecisions({ uid, team }: { uid: string; team: TeamRo
     if (filter === "taken") return (d.kind === "candidate" || d.kind === "session") && took(d);
     if (filter === "passed") return (d.kind === "candidate" || d.kind === "session") && !took(d);
     if (filter === "closes") return d.kind === "close";
-    if (filter === "sessions") return d.kind === "session";
-    return d.kind === "council";
+    return d.kind === "session";
   });
 
   return (

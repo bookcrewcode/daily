@@ -57,7 +57,10 @@ Deno.serve(async (req) => {
     // The quarter-hour: the feed and the scan run in their own invocations.
     const minute = new Date().getUTCMinutes();
     const quarter = minute % 15 === 1 || body.force === true;
-    if (quarter && body.feed !== false) { launch("desk-feed", { mode: "ingest", userId: uid }); out.feed = "launched"; }
+    // the feed tagger (a model call per headline) sleeps 22:00 to 09:00 New York time, when no team takes new decisions; the scan and the sync never sleep
+    const etHour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hourCycle: "h23" }).format(new Date()));
+    const feedOpen = etHour >= 9 && etHour < 22;
+    if (quarter && feedOpen && body.feed !== false) { launch("desk-feed", { mode: "ingest", userId: uid }); out.feed = "launched"; }
     if (quarter && body.scan !== false) { launch("desk-scan", { mode: "scan", userId: uid }); out.scan = "launched"; }
     out.ms = Date.now() - t0;
     return ok(out);

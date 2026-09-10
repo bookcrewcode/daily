@@ -1,8 +1,9 @@
 "use client";
 
-// Everything around the tiers: the models waiting on the sideline, the teams
+// Everything around the tiers: the crew every team shares and how each of its
+// models is scoring, the frontier pool and each frontier's standing, the teams
 // that have already died, Ben's own desk, the rule-only strategy books that
-// every team is measured against, and the log of who came and went.
+// every team is measured against, and the log of teams formed and lost.
 
 import { Card, SectionTitle } from "../ui";
 import Book from "./Book";
@@ -20,15 +21,20 @@ export default function LeagueSide({ uid, account, curve, live, today, onChanged
   latest: Record<string, { day: string; equity: number }>;
 }) {
   const rated = new Map(ratings.map((r) => [r.model, r]));
-  const seated = new Set<string>();
-  for (const t of teams) if (t.status === "live") { seated.add(t.frontier); for (const w of t.workers) seated.add(w); }
+  const record = (m: string) => {
+    const r = rated.get(m);
+    const votes = r?.n_sits ?? 0;
+    return `elo ${Math.round(r?.elo ?? 1500)} · ${votes} scored vote${votes === 1 ? "" : "s"}${r && votes > 0 ? ` · right ${((r.n_sit_right / votes) * 100).toFixed(0)}%` : ""} · Brier ${r?.brier === null || r?.brier === undefined ? "—" : r.brier.toFixed(2)}`;
+  };
 
-  const pool = [...new Set([...settings.frontier_pool, ...settings.worker_pool])];
-  const sideline = pool.filter((m) => !seated.has(m)).map((m) => ({
+  // The crew as the live teams actually carry it; the settings until a team exists.
+  const liveTeams = teams.filter((t) => t.status === "live");
+  const crew = liveTeams[0]?.workers.length ? liveTeams[0].workers : settings.worker_pool;
+  const frontiers = settings.frontier_pool.map((m) => ({
     model: m,
-    role: settings.frontier_pool.includes(m) && settings.worker_pool.includes(m) ? "frontier or worker pool" : settings.frontier_pool.includes(m) ? "frontier pool" : "worker pool",
+    leads: liveTeams.filter((t) => t.frontier === m).map((t) => t.name).filter(Boolean),
+    lives: teams.filter((t) => t.frontier === m).length,
     standing: poolStanding(m, teamLikes),
-    r: rated.get(m) ?? null,
   })).sort((a, b) => (b.standing ?? -999) - (a.standing ?? -999) || modelLabel(a.model).localeCompare(modelLabel(b.model)));
 
   const dead = teams.filter((t) => t.status === "dead").sort((a, b) => String(b.died_at ?? "").localeCompare(String(a.died_at ?? "")));
@@ -36,33 +42,42 @@ export default function LeagueSide({ uid, account, curve, live, today, onChanged
 
   return (
     <>
-      <SectionTitle>The sideline</SectionTitle>
+      <SectionTitle>The crew</SectionTitle>
       <Card>
         <Note>
-          Every model in the pools that is not on a live team right now. When a team dies, or a council kicks someone, the replacement comes from here. Pool standing is the mean percent return of the teams a model has been on, living or dead — a frontier&apos;s teams count in full, a worker&apos;s at half, because a worker only votes. A model that has never been on a team has no standing yet.
+          The same {crew.length} cheap models research every candidate once, for every team, and vote take or pass; only the frontier differs between teams. Elo starts at 1500 and rises when a worker is right where others were wrong. Scored votes are the votes that have since played out, and right is how often the side it voted for paid. Brier is how honest its confidence was: 0 is perfect, 0.25 is coin-flipping.
         </Note>
-        {sideline.length === 0 ? (
-          <Note className="mt-2">Nobody is sitting out: every model in both pools is on a live team.</Note>
-        ) : (
-          <div className="mt-2.5 space-y-1.5">
-            {sideline.map((s) => (
-              <div key={s.model} className="flex items-center gap-2 flex-wrap">
-                <Member model={s.model} note={s.role} />
-                <span className="mono text-[10.5px] font-semibold ml-auto" style={{ color: s.standing === null ? "var(--text-4)" : tone(s.standing) }}>
-                  {s.standing === null ? "no standing yet" : `${s.standing >= 0 ? "+" : ""}${s.standing.toFixed(2)}%`}
-                </span>
-                <span className="mono text-[9px] text-[var(--text-4)] w-full pl-1">
-                  elo {Math.round(s.r?.elo ?? 1500)} · {s.r?.n_sits ?? 0} scored votes{s.r && s.r.n_sits > 0 ? ` · right ${((s.r.n_sit_right / s.r.n_sits) * 100).toFixed(0)}%` : ""} · Brier {s.r?.brier === null || s.r?.brier === undefined ? "—" : s.r.brier.toFixed(2)}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
+        <div className="mt-2.5 space-y-1.5">
+          {crew.map((m) => (
+            <div key={m} className="flex items-center gap-2 flex-wrap">
+              <Member model={m} note="crew" />
+              <span className="mono text-[9px] text-[var(--text-4)] w-full pl-1">{record(m)}</span>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <SectionTitle>The frontier pool</SectionTitle>
+      <Card>
+        <Note>
+          Every strong model that leads a team, and how it is doing across every team it has led. Standing is the mean ranked return of those teams, living or dead; a frontier that has never led a team has no standing yet. Lives is how many teams it has led: a frontier whose team dies comes straight back with a new one.
+        </Note>
+        <div className="mt-2.5 space-y-1.5">
+          {frontiers.map((f) => (
+            <div key={f.model} className="flex items-center gap-2 flex-wrap">
+              <Member model={f.model} note={f.leads.length ? `leads ${f.leads.join(", ")}` : "no team right now"} />
+              <span className="mono text-[10.5px] font-semibold ml-auto" style={{ color: f.standing === null ? "var(--text-4)" : tone(f.standing) }}>
+                {f.standing === null ? "no standing yet" : `${f.standing >= 0 ? "+" : ""}${f.standing.toFixed(2)}%`}
+              </span>
+              <span className="mono text-[9px] text-[var(--text-4)] w-full pl-1">{f.lives} {f.lives === 1 ? "life" : "lives"} · {record(f.model)}</span>
+            </div>
+          ))}
+        </div>
       </Card>
 
       <SectionTitle>The graveyard</SectionTitle>
       <Card>
-        <Note>Every team that has died, newest first. A dead team&apos;s set of members can never be used again, so the graveyard is also the list of combinations that are gone for good.</Note>
+        <Note>Every team that has died, newest first. A dead team keeps its record, and its frontier comes straight back with a new life: a fresh {fmtMoney(SHADOW_START)} book and the next numeral after its name.</Note>
         {dead.length === 0 ? (
           <Note className="mt-2">Nobody has died yet.</Note>
         ) : (
@@ -77,7 +92,7 @@ export default function LeagueSide({ uid, account, curve, live, today, onChanged
                     <span className="mono text-[9px] text-[var(--text-4)]">{t.died_at ? dayLabel(t.died_at) : ""}</span>
                   </div>
                   <p className="text-[10.5px] text-[var(--text-3)] mt-1 leading-snug">
-                    {modelLabel(t.frontier)} with {t.workers.map(modelLabel).join(", ") || "no workers"}
+                    {modelLabel(t.frontier)} decided, on the shared crew.
                   </p>
                   <p className="text-[10.5px] text-[var(--text-4)] mt-0.5 leading-snug">
                     Finished at {fmtMoney(t.equity)}. {t.death_reason || "No reason was recorded."}
@@ -123,15 +138,16 @@ export default function LeagueSide({ uid, account, curve, live, today, onChanged
 
       <SectionTitle>The log</SectionTitle>
       <Card>
-        <Note>Every seat that changed hands, newest first: which team, what happened, who left and who came in.</Note>
+        <Note>Every team that was formed, died or came back, newest first: which team, what happened, and why.</Note>
         {log.length === 0 ? (
-          <Note className="mt-2">Nothing has changed hands yet.</Note>
+          <Note className="mt-2">Nothing has happened yet.</Note>
         ) : (
           <div className="mt-1.5">
             {log.map((x) => (
+              // Rows from before the crew was shared may still carry the old actions; they are coloured, not renamed.
               <p key={x.id} className="text-[11px] leading-snug py-1.5 border-t border-[var(--border-1)]">
                 <span className="mono text-[9px] text-[var(--text-4)]">{timeLabel(x.at)}</span>{" "}
-                <span className="mono text-[9px] uppercase" style={{ color: x.action === "cut" || x.action === "kick" ? "var(--bad)" : x.action === "notice" ? "var(--warn)" : "var(--text-4)" }}>{x.action}</span>{" "}
+                <span className="mono text-[9px] uppercase" style={{ color: ["cut", "died", "dead", "kick"].includes(x.action) ? "var(--bad)" : x.action === "notice" ? "var(--warn)" : "var(--text-4)" }}>{x.action}</span>{" "}
                 <span className="font-semibold">{x.model ? modelLabel(x.model) : "—"}</span>
                 {x.seat ? <span className="text-[var(--text-4)]"> ({x.seat})</span> : null}
                 {x.replaced_by ? <> → {modelLabel(x.replaced_by)}</> : null}

@@ -1,15 +1,17 @@
 "use client";
 
 // Macro review — the daily read across the whole tournament, not one trade:
-// three leagues of three teams, each a frontier model that decides and four
-// workers that research and vote, each with its own $100,000 paper book. Who
-// is alive, who died, who was formed, who was kicked, which strategies are
-// paying, how the models themselves are standing, and the trades the review
-// actually read. Written every morning, or on demand here. Every label is
-// explained where it sits; nothing here is money anyone can lose.
+// three leagues of three teams, each one frontier model that decides on the
+// crew every team shares, each with its own $100,000 paper book. Who is
+// alive, who died, who was formed, which strategies are paying, how the
+// models themselves are standing, and the trades the review actually read.
+// Written every morning, or on demand here. Every label is explained where it
+// sits and every trading word until Ben has learned it; nothing here is money
+// anyone can lose.
 
 import { useCallback, useEffect, useState } from "react";
-import { Card, Eyebrow, Prose } from "../ui";
+import { Card, Eyebrow } from "../ui";
+import { Lingo, LingoProse } from "./Term";
 import { callFn, REVIEW_FN, loadCards, fmtMoney, fmtR, modelLabel, labTone, type CoachCard } from "@/lib/desk/api";
 import { STRATEGIES } from "@/lib/desk/scan";
 import { sfx, buzz } from "@/lib/fx";
@@ -18,17 +20,17 @@ import { sfx, buzz } from "@/lib/fx";
 
 type Cell = { n: number; hit: number | null; mean_r: number | null; shrunk_r: number | null; profit_factor: number | null; t: number | null; label: string };
 type SeasonLine = { n: number; day_of: number; days: number; start_day: string; end_day: string; champion: string | null };
+// Older cards still carry kick and council counts; they are read past, not shown.
 type TeamLine = {
-  id: string; name: string; tier: string; rank: number; status: string; frontier: string; workers: string[]; seniors: string[];
-  return_pct: number; equity: number; days_alive: number; open: number; decisions: number; takes: number; passes: number; closes: number; kicks: number; death_reason: string;
+  id: string; name: string; tier: string; rank: number; status: string; frontier: string; workers: string[];
+  return_pct: number; equity: number; days_alive: number; open: number; decisions: number; takes: number; passes: number; closes: number; death_reason: string;
 };
 type DeadLine = { name: string; reason: string; return_pct: number };
 type FormedLine = { name: string; frontier: string; workers: string[] };
-type CouncilLine = { team: string; kicked: string; replaced_by: string; reason: string };
 type PoolLine = { model: string; role: "frontier" | "worker"; standing: number | null; live_teams: number; elo: number; brier: number | null; sits: number; sit_right: number | null };
 type TradeLine = { team: string; symbol: string; side: string; strategy: string; timeframe: string; r: number; pnl: number; exit: string; closed: string; quadrant: string; grade: string; lesson: string; why: string };
 type TournamentCard = {
-  as_of: string; day: string; season: SeasonLine | null; teams: TeamLine[]; dead_today: DeadLine[]; formed_today: FormedLine[]; councils_today: CouncilLine[];
+  as_of: string; day: string; season: SeasonLine | null; teams: TeamLine[]; dead_today: DeadLine[]; formed_today: FormedLine[];
   by_strategy: Record<string, Cell>; by_tier: Record<string, Cell>; strategy_books: Record<string, Cell>; pool: PoolLine[]; trades: TradeLine[]; spend_today: number;
 };
 
@@ -51,13 +53,12 @@ function parse(card: unknown): TournamentCard {
       const x = obj(v);
       return {
         id: str(x.id), name: str(x.name), tier: str(x.tier) || "bronze", rank: num(x.rank), status: str(x.status) || "live", frontier: str(x.frontier),
-        workers: strs(x.workers), seniors: strs(x.seniors), return_pct: num(x.return_pct), equity: num(x.equity, 100000), days_alive: num(x.days_alive),
-        open: num(x.open), decisions: num(x.decisions), takes: num(x.takes), passes: num(x.passes), closes: num(x.closes), kicks: num(x.kicks), death_reason: str(x.death_reason),
+        workers: strs(x.workers), return_pct: num(x.return_pct), equity: num(x.equity, 100000), days_alive: num(x.days_alive),
+        open: num(x.open), decisions: num(x.decisions), takes: num(x.takes), passes: num(x.passes), closes: num(x.closes), death_reason: str(x.death_reason),
       };
     }),
     dead_today: arr(c.dead_today).map((v) => { const x = obj(v); return { name: str(x.name), reason: str(x.reason), return_pct: num(x.return_pct) }; }),
     formed_today: arr(c.formed_today).map((v) => { const x = obj(v); return { name: str(x.name), frontier: str(x.frontier), workers: strs(x.workers) }; }),
-    councils_today: arr(c.councils_today).map((v) => { const x = obj(v); return { team: str(x.team), kicked: str(x.kicked), replaced_by: str(x.replaced_by), reason: str(x.reason) }; }),
     by_strategy: cells(c.by_strategy), by_tier: cells(c.by_tier), strategy_books: cells(c.strategy_books),
     pool: arr(c.pool).map((v) => {
       const x = obj(v);
@@ -150,7 +151,7 @@ export default function MacroReview({ uid, onChanged }: { uid: string; onChanged
           <span className="mono text-[10px] text-[var(--text-4)]">daily at 1:05am ET</span>
         </div>
         <p className="text-[11.5px] text-[var(--text-2)] leading-relaxed mt-1.5">
-          Every morning a model reads the whole tournament, not one trade: nine teams across three leagues, each a frontier model that decides and four workers that research and vote, each running its own $100,000 of paper money. It reads who is up and who is down, who died and who was formed, which strategies paid and which cost, and the last trades with their micro reviews. Then it writes what is working, what is not, what these trades teach, and how to proceed.
+          Every morning a model reads the whole tournament, not one trade: nine teams across three leagues, each one frontier model that decides, all sharing one crew of four cheap workers that research every candidate once, each team running its own $100,000 of paper money. It reads who is up and who is down, who died and who was formed, which strategies paid and which cost, and the last trades with their micro reviews. Then it writes what is working, what is not, what these trades teach, and how to proceed.
         </p>
         <div className="flex items-center gap-3 mt-2.5 flex-wrap">
           <button onClick={write} disabled={busy} className="rounded-lg bg-[var(--neon)]/15 text-[var(--neon)] text-xs font-semibold px-3 py-2 active:scale-95 disabled:opacity-50">{busy ? "Reading the record…" : card ? "Write today's review now" : "Write the first review"}</button>
@@ -182,7 +183,7 @@ export default function MacroReview({ uid, onChanged }: { uid: string; onChanged
                 {t.season.champion ? ` · champion ${t.season.champion}` : ""}
               </p>
             )}
-            <Prose className="mt-2" text={withHeadings(card.review)} />
+            <LingoProse className="mt-2" text={withHeadings(card.review)} />
             <p className="mono text-[10px] text-[var(--text-4)] mt-2">{alive.length} teams alive · {t.trades.length} closed trades read{t.spend_today ? ` · ${fmtMoney(t.spend_today, 2)} of model time spent today` : ""}</p>
           </Card>
 
@@ -193,14 +194,14 @@ export default function MacroReview({ uid, onChanged }: { uid: string; onChanged
                 <table className="w-full text-[10.5px]">
                   <thead><tr className="text-[var(--text-4)] mono text-[8px] uppercase tracking-wider">
                     <th className="text-left font-normal pb-1">team</th><th className="text-right font-normal pb-1">return</th><th className="text-right font-normal pb-1">book</th>
-                    <th className="text-right font-normal pb-1">days</th><th className="text-right font-normal pb-1">open</th><th className="text-right font-normal pb-1">t/p/c</th><th className="text-right font-normal pb-1">kicks</th>
+                    <th className="text-right font-normal pb-1">days</th><th className="text-right font-normal pb-1">open</th><th className="text-right font-normal pb-1">t/p/c</th>
                   </tr></thead>
                   <tbody>
                     {TIER_ORDER.flatMap((tier) => {
                       const rows = t.teams.filter((x) => x.tier === tier).sort((a, b) => (a.rank || 99) - (b.rank || 99) || b.return_pct - a.return_pct);
                       if (!rows.length) return [];
                       return [
-                        <tr key={`h-${tier}`}><td colSpan={7} className="pt-2 pb-0.5"><span className="mono text-[9px] uppercase tracking-widest" style={{ color: TIER_COLOR[tier] }}>{TIER_NAME[tier] ?? tier}</span></td></tr>,
+                        <tr key={`h-${tier}`}><td colSpan={6} className="pt-2 pb-0.5"><span className="mono text-[9px] uppercase tracking-widest" style={{ color: TIER_COLOR[tier] }}>{TIER_NAME[tier] ?? tier}</span></td></tr>,
                         ...rows.map((x) => (
                           <tr key={x.id || x.name} className="border-t border-[var(--border-1)]">
                             <td className="py-1 pr-2"><span className={x.status === "dead" ? "line-through opacity-60" : ""}>{x.name}</span>{x.status === "dead" ? <span className="mono text-[8px] text-[var(--bad)] ml-1">dead</span> : null}</td>
@@ -209,7 +210,6 @@ export default function MacroReview({ uid, onChanged }: { uid: string; onChanged
                             <td className="py-1 text-right mono text-[var(--text-4)]">{x.days_alive}</td>
                             <td className="py-1 text-right mono text-[var(--text-4)]">{x.open}</td>
                             <td className="py-1 text-right mono text-[var(--text-4)]">{x.takes}/{x.passes}/{x.closes}</td>
-                            <td className="py-1 text-right mono text-[var(--text-4)]">{x.kicks}</td>
                           </tr>
                         )),
                       ];
@@ -218,7 +218,7 @@ export default function MacroReview({ uid, onChanged }: { uid: string; onChanged
                 </table>
               </div>
               <p className="text-[10px] text-[var(--text-4)] mt-1.5 leading-relaxed">
-                Diamond, Gold and Bronze are the three leagues, three teams each, re-sorted at the daily cut. Return is percent from the team&apos;s $100,000 paper start; book is what that money is worth now. Days is how long the team has been alive. Open is positions it is holding right now. t/p/c is takes, passes and closes today: a pass is a candidate it read and refused. Kicks is how many members its own council has voted out. A team dies 5% below its start, or as the worst team in Bronze at the daily cut.
+                Diamond, Gold and Bronze are the three leagues, three teams each, re-sorted at the daily ranking. Return is percent from the team&apos;s $100,000 paper start; book is what that money is worth now. Days is how long the team has been alive. Open is positions it is holding right now. t/p/c is takes, passes and closes today: a pass is a candidate it read and refused. A team dies 5% below its start, and its frontier comes back with a new life and a fresh book.
               </p>
             </Card>
           )}
@@ -235,24 +235,10 @@ export default function MacroReview({ uid, onChanged }: { uid: string; onChanged
               {t.formed_today.map((f, i) => (
                 <p key={`f${i}`} className="text-[11.5px] leading-snug mt-1">
                   <span className="mono text-[10px] uppercase" style={{ color: "var(--warn)" }}>formed</span> <span className="font-semibold">{f.name}</span>
-                  <span className="text-[var(--text-3)]">: {modelLabel(f.frontier)} leads{f.workers.length ? `, with ${f.workers.map(modelLabel).join(", ")}` : ""}</span>
+                  <span className="text-[var(--text-3)]">: {modelLabel(f.frontier)} decides, on the shared crew</span>
                 </p>
               ))}
-              <p className="text-[10px] text-[var(--text-4)] mt-1.5 leading-relaxed">A dead team is gone for good and a fresh one takes its seat with $100,000 and no history. No combination of models is ever repeated.</p>
-            </Card>
-          )}
-
-          {t.councils_today.length > 0 && (
-            <Card className="mt-2.5">
-              <Eyebrow className="mb-1">Councils today</Eyebrow>
-              {t.councils_today.map((c, i) => (
-                <p key={i} className="text-[11.5px] leading-snug mt-1">
-                  <span className="font-semibold">{c.team}</span>
-                  {c.kicked ? <> kicked <span className="font-semibold">{modelLabel(c.kicked)}</span>{c.replaced_by ? <> and took on <span className="font-semibold">{modelLabel(c.replaced_by)}</span></> : null}</> : <span className="text-[var(--text-3)]"> kept everyone</span>}
-                  {c.reason ? <span className="text-[var(--text-3)]">: {c.reason}</span> : null}
-                </p>
-              ))}
-              <p className="text-[10px] text-[var(--text-4)] mt-1.5 leading-relaxed">A council is the frontier and its two senior workers voting on whether to keep each member of their own team. It meets once a day.</p>
+              <p className="text-[10px] text-[var(--text-4)] mt-1.5 leading-relaxed">A dead team keeps its record; its frontier comes straight back with a new life, a fresh $100,000 book and the next numeral after its name.</p>
             </Card>
           )}
 
@@ -325,7 +311,7 @@ export default function MacroReview({ uid, onChanged }: { uid: string; onChanged
                 </div>
               ))}
               <p className="text-[10px] text-[var(--text-4)] mt-1.5 leading-relaxed">
-                Every model that can be drafted. A frontier leads a team; a worker researches and votes on one. Standing is the average percent return of the teams it has been on, living and dead, counted in full for a frontier and at half for a worker — untested means it has not sat on a team yet. Live is how many teams it is on right now. Elo is a rating that rises when it is right where others were wrong; 1500 is average. Brier scores how honest its confidence is: 0 is perfect, 0.25 is a coin flip with no idea, higher is worse than saying fifty-fifty every time. Scored is how many of its votes have played out, and right is how often the side it voted for was the one that paid.
+                Every model in the pools. A frontier decides for a team; a worker is one of the crew every team shares, and researches and votes on every candidate. Standing is the average ranked return of the teams a frontier has led, living and dead — untested means it has not led one yet; the crew is shared, so a worker has no standing of its own, only its ratings. Live is how many teams it is on right now. Elo is a rating that rises when it is right where others were wrong; 1500 is average. Brier scores how honest its confidence is: 0 is perfect, 0.25 is a coin flip with no idea, higher is worse than saying fifty-fifty every time. Scored is how many of its votes have played out, and right is how often the side it voted for was the one that paid.
               </p>
             </Card>
           )}
@@ -343,7 +329,7 @@ export default function MacroReview({ uid, onChanged }: { uid: string; onChanged
                   {(x.quadrant || x.grade) && (
                     <p className="text-[10px] text-[var(--text-4)] mt-0.5 leading-snug">{QUADRANT[x.quadrant] ?? x.quadrant}{x.grade ? `${x.quadrant ? " · " : ""}process ${x.grade}` : ""}</p>
                   )}
-                  {x.lesson && <p className="text-[10.5px] text-[var(--text-2)] mt-0.5 leading-snug"><span className="text-[var(--text-4)]">Lesson:</span> {x.lesson}</p>}
+                  {x.lesson && <p className="text-[10.5px] text-[var(--text-2)] mt-0.5 leading-snug"><span className="text-[var(--text-4)]">Lesson:</span> <Lingo text={x.lesson} /></p>}
                 </div>
               ))}
               <p className="text-[10px] text-[var(--text-4)] mt-1.5 leading-relaxed">

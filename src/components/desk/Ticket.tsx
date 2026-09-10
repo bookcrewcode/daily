@@ -13,26 +13,27 @@ import { STRATEGIES } from "@/lib/desk/scan";
 
 type Check = { name: string; pass: boolean; detail: string };
 
-const TF: Record<string, string> = { scalp: "scalp · hours", swing: "swing · days", position: "position · weeks" };
-const INSTRUMENT: Record<string, string> = { stock: "stock", etf: "ETF", crypto_spot: "spot crypto", crypto_perp: "perpetual future" };
+// The formatting helpers are shared with the "what went into this trade" panel (TradeInputs).
+export const TF: Record<string, string> = { scalp: "scalp · hours", swing: "swing · days", position: "position · weeks" };
+export const INSTRUMENT: Record<string, string> = { stock: "stock", etf: "ETF", crypto_spot: "spot crypto", crypto_perp: "perpetual future" };
 const stratName = (id: string) => STRATEGIES.find((s) => s.id === id)?.name ?? id;
 
-const num = (v: unknown): number | null => { const x = Number(v); return typeof v !== "boolean" && v !== null && v !== "" && v !== undefined && Number.isFinite(x) ? x : null; };
-const str = (v: unknown): string => (typeof v === "string" ? v : "");
-const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
-const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
-const has = (v: number | null): v is number => v !== null;
+export const num = (v: unknown): number | null => { const x = Number(v); return typeof v !== "boolean" && v !== null && v !== "" && v !== undefined && Number.isFinite(x) ? x : null; };
+export const str = (v: unknown): string => (typeof v === "string" ? v : "");
+export const rec = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+export const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+export const has = (v: number | null): v is number => v !== null;
 
 // The ticket keeps percentages in percent units: 2.0 means 2%.
-const pct = (v: number, d = 1) => `${v.toFixed(d)}%`;
-const spct = (v: number, d = 1) => fmtPct(v / 100, d); // signed, for numbers that can go either way
-const count = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 4 });
-const units = (unit: string, qty: number | null) => {
+export const pct = (v: number, d = 1) => `${v.toFixed(d)}%`;
+export const spct = (v: number, d = 1) => fmtPct(v / 100, d); // signed, for numbers that can go either way
+export const count = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+export const units = (unit: string, qty: number | null) => {
   const u = unit || "unit";
   return qty !== null && Math.abs(qty) === 1 ? u : `${u}s`;
 };
 /** A timestamp read straight off the string: no clock, no timezone surprises. */
-function stamp(v: unknown): string {
+export function stamp(v: unknown): string {
   if (typeof v === "number" && Number.isFinite(v)) { const s = new Date(v).toISOString(); return `${s.slice(0, 10)} ${s.slice(11, 16)} UTC`; }
   const t = str(v).trim();
   if (t.length < 16) return t;
@@ -183,9 +184,9 @@ export default function Ticket({ ticket, compact }: { ticket: Record<string, unk
         </Rows>
       </Section>
 
-      <Section title="The room" note="The workers vote first; the frontier that leads the team decides. It may ask for less risk or less leverage than the rules allow, never more, and the code is what actually sets the number.">
+      <Section title="The room" note="The crew votes once, for every team; the frontier that leads this team decides. It may ask for less risk or less leverage than the rules allow, never more, and the code is what actually sets the number.">
         <Rows>
-          <Row label="Workers" value={has(answered) ? `${has(take) ? take : 0} of ${answered} said take${has(passed) ? `, ${passed} said pass` : ""}` : null} />
+          <Row label="The crew" value={has(answered) ? `${has(take) ? take : 0} of ${answered} said take${has(passed) ? `, ${passed} said pass` : ""}` : null} />
           <Row label="Weighted score" value={has(score) ? `${score >= 0 ? "+" : ""}${score.toFixed(2)}` : null} />
           <Row label="The frontier" value={str(frontier.model) ? modelLabel(str(frontier.model)) : null} />
           <Row label="It asked for" value={has(askedRisk) || has(askedLev) ? [has(askedRisk) ? `${pct(askedRisk)} risk` : "", has(askedLev) ? `${count(askedLev)}x` : ""].filter(Boolean).join(" · ") : null} />

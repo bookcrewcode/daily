@@ -16,6 +16,7 @@ import { ensureAccount, loadEquity, callFn, SYNC_FN, fmtMoney, fmtPct, type Acco
 import Leagues from "./Leagues";
 import Learn from "./Learn";
 import Feed from "./Feed";
+import { seedLearned } from "./Term";
 
 type Gear = "feed" | "league" | "learn";
 export type LiveMarks = { quotes: Record<string, { price?: number; at?: number; error?: string }>; marks: { owner: string; equity: number; unrealized: number; gross: number }[]; at: number };
@@ -33,6 +34,7 @@ export default function DeskSpace({ uid }: { uid: string }) {
   const load = useCallback(async () => {
     const a = await ensureAccount(uid);
     if (a.error || !a.account) { setLoadErr(a.error || "Couldn't open the desk."); setLoaded(true); return; }
+    seedLearned(uid, a.account.learned_terms); // the glossary words Ben has already learned
     const e = await loadEquity(uid, "desk");
     setAccount(a.account);
     setCurve(e.curve);

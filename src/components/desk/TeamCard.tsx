@@ -1,22 +1,23 @@
 "use client";
 
-// One team's card in its tier: who is on it, what its book is worth, how far
-// it is from dying, and what it did today. Tapping it opens the whole team
-// underneath — its book, its decisions, its council and its curve.
+// One team's card in its tier: the frontier that decides, the crew every
+// team shares, what its book is worth, how far it is from dying, and what it
+// did today. Tapping it opens the whole team underneath — its book, its
+// decisions, its crew and its curve.
 
 import { Card } from "../ui";
 import Team from "./Team";
 import { Member, Note, TIER_COLOR, daysSince, onDay, pct1, tone } from "./LeagueBits";
-import { fmtMoney, fmtPct, type CouncilRow, type DecisionRow, type Rating, type TeamRow } from "@/lib/desk/api";
+import { fmtMoney, fmtPct, type DecisionRow, type Rating, type TeamRow } from "@/lib/desk/api";
 import { deathLine, type LeagueSettings } from "@/lib/desk/league";
 import type { Trade } from "@/lib/desk/types";
 import type { LiveMarks } from "./DeskSpace";
 
 const took = (d: DecisionRow) => d.outcome !== null && (d.outcome as Record<string, unknown>).taken === true;
 
-export default function TeamCard({ uid, team, rank, live, settings, today, trades, decisions, councils, ratings, expanded, onToggle }: {
+export default function TeamCard({ uid, team, rank, live, settings, today, trades, decisions, ratings, expanded, onToggle }: {
   uid: string; team: TeamRow; rank: number; live: LiveMarks | null; settings: LeagueSettings; today: string;
-  trades: Trade[]; decisions: DecisionRow[]; councils: CouncilRow[]; ratings: Rating[]; expanded: boolean; onToggle: () => void;
+  trades: Trade[]; decisions: DecisionRow[]; ratings: Rating[]; expanded: boolean; onToggle: () => void;
 }) {
   const equity = live?.marks.find((m) => m.owner === `team:${team.id}`)?.equity ?? team.equity;
   const ret = team.start_equity > 0 ? (equity - team.start_equity) / team.start_equity : 0;
@@ -29,13 +30,10 @@ export default function TeamCard({ uid, team, rank, live, settings, today, trade
   const taken = reads.filter(took).length;
   const passed = reads.length - taken;
   const closes = dec.filter((d) => d.kind === "close").length;
-  const kicks = councils.filter((c) => c.team_id === team.id && c.kicked).length;
   const days = daysSince(team.formed_at, today);
 
   const passiveDays = Number(team.stats.passive_days) || 0;
   const rankScore = Number.isFinite(Number(team.stats.rank_score)) && team.stats.rank_score !== undefined ? Number(team.stats.rank_score) : ret * 100 - passiveDays * settings.passive_penalty_pct;
-  const seniors = team.workers.filter((w) => team.seniors.includes(w));
-  const juniors = team.workers.filter((w) => !team.seniors.includes(w));
 
   return (
     <Card>
@@ -48,27 +46,27 @@ export default function TeamCard({ uid, team, rank, live, settings, today, trade
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5 mt-2 pl-6">
-          <Member model={team.frontier} note="frontier" />
+          <Member model={team.frontier} note="frontier · decides" />
         </div>
         <div className="flex flex-wrap items-center gap-1.5 mt-1.5 pl-6">
-          {seniors.map((m) => <Member key={m} model={m} note="senior" />)}
-          {juniors.map((m) => <Member key={m} model={m} />)}
+          {team.workers.map((m) => <Member key={m} model={m} note="crew" />)}
         </div>
+        <Note className="mt-1 pl-6">The crew is shared by every team and researches every candidate once; only the frontier differs.</Note>
 
         <p className="mono text-[10px] text-[var(--text-3)] mt-2 pl-6 leading-relaxed">
-          dies at {fmtMoney(line)} · {equity <= line ? "below the line" : `${pct1(away)} away`} · {mine.length} open · {days === 0 ? "formed today" : days === 1 ? "1 day alive" : `${days} days alive`} · {kicks} kick{kicks === 1 ? "" : "s"}
+          dies at {fmtMoney(line)} · {equity <= line ? "below the line" : `${pct1(away)} away`} · {mine.length} open · {days === 0 ? "formed today" : days === 1 ? "1 day alive" : `${days} days alive`}
         </p>
         <p className="mono text-[10px] text-[var(--text-4)] mt-0.5 pl-6">today: {taken} taken · {passed} passed · {closes} closed</p>
         {passiveDays > 0 && (
-          <p className="mono text-[10px] mt-0.5 pl-6" style={{ color: "var(--warn)" }}>playing to survive: {passiveDays} passive day{passiveDays === 1 ? "" : "s"} · ranked at {rankScore >= 0 ? "+" : ""}{rankScore.toFixed(2)}% for the cut</p>
+          <p className="mono text-[10px] mt-0.5 pl-6" style={{ color: "var(--warn)" }}>playing to survive: {passiveDays} passive day{passiveDays === 1 ? "" : "s"} · ranked at {rankScore >= 0 ? "+" : ""}{rankScore.toFixed(2)}% for the tiers</p>
         )}
         <Note className="mt-1 pl-6">
-          {expanded ? "Tap to close." : "Tap for its book, its decisions, its council and its curve."}
+          {expanded ? "Tap to close." : "Tap for its book, its decisions, its crew and its curve."}
           {" "}Away is how far this book would have to fall from where it is now to hit the line.
         </Note>
       </button>
       {expanded && (
-        <Team uid={uid} team={team} live={live} trades={mine} ratings={ratings} councils={councils} settings={settings} today={today} />
+        <Team uid={uid} team={team} live={live} trades={mine} ratings={ratings} settings={settings} today={today} />
       )}
     </Card>
   );
