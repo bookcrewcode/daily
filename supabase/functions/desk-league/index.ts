@@ -165,8 +165,11 @@ async function agentLoop(key: string, c: { model: string; system: string; user: 
       if (json) return { json, raw: content.slice(0, 4000), cost, tokensIn, tokensOut, latency: Date.now() - t0, error: "", checked };
       break;
     }
-    messages.push({ role: "assistant", content: String(m.content ?? ""), tool_calls: calls });
-    for (const call of calls.slice(0, 3)) {
+    const room = Math.max(0, c.maxCalls - checked.length); // the limit is on look-ups, not rounds: a model that asks for three at once gets the first
+    if (!room) break;
+    const kept = calls.slice(0, room); // the transcript carries only the calls that were run, so every tool call has its result
+    messages.push({ role: "assistant", content: String(m.content ?? ""), tool_calls: kept });
+    for (const call of kept) {
       const fn = (call.function as J) ?? {};
       const name = String(fn.name ?? "");
       let args: J = {};
@@ -473,7 +476,7 @@ async function frontierDecide(uid: string, key: string, team: TeamRow, model: st
   const user = items.map((it, i) => {
     const b = it.brief.setup as J;
     const votes = it.ballots.map((v) => v.error ? `  ${v.model}: no answer` : `  ${v.model}: ${v.stance} at ${(v.confidence * 100).toFixed(0)}% — ${v.thesis}${v.wrong_if ? ` (wrong if: ${v.wrong_if})` : ""}${v.stop && v.stop !== num(b.stop) ? ` · stop ${v.stop}` : ""}${v.target && v.target !== num(b.target) ? ` · target ${v.target}` : ""}${v.checked.length ? ` · looked at ${v.checked.join(", ")}` : ""}`).join("\n");
-    return `CANDIDATE ${i + 1} (id ${it.decisionId})\n${briefText(it.brief, book, rules)}\nTHE WORKERS' BALLOTS\n${votes}`;
+    return `CANDIDATE ${i + 1} (id ${it.decisionId})\n${briefText(it.brief, null, rules)}\nTHE CREW'S BALLOTS\n${votes}`;
   }).join("\n\n");
   const res = await callModel(key, { model, system: frontierSystem(team, book, s), user, schema: FRONTIER_SCHEMA, maxTokens: 2500, deadline, reasoning: acting ? workerReasoning(model) : "low" });
   const out: Record<string, Verdict> = {};
@@ -647,9 +650,9 @@ async function cycle(uid: string, body: J): Promise<J> {
   const queued = rows(await rest(`desk_research?user_id=eq.${uid}&status=eq.queued&select=id&order=created_at.asc&limit=8`)).map((r) => String(r.id));
   if (queued.length) {
     const list = queued.join(",");
-    if (spent >= s.budget_usd_day) {
+    if (spent >= s.budget_usd_day * 0.85) { // candidates stop at 85% of the day's budget; the sessions keep the rest
       await rest(`desk_research?id=in.(${list})`, { method: "PATCH", body: JSON.stringify({ status: "done", updated_at: iso(t0) }) });
-      await rest(`desk_decisions?research_id=in.(${list})&status=eq.queued`, { method: "PATCH", body: JSON.stringify({ status: "done", outcome: { taken: false, reasons: [`today's league budget ($${s.budget_usd_day}) is spent`], pass_reason: "budget spent", by: "budget" }, updated_at: iso(t0) }) });
+      await rest(`desk_decisions?research_id=in.(${list})&status=eq.queued`, { method: "PATCH", body: JSON.stringify({ status: "done", outcome: { taken: false, reasons: [`today's league budget ($${s.budget_usd_day}) is nearly spent; what is left is kept for the sessions`], pass_reason: "budget spent", by: "budget" }, updated_at: iso(t0) }) });
       (out.skipped as string[]).push(`${queued.length} candidates: budget spent`);
     } else {
       await rest(`desk_research?id=in.(${list})`, { method: "PATCH", body: JSON.stringify({ status: "launched", launched: { at: t0, n: 1 }, updated_at: iso(t0) }) });
