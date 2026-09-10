@@ -41,3 +41,7 @@ grant execute on function public.desk_spend_since(uuid, timestamptz) to service_
 
 -- Every tagged headline carries a plain-words line on what happened and what it means for the price (migration desk_news_plain).
 alter table public.desk_news add column if not exists plain text;
+
+-- A frontier's own trade is its own kind of decision (migration desk_decisions_kind_own).
+alter table public.desk_decisions drop constraint if exists desk_decisions_kind_check;
+alter table public.desk_decisions add constraint desk_decisions_kind_check check (kind in ('candidate','session','close','council','own'));

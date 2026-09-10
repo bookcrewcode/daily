@@ -13,7 +13,7 @@ import Ticket from "./Ticket";
 import { MonoLabel, Note, signed, tone } from "./LeagueBits";
 import { loadTrades, fmtMoney, fmtPct, fmtPrice, fmtR, type TeamRow } from "@/lib/desk/api";
 import { unrealized } from "@/lib/desk/ledger";
-import { STRATEGIES } from "@/lib/desk/scan";
+import { strategyName } from "@/lib/desk/scan";
 import type { Trade } from "@/lib/desk/types";
 import type { LiveMarks } from "./DeskSpace";
 
@@ -27,7 +27,7 @@ const QUADRANT: Record<string, string> = {
 };
 const INTERVAL: Record<string, "5m" | "15m" | "1h" | "4h" | "1d"> = { scalp: "15m", swing: "1h", position: "1d" };
 const INSTR: Record<string, string> = { stock: "stock", etf: "ETF", crypto_spot: "spot", crypto_perp: "perp" };
-const stratName = (id?: string) => (id ? STRATEGIES.find((s) => s.id === id)?.name ?? id : "");
+const stratName = (id?: string) => (id ? strategyName(id) : "");
 
 function timeLeft(t: Trade, today: string): string {
   if (!t.expires_on) return "";

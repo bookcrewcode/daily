@@ -15,7 +15,7 @@ import DecisionCard from "./DecisionCard";
 import { oneLine } from "./Plain";
 import TradeCard, { TIER_COLOR, TierChip } from "./TradeCard";
 import { loadTeams, loadDecisions, loadTrades, callFn, REVIEW_FN, type DecisionRow, type TeamRow } from "@/lib/desk/api";
-import { STRATEGIES } from "@/lib/desk/scan";
+import { strategyName } from "@/lib/desk/scan";
 import type { Trade } from "@/lib/desk/types";
 import type { LiveMarks } from "./DeskSpace";
 
@@ -27,12 +27,12 @@ const KINDS: Kind[] = ["all", "taken", "passed", "closes", "sessions"];
 const KIND_HELP: Record<Kind, string> = {
   all: "Everything the teams were asked and answered in the last three days, newest first.",
   taken: "The decisions that became a real paper position.",
-  passed: "The candidates and sessions a team looked at and did not act on. The reason is recorded either way.",
+  passed: "The candidates, session ideas and own-playbook ideas a team looked at and did not act on. The reason is recorded either way.",
   closes: "A frontier asking to close a position early, before its stop, target or clock.",
-  sessions: "The scheduled reviews of a team's open positions and the crew's new ideas, three times a trading day.",
+  sessions: "The scheduled reviews, three times a trading day: a team's open positions, the crew's new ideas, and the trades the frontier came up with on its own.",
 };
 const TF: Record<string, string> = { scalp: "scalp · hours", swing: "swing · days", position: "position · weeks" };
-const stratName = (id?: string) => (id ? STRATEGIES.find((s) => s.id === id)?.name ?? id : "");
+const stratName = (id?: string) => (id ? strategyName(id) : "");
 const asText = (v: unknown) => (typeof v === "string" ? v : "");
 const when = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
 const fmtRr = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}R`;
@@ -117,14 +117,14 @@ export default function Journal({ uid, live }: { uid: string; live: LiveMarks | 
   const matchesKind = (d: DecisionRow) => {
     const o = outcomeOf(d);
     if (kind === "taken") return o.taken;
-    if (kind === "passed") return (d.kind === "candidate" || d.kind === "session") && !o.taken;
+    if (kind === "passed") return d.kind !== "close" && !o.taken;
     if (kind === "closes") return d.kind === "close";
-    if (kind === "sessions") return d.kind === "session";
+    if (kind === "sessions") return d.kind === "session" || d.kind === "own";
     return true;
   };
   const shownDecisions = decisions.filter((d) => matchesKind(d) && (teamSel === "all" || d.team_id === teamSel));
   const takenCount = decisions.filter((d) => outcomeOf(d).taken).length;
-  const passedCount = decisions.filter((d) => (d.kind === "candidate" || d.kind === "session") && !outcomeOf(d).taken).length;
+  const passedCount = decisions.filter((d) => d.kind !== "close" && !outcomeOf(d).taken).length;
   const liveTeams = teams.filter((t) => t.status === "live").length;
 
   // One card per candidate: the same setup, every team that read it, side by side.

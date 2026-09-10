@@ -12,7 +12,7 @@ import TeamBook from "./TeamBook";
 import TeamDecisions from "./TeamDecisions";
 import { Member, MonoLabel, Note, tone } from "./LeagueBits";
 import { loadEquity, fmtMoney, fmtPct, type EquityPoint, type Rating, type TeamRow } from "@/lib/desk/api";
-import { deathLine, type LeagueSettings } from "@/lib/desk/league";
+import { deathLine, rewardsOf, type LeagueSettings } from "@/lib/desk/league";
 import type { Trade } from "@/lib/desk/types";
 import type { LiveMarks } from "./DeskSpace";
 
@@ -99,7 +99,8 @@ function TeamCurve({ uid, team, settings, live }: { uid: string; team: TeamRow; 
   }, [uid, team.id]);
   useEffect(() => { Promise.resolve().then(load); }, [load]);
 
-  const line = deathLine(team.start_equity, settings.death_pct);
+  const cushion = rewardsOf(team.stats).cushion;
+  const line = deathLine(team.start_equity, settings.death_pct, cushion);
   const equityNow = live?.marks.find((m) => m.owner === `team:${team.id}`)?.equity ?? team.equity;
   const ret = team.start_equity > 0 ? (equityNow - team.start_equity) / team.start_equity : 0;
 
@@ -114,7 +115,7 @@ function TeamCurve({ uid, team, settings, live }: { uid: string; team: TeamRow; 
         <Note>The curve starts after the team&apos;s second 4pm mark. Right now the book is at {fmtMoney(equityNow)}.</Note>
       )}
       <Note className="mt-2">
-        The dashed line is where this team dies: {fmtMoney(line)}, which is {settings.death_pct}% below the {fmtMoney(team.start_equity)} it started with. It is checked at every five-minute tick, not only at the close, so a team can die in the middle of an afternoon. When it does, its frontier comes straight back with a new life and a fresh book.
+        The dashed line is where this team dies: {fmtMoney(line)}, which is {settings.death_pct}% below the {fmtMoney(team.start_equity)} it started with{cushion > 0 ? `, pushed down by the ${fmtMoney(cushion)} cushion it earned` : ""}. It is checked at every five-minute tick, not only at the close, so a team can die in the middle of an afternoon. When it does, its frontier comes straight back with a new life and a fresh book, unless the team holds a life vest: then the vest is spent instead, the book is refilled to its start and no death is recorded.
       </Note>
       <div className="grid grid-cols-3 gap-2 mt-2.5">
         <Cell label="Now" value={fmtMoney(equityNow)} />

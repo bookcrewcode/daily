@@ -112,7 +112,7 @@ export default function Ticket({ ticket, compact }: { ticket: Record<string, unk
       <div>
         <p className="mono text-[11px] font-semibold text-[var(--text-2)]">{idLine || "the ticket"}</p>
         <p className="mono text-[9px] text-[var(--text-4)] mt-0.5">
-          {[team, kind === "session" ? "from a worker's own idea" : kind === "candidate" ? "from a flagged setup" : kind, stamp(t.at)].filter(Boolean).join(" · ")}
+          {[team, kind === "session" ? "from a worker's own idea" : kind === "own" ? "from the frontier's own playbook" : kind === "candidate" ? "from a flagged setup" : kind, stamp(t.at)].filter(Boolean).join(" · ")}
         </p>
         <p className="text-[11px] text-[var(--text-3)] leading-snug mt-1">
           The ticket is everything that went into the trade, written the moment it was taken. All money here is paper: nothing is placed with a broker.

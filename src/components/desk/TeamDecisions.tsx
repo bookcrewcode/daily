@@ -20,10 +20,10 @@ const FILTERS: { key: Filter; label: string }[] = [
 
 const MEANING: Record<Filter, string> = {
   all: "Everything the team has decided, newest first.",
-  taken: "The candidates where the frontier said take, and a position was opened.",
+  taken: "The candidates and ideas where the frontier said take, and a position was opened.",
   passed: "The candidates the team read and left alone. Most of them are these.",
   closes: "Positions the frontier decided to close before the stop or the target got there.",
-  sessions: "The scheduled reviews, where the frontier looks over everything it holds and the crew's new ideas.",
+  sessions: "The scheduled reviews, where the frontier looks over everything it holds, judges the crew's new ideas and trades its own.",
 };
 
 const took = (d: DecisionRow) => d.outcome !== null && (d.outcome as Record<string, unknown>).taken === true;
@@ -45,10 +45,10 @@ export default function TeamDecisions({ uid, team }: { uid: string; team: TeamRo
 
   const shown = rows.filter((d) => {
     if (filter === "all") return true;
-    if (filter === "taken") return (d.kind === "candidate" || d.kind === "session") && took(d);
-    if (filter === "passed") return (d.kind === "candidate" || d.kind === "session") && !took(d);
+    if (filter === "taken") return d.kind !== "close" && took(d);
+    if (filter === "passed") return d.kind !== "close" && !took(d);
     if (filter === "closes") return d.kind === "close";
-    return d.kind === "session";
+    return d.kind === "session" || d.kind === "own";
   });
 
   return (

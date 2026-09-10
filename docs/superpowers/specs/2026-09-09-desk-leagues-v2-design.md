@@ -17,7 +17,7 @@ Ben's decisions on 2026-09-09 evening, after the first afternoon of the leagues 
 
 **Sessions** (09:35, 15:15, 21:30 ET, inside hours): one child per session; the crew proposes once, every frontier reviews its own positions and judges the same proposals.
 
-**Death** at the death line stays: the book is closed, the team row dies, and the frontier comes back at once with a new life at $100k in Bronze. **The daily ranking** at 16:06 ET keeps the passive-day penalty, the tier re-rank and the season champion. The daily Bronze cut, councils and replacements are gone.
+**Death** at the death line stays, but the line is 25% below the start (Ben, later that evening: "make it a 25k death not 5k"), pushed lower by any cushion the team has earned. At the line the book is closed, the team row dies, and the frontier comes back at once with a new life at $100k in Bronze, unless the team holds a life vest: then the vest is spent, the book is refilled to its start (`stats.refill`), the team keeps its name, tier and record, and the log says "revived". **The daily ranking** at 16:06 ET keeps the passive-day penalty, the tier re-rank and the season champion. The daily Bronze cut, councils and replacements are gone.
 
 **Hours.** The cycle only queues setups whose venue is open; sessions only fire inside hours; the feed tagger pauses 22:00 to 09:00 ET. The sync (fills, stops, funding, marks) runs round the clock; it costs nothing.
 
@@ -28,3 +28,15 @@ Ben's decisions on 2026-09-09 evening, after the first afternoon of the leagues 
 ## Cost
 
 About $4 to $5 a day at today's setup volume: the crew about $0.30, frontier decisions about $1.60 (eight candidates a call), sessions about $1.10, the daily review and tagging the rest.
+
+## Later the same evening: own playbooks, rewards, plain words
+
+Ben, after watching the first candidates: "the groups shouldn't only follow the 8 strategies, they're too conservative and it's going to lead to all similar pnls... the head models should come up with their own strats, you can leave the 8"; "I want there also to be an incentive to taking riskier trades/high pnl days: a 5k day earns the team a life vest... anything above like 10k-20k-30k+ you come up with rewards that get increasingly better"; "make it a 25k death not 5k"; and, earlier, "the journal entries need to be easier to understand, also if it's pulling from the news it should give a brief explanation of what happened not just the title".
+
+**Own playbooks.** At every session each frontier may add up to two trades of its own (`ideas` in the session answer): a playbook name it chooses and reuses (stored as `strategy = own:<slug>`, shown as "own playbook: …"), the thesis, the catalyst, what proves it wrong, the stop and target as percent distances from the live price (code reads the price and places them), the horizon, leverage, risk and confidence. Each becomes a `desk_decisions` row of kind `own` with the idea under `brief.proposal` and the frontier's own ballot, then the same validation, guardrail and ticket as any trade. Own ideas count toward a limit of three new positions a session with the proposal takes. The eight coded strategies stay.
+
+**Rewards for big days** (`REWARD_LADDER` in `league.ts`, one source for the functions and the app). At the 16:06 ET ranking each team's change in its book since the last ranking is measured (`stats.day_ref`, refills left out), once a day like the passive day, and each step includes the ones below it: +$5,000 earns a life vest (up to three held); +$10,000 also a cushion, the death line dropping $10,000 for the rest of the team's life (to $50,000 below the start at most); +$20,000 also bigger guns, the frontier's risk cap per trade rising one point (three at most); +$30,000 also a shield (the team cannot be relegated at the next ranking; the tier holds one more team that day) and a second vest. The holdings live in `desk_teams.stats` (`vests`, `cushion`, `risk_bonus`, `shield`, `refill`, `revivals`), the frontiers read them in every brief ("rewards in hand"), and the log records `reward`, `revived` and `shielded`.
+
+**Plain words.** Every tagged headline carries `plain` (what happened and what it means for the price, for a beginner; backfilled once for the last three days), the briefs keep structured `headline_items`, `macro_items` and `digest_items`, and the app writes an "In short" summary for every decision and trade from the row itself.
+
+**Budget** is $3 a day.

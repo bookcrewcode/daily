@@ -17,7 +17,7 @@ import {
   callFn, LEAGUE_FN, fmtMoney, type Account, type DecisionRow, type EquityPoint, type Rating, type RosterLogRow,
   type SeasonRow, type StrategyRow, type TeamRow,
 } from "@/lib/desk/api";
-import { leagueSettings, TIERS, type TeamLike, type Tier } from "@/lib/desk/league";
+import { leagueSettings, REWARD_LADDER, TIERS, type TeamLike, type Tier } from "@/lib/desk/league";
 import type { Trade } from "@/lib/desk/types";
 import type { LiveMarks } from "./DeskSpace";
 
@@ -105,7 +105,19 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
             Three leagues — Diamond, Gold and Bronze — with {settings.teams_per_tier} team{settings.teams_per_tier === 1 ? "" : "s"} in each. A team is one frontier model: the strong model that decides. Every team shares the same crew of {crewSize} cheap worker models, which read every candidate once, research it and vote take or pass; only the frontier differs between teams. Every team has its own {fmtMoney(100000)} paper book.
           </p>
           <p>
-            A team dies the moment its book touches {settings.death_pct}% below its start — {fmtMoney(100000 * (1 - settings.death_pct / 100))} — at any tick, not just at the close. Its frontier comes straight back with a new life: a fresh {fmtMoney(100000)} book in Bronze and the next numeral after its name, so Astra II is the second life of GPT-6 Astra, and the dead team keeps its record. Every day at 16:06 New York time the live teams are ranked by ranked return: the top {settings.teams_per_tier} are Diamond, the next {settings.teams_per_tier} are Gold, the rest are Bronze. It is a competition, and survival alone ranks nothing: a team that takes fewer than {settings.min_takes_day} trades in a day and keeps less than {settings.min_heat_pct}% of its book at risk is playing to survive; every such day docks {settings.passive_penalty_pct}% from its ranked return.
+            A team dies the moment its book touches {settings.death_pct}% below its start — {fmtMoney(100000 * (1 - settings.death_pct / 100))}, pushed lower by any cushion it has earned — at any tick, not just at the close, unless it holds a life vest. Its frontier comes straight back with a new life: a fresh {fmtMoney(100000)} book in Bronze and the next numeral after its name, so Astra II is the second life of GPT-6 Astra, and the dead team keeps its record. Every day at 16:06 New York time the live teams are ranked by ranked return: the top {settings.teams_per_tier} are Diamond, the next {settings.teams_per_tier} are Gold, the rest are Bronze. It is a competition, and survival alone ranks nothing: a team that takes fewer than {settings.min_takes_day} trades in a day and keeps less than {settings.min_heat_pct}% of its book at risk is playing to survive; every such day docks {settings.passive_penalty_pct}% from its ranked return.
+          </p>
+          <p>
+            Big days pay. At the ranking each team&apos;s change in its book since the last ranking is measured, and each step includes the ones below it:
+          </p>
+          <ul className="list-disc pl-4 space-y-1">
+            {REWARD_LADDER.map((r) => <li key={r.key}>a +{fmtMoney(r.at)} day earns {r.name}: {r.what}.</li>)}
+          </ul>
+          <p>
+            Small safe days earn nothing. What a team holds shows on its card as &quot;in hand&quot;, and the log records every reward, every vest spent and every shield used.
+          </p>
+          <p>
+            The eight coded strategies are the floor, not the ceiling. At every session each frontier may also trade up to two ideas of its own from the news and the tape, under a playbook name it chooses and reuses, so the books diverge and every frontier&apos;s own playbook builds a record. Those show as &quot;own playbook&quot; in the journal; the crew does not vote on them, and they pass the same guardrail as any trade.
           </p>
           <p>
             New decisions and sessions only happen inside trading hours: stocks {settings.hours.stocks[0]} to {settings.hours.stocks[1]} and crypto {settings.hours.crypto[0]} to {settings.hours.crypto[1]}, New York time. Positions are managed round the clock: fills, stops, targets and funding are checked at every five-minute tick.

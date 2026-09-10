@@ -208,7 +208,7 @@ function parts(d: DecisionRow): Parts {
   const brief = rec(d.brief), setup = rec(brief.setup), proposal = rec(brief.proposal), outcome = rec(d.outcome);
   const state = String(d.status);
   const symbol = d.symbol || str(setup.symbol) || str(proposal.symbol) || str(rec(brief.trade).symbol);
-  const side = d.kind === "close" ? str(rec(brief.trade).side) : d.kind === "session" ? str(proposal.side) : str(setup.side);
+  const side = d.kind === "close" ? str(rec(brief.trade).side) : d.kind === "session" || d.kind === "own" ? str(proposal.side) : str(setup.side);
   return {
     d, brief, setup, proposal, outcome, verdict: d.verdict, workers: d.ballots.filter((b) => b.role === "worker"),
     deciding: state === "launched" || state === "queued", failed: state === "failed", taken: outcome.taken === true, symbol, side, strategyId: d.strategy || str(setup.strategy),
@@ -284,6 +284,19 @@ export function inShort(decision: DecisionRow, team?: TeamRow | null): string {
     s.push(...frontierAndOutcome(p, team));
     return s.filter(Boolean).join(" ");
   }
+  if (d.kind === "own") {
+    // the frontier's own idea: no crew vote; the frontier brought it and the desk placed it or refused it
+    const who = frontierWho(verdict, team);
+    const play = str(proposal.strategy_name) || strategyId.replace(/^own:/, "").replace(/-/g, " ");
+    const because = str(proposal.catalyst) || str(proposal.thesis);
+    const what = [symbol, instrumentPhrase(str(proposal.instrument), symbol), side || "long"].filter(Boolean).join(", ");
+    s.push(`At ${sessionName(brief)} ${who} ran its own playbook${play ? `, "${play}"` : ""}: ${what}${because ? `, because ${lower(clause(because, 150))}` : ""}.`);
+    const passReason = str(outcome.pass_reason);
+    if (p.taken) { const o = orderOf(outcome.ticket); s.push(o ? orderSentence(o, false) : "The desk placed the order."); }
+    else if (deciding) s.push("The desk is placing it.");
+    else s.push(`The desk refused it${passReason ? `: ${passWords(passReason)}` : ""}.`, "No trade.");
+    return s.filter(Boolean).join(" ");
+  }
   // a close: the frontier acting on a position it already holds
   const trade = rec(brief.trade);
   const entry = num(trade.entry_price), unreal = num(trade.unrealized);
@@ -345,6 +358,11 @@ export function oneLine(decision: DecisionRow, team?: TeamRow | null): string {
     if (!str(proposal.symbol) && !symbol) return `${cap(when)}: nobody on the crew had an idea that held up${reason ? `; ${name} noted: ${lower(clause(reason, 120))}` : ""}.`;
     const model = str(proposal.model);
     return `${cap(when)}: ${model ? modelLabel(model) : "the crew"} proposed ${symbol} ${p.side || "long"}; ${frontierBit() || "no verdict"}.`;
+  }
+  if (d.kind === "own") {
+    const when = sessionName(brief).replace(/^the /, "");
+    const play = str(proposal.strategy_name) || p.strategyId.replace(/^own:/, "").replace(/-/g, " ");
+    return `${cap(when)}, its own playbook${play ? ` "${play}"` : ""} on ${symbol} ${p.side || "long"}: ${frontierBit() || `${name} brought it`}.`;
   }
   const trade = rec(brief.trade);
   if (verdict?.action === "tighten") {
@@ -408,10 +426,17 @@ export function tradeInShort(trade: Trade, decision?: DecisionRow | null, team?:
   const p = decision ? parts(decision) : null;
   const sid = t.strategy || p?.strategyId || "";
   const def = STRATEGIES.find((x) => x.id === sid);
-  if (p && p.d.kind === "session") {
+  if (p && p.d.kind === "own") {
+    const because = str(p.proposal.catalyst) || str(p.proposal.thesis) || t.catalyst || t.thesis;
+    const play = str(p.proposal.strategy_name) || sid.replace(/^own:/, "").replace(/-/g, " ");
+    s.push(`At ${sessionName(p.brief)} ${frontierWho(p.verdict, team)} ran its own playbook${play ? `, "${play}"` : ""}: ${t.symbol}, ${instrumentPhrase(t.instrument, t.symbol)}, ${t.side}${because ? `, because ${lower(clause(because, 150))}` : ""}.`);
+  } else if (p && p.d.kind === "session") {
     const model = str(p.proposal.model);
     const because = str(p.proposal.catalyst) || str(p.proposal.thesis) || t.catalyst || t.thesis;
     s.push(`At ${sessionName(p.brief)} ${model ? modelLabel(model) : "a crew member"} proposed ${t.symbol}, ${instrumentPhrase(t.instrument, t.symbol)}, ${t.side}${because ? `, because ${lower(clause(because, 150))}` : ""}.`);
+  } else if (sid.startsWith("own:")) {
+    const why = t.catalyst || t.thesis;
+    s.push(`The frontier went ${t.side} ${t.symbol}, ${instrumentPhrase(t.instrument, t.symbol)}, on its own playbook, "${sid.slice(4).replace(/-/g, " ")}"${why ? `, because ${lower(clause(why, 150))}` : ""}.`);
   } else if (sid || def) {
     s.push(scanSentence(t.symbol, t.instrument, t.side, sid, p ? str(rec(p.brief.strategy).name) : "", p ? str(rec(p.brief.strategy).what) : ""));
   } else {
@@ -420,7 +445,7 @@ export function tradeInShort(trade: Trade, decision?: DecisionRow | null, team?:
   }
   const verdict = p?.verdict ?? null;
   // The crew's count and the frontier's stake in one sentence, so the whole trade stays at four.
-  const crew = p && p.d.kind !== "session" ? crewShort(p.workers) : "";
+  const crew = p && p.d.kind === "candidate" ? crewShort(p.workers) : "";
   const who = p ? frontierWho(verdict, team) : team?.frontier ? `${shortModel(team.frontier)}, the frontier,` : "The frontier";
   const risk = verdict && has(verdict.risk_pct) && verdict.risk_pct > 0 ? stake(verdict) : t.risk_pct > 0 ? ` with ${trim(t.risk_pct)}% of the book at risk${t.leverage > 1 ? ` and ${trim(t.leverage)}x leverage` : ""}` : "";
   s.push(crew ? `${cap(crew)} and ${who.replace(/^The frontier/, "the frontier")} took it${risk}.` : `${who} took it${risk}.`);
@@ -436,7 +461,7 @@ export function tradeOneLine(trade: Trade, decision?: DecisionRow | null, team?:
   const p = decision ? parts(decision) : null;
   const o = tradeOrder(t);
   const name = frontierShort(p?.verdict ?? null, team);
-  const crew = p && p.d.kind !== "session" ? crewShort(p.workers) : "";
+  const crew = p && p.d.kind === "candidate" ? crewShort(p.workers) : "";
   const risk = t.risk_pct > 0 ? `, ${trim(t.risk_pct)}% at risk` : "";
   const head = `${crew ? `${cap(crew)}; ` : ""}${crew ? name : cap(name)} took it: ${orderShort(o)}${risk}`;
   let state: string;

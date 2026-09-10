@@ -11,7 +11,7 @@ import { loadTrades, callFn, REVIEW_FN, fmtMoney, fmtPct, fmtPrice, fmtR, type A
 import { unrealized, COSTS } from "@/lib/desk/ledger";
 import { tradeStats, curveStats, tradesToDetect } from "@/lib/desk/stats";
 import { templateName } from "@/lib/desk/playbook";
-import { STRATEGIES } from "@/lib/desk/scan";
+import { strategyName } from "@/lib/desk/scan";
 import type { Trade } from "@/lib/desk/types";
 import type { LiveMarks } from "./DeskSpace";
 
@@ -21,7 +21,7 @@ const QUADRANT: Record<string, string> = { earned: "earned it: good process, goo
 const EXIT: Record<string, string> = { stop: "stopped out", target: "hit target", time: "time stop", thesis_broke: "thesis broke", liquidated: "liquidated", halt: "halted", cancelled: "never filled" };
 const SOURCE: Record<string, string> = { sit: "from a sit", nightly: "from the nightly jury", shadow: "shadow book" };
 const TF: Record<string, string> = { scalp: "scalp · hours", swing: "swing · days", position: "position · weeks" };
-const stratName = (id: string) => STRATEGIES.find((s) => s.id === id)?.name ?? id;
+const stratName = (id: string) => strategyName(id);
 const tone = (v: number) => (v > 0 ? "var(--ok)" : v < 0 ? "var(--bad)" : "var(--text-3)");
 const signed = (v: number, d = 0) => (v >= 0 ? "+" : "-") + fmtMoney(Math.abs(v), d);
 

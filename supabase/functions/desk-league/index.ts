@@ -5,10 +5,11 @@
 // flags inside the trading hours goes to the crew once (desk_research) and
 // then to every live frontier at once: the frontier decides, code sizes and
 // writes the trade with a ticket. Three sessions a day the crew proposes from
-// the feed and every frontier reviews its own book. A team dies 5% below its
-// start and its frontier comes straight back with a new life and a fresh book;
-// the daily ranking at 16:06 ET marks passive days, sets the tiers and crowns
-// the season's champion.
+// the feed and every frontier reviews its own book and trades its own ideas.
+// A team dies 25% below its start (less the cushion it earned) and its
+// frontier comes straight back with a new life and a fresh book, unless it
+// holds a life vest; the daily ranking at 16:06 ET marks passive days, pays
+// the rewards for big days, sets the tiers and crowns the season's champion.
 //
 // Every stage that needs more than one model call is a child invocation
 // (mode decide / session_all) launched by the tick and left to finish on its
@@ -22,7 +23,7 @@ import { rulesFor, liqPrice } from "./lib/risk.ts";
 import { guardrail, type GuardCtx } from "./lib/rules.ts";
 import { bookEquity, unrealized, slippageBps, entryFees } from "./lib/ledger.ts";
 import { STRATEGIES, ema, rsi } from "./lib/scan.ts";
-import { leagueSettings, draftTeams, rankTiers, teamName, teamKey, deathLine, sessionDue, inHours, isPassive, rankScore, type LeagueSettings, type TeamLike, type Tier } from "./lib/league.ts";
+import { leagueSettings, draftTeams, rankTiers, teamName, teamKey, deathLine, sessionDue, inHours, isPassive, rankScore, rewardsOf, riskCap, grantRewards, rewardsText, REWARD_LADDER, type LeagueSettings, type TeamLike, type Tier, type Rewards } from "./lib/league.ts";
 import type { Trade, Plan, InstrumentMeta, Instrument, Venue, Bar, Rules } from "./lib/types.ts";
 
 type J = Record<string, unknown>;
@@ -205,14 +206,17 @@ const FRONTIER_SCHEMA: Schema = { name: "frontier", schema: { type: "object", ad
 const PROPOSE_SCHEMA: Schema = { name: "idea", schema: { type: "object", additionalProperties: false, required: ["has_idea", "reason", "symbol", "venue", "side", "thesis", "catalyst", "wrong_if", "stop", "target", "horizon_days", "leverage", "confidence", "evidence"], properties: {
   has_idea: { type: "boolean" }, reason: { type: "string" }, symbol: { type: "string" }, venue: { type: "string", enum: ["robinhood", "blofin"] }, side: { type: "string", enum: ["long", "short"] },
   thesis: { type: "string" }, catalyst: { type: "string" }, wrong_if: { type: "string" }, stop: { type: "number" }, target: { type: "number" }, horizon_days: { type: "integer" }, leverage: { type: "number" }, confidence: { type: "number" }, evidence: { type: "array", items: { type: "string" } } } } };
-const SESSION_SCHEMA: Schema = { name: "session", schema: { type: "object", additionalProperties: false, required: ["positions", "takes", "note"], properties: {
+const SESSION_SCHEMA: Schema = { name: "session", schema: { type: "object", additionalProperties: false, required: ["positions", "takes", "ideas", "note"], properties: {
   positions: { type: "array", items: { type: "object", additionalProperties: false, required: ["trade_id", "action", "reason", "stop", "target"], properties: { trade_id: { type: "string" }, action: { type: "string", enum: ["hold", "close", "tighten"] }, reason: { type: "string" }, stop: { type: "number" }, target: { type: "number" } } } },
   takes: { type: "array", items: { type: "object", additionalProperties: false, required: ["proposal", "action", "reason", "risk_pct", "leverage"], properties: { proposal: { type: "integer" }, action: { type: "string", enum: ["take", "pass"] }, reason: { type: "string" }, risk_pct: { type: "number" }, leverage: { type: "number" } } } },
+  ideas: { type: "array", items: { type: "object", additionalProperties: false, required: ["symbol", "venue", "side", "strategy", "thesis", "catalyst", "wrong_if", "stop_pct", "target_pct", "horizon_days", "leverage", "risk_pct", "confidence"], properties: { symbol: { type: "string" }, venue: { type: "string", enum: ["robinhood", "blofin"] }, side: { type: "string", enum: ["long", "short"] }, strategy: { type: "string" }, thesis: { type: "string" }, catalyst: { type: "string" }, wrong_if: { type: "string" }, stop_pct: { type: "number" }, target_pct: { type: "number" }, horizon_days: { type: "integer" }, leverage: { type: "number" }, risk_pct: { type: "number" }, confidence: { type: "number" } } } },
   note: { type: "string" } } } };
 const TF_WORDS: Record<string, string> = { scalp: "hours", swing: "days", position: "weeks" };
-const COMPETITION = (s: LeagueSettings) => `THIS IS A COMPETITION. The objective is to make as much as possible. The tiers rank by percent return and survival alone ranks nothing: a team that takes fewer than ${s.min_takes_day} trades in a day AND keeps less than ${s.min_heat_pct}% of its book at risk in open positions is "playing to survive"; every such day docks ${s.passive_penalty_pct}% from its ranked return and it cannot climb that day. Risk what the death line allows, size for it, and get paid for being right.`;
+const REWARDS_TEXT = `REWARDS FOR BIG DAYS, paid at the 16:06 ET ranking on the change in the book since the last ranking, each step adding to the ones below it: ${REWARD_LADDER.map((r) => `a +$${r.at / 1000}k day earns ${r.name} (${r.what})`).join("; ")}. Big days pay; small safe days pay nothing.`;
+const COMPETITION = (s: LeagueSettings) => `THIS IS A COMPETITION. The objective is to make as much as possible. The tiers rank by percent return and survival alone ranks nothing: a team that takes fewer than ${s.min_takes_day} trades in a day AND keeps less than ${s.min_heat_pct}% of its book at risk in open positions is "playing to survive"; every such day docks ${s.passive_penalty_pct}% from its ranked return and it cannot climb that day. Risk what the death line allows, size for it, and get paid for being right.
+${REWARDS_TEXT}`;
 function bookText(b: BookState): string {
-  return `THE TEAM'S BOOK: paper equity $${b.equity.toFixed(0)} (${b.return_pct >= 0 ? "+" : ""}${b.return_pct.toFixed(2)}% since the start${b.passive_days ? `; ranked at ${b.rank_score >= 0 ? "+" : ""}${b.rank_score.toFixed(2)}% after ${b.passive_days} passive day${b.passive_days === 1 ? "" : "s"}` : ""}) · the team DIES at $${b.death_line.toFixed(0)}, ${b.distance_pct.toFixed(2)}% away · open risk ${b.heat_pct.toFixed(1)}% of the book · today so far: ${b.takes_day} take${b.takes_day === 1 ? "" : "s"} · open: ${b.open.length ? b.open.join("; ") : "nothing"}`;
+  return `THE TEAM'S BOOK: paper equity $${b.equity.toFixed(0)} (${b.return_pct >= 0 ? "+" : ""}${b.return_pct.toFixed(2)}% since the start${b.passive_days ? `; ranked at ${b.rank_score >= 0 ? "+" : ""}${b.rank_score.toFixed(2)}% after ${b.passive_days} passive day${b.passive_days === 1 ? "" : "s"}` : ""}) · since the last ranking ${b.day_pnl >= 0 ? "+" : "-"}$${Math.abs(b.day_pnl).toFixed(0)} · the team DIES at $${b.death_line.toFixed(0)}, ${b.distance_pct.toFixed(2)}% away · risk per trade up to ${b.risk_cap}% of the book · open risk ${b.heat_pct.toFixed(1)}% of the book · takes today: ${b.takes_day} · rewards in hand: ${rewardsText(b.rewards) || "none yet"} · open: ${b.open.length ? b.open.join("; ") : "nothing"}`;
 }
 /** The crew researches once for every team, so it sees no team's book: the setup, the strategy, its record, the tape and the news. */
 function crewSystem(s: LeagueSettings): string {
@@ -223,19 +227,21 @@ You may tighten the stop or target and lower the leverage; you may not widen the
 Write in English. Return ONLY JSON matching the schema.`;
 }
 function frontierSystem(team: TeamRow, b: BookState, s: LeagueSettings): string {
-  return `You are the frontier of team "${team.name}" in the ${team.tier} league of a paper-trading tournament run by Ben, 19, who is learning markets by watching you. Nine teams compete, one frontier each, all served by the same research crew; the top three by ranked return are Diamond, the next three Gold, the rest Bronze; any team ${s.death_pct}% below its start dies on the spot and its frontier starts again with a fresh book and a death on its record. The crew did the brute work and voted; you decide, and only your decisions set your team apart.
+  return `You are the frontier of team "${team.name}" in the ${team.tier} league of a paper-trading tournament run by Ben, 19, who is learning markets by watching you. Nine teams compete, one frontier each, all served by the same research crew; the top three by ranked return are Diamond, the next three Gold, the rest Bronze; any team ${s.death_pct}% below its start (less the cushion it has earned) dies on the spot and its frontier starts again with a fresh book and a death on its record, unless it holds a life vest. The crew did the brute work and voted; you decide, and only your decisions set your team apart.
 ${COMPETITION(s)}
-For every candidate below, answer take or pass with a specific reason (one or two sentences: the mechanism, the level, the record, or what the crew missed). For a take, set risk_pct: the share of the book one stop costs, between 0.5 and ${s.risk_max_pct}. The death line is ${s.death_pct}% below the start, so risk_pct is how many wrong trades in a row you can survive; a team that never risks anything never makes anything. Set leverage for a perp between 1 and the setup's hint (never above it); return 1 for stocks. You may tighten the stop or target; return the setup's numbers to keep them. Passing everything is also a decision and it is judged as playing to survive. Take the candidates whose mechanism, level and record agree, size them to make as much as the death line allows, and say why.
+For every candidate below, answer take or pass with a specific reason (one or two sentences: the mechanism, the level, the record, or what the crew missed). For a take, set risk_pct: the share of the book one stop costs, between 0.5 and ${b.risk_cap}. The death line is ${s.death_pct}% below the start, so risk_pct is how many wrong trades in a row you can survive; a team that never risks anything never makes anything. Set leverage for a perp between 1 and the setup's hint (never above it); return 1 for stocks. You may tighten the stop or target; return the setup's numbers to keep them. Passing everything is also a decision and it is judged as playing to survive. Take the candidates whose mechanism, level and record agree, size them to make as much as the death line allows, and say why.
 ${bookText(b)}
 Write in English. Return ONLY JSON matching the schema.`;
 }
 const PROPOSE_SYSTEM = (s: LeagueSettings) => `You are on the research crew of a paper-trading tournament run by Ben, 19, who is learning markets by watching it; nine frontier models each run a team and every one of them will read your proposal. ${COMPETITION(s)} This is a session: read the news since the last session and the tape, and propose at most ONE trade for the frontiers, or say you have none and why. A proposal needs a mechanism from a story to a price, a current-price entry, a stop, a target, a horizon in days, leverage for a perp (1 for stocks), and the headlines it rests on ("evidence": short quotes of the headline lines). Symbols: any US stock or ETF on Robinhood (venue robinhood), or a BloFin perpetual written BASE-USDT (venue blofin). Quality over quantity: one idea you would put your own money on, or none. Write in English. Return ONLY JSON matching the schema.`;
-const SESSION_SYSTEM = (team: TeamRow, b: BookState, s: LeagueSettings) => `You are the frontier of team "${team.name}" (${team.tier} league) in a paper-trading tournament run by Ben, 19, who is learning markets by watching you. ${COMPETITION(s)} A session: first review every open position with fresh prices and headlines and answer hold, close or tighten (a tighter stop or target only; never wider) with a reason. Then judge the crew's proposals, which every frontier is judging at the same time: take or pass each with a reason; for a take set risk_pct (0.5 to ${s.risk_max_pct}) and leverage (1 to the venue's limit for a perp; 1 for stocks). At most two takes. The team dies ${s.death_pct}% below its start. Write in English. Return ONLY JSON matching the schema.
+const SESSION_SYSTEM = (team: TeamRow, b: BookState, s: LeagueSettings, rules: Rules) => `You are the frontier of team "${team.name}" (${team.tier} league) in a paper-trading tournament run by Ben, 19, who is learning markets by watching you. ${COMPETITION(s)}
+A session has three parts. FIRST, review every open position with fresh prices and headlines and answer hold, close or tighten (a tighter stop or target only; never wider) with a reason. SECOND, judge the crew's proposals, which every frontier is judging at the same time: take or pass each with a reason; for a take set risk_pct (0.5 to ${b.risk_cap}) and leverage (1 to the venue's limit for a perp; 1 for stocks); at most two takes. THIRD, your own trades ("ideas"): the coded strategies and the crew's proposals are the floor, not the ceiling, and a team that only follows them ends the season with the same book as every other team. Run your own playbook. Propose up to two trades of your own from the news and the tape, each with: "strategy", a name of your own in two or three words that you reuse whenever the same kind of idea comes back, so your playbook builds a record; "thesis", the mechanism from a story to a price; "catalyst"; "wrong_if", one observable thing; "stop_pct" and "target_pct", the stop and the target as percent distances from the current price (code reads the live price and places them; the target must be at least ${rules.min_rr} times as far as the stop, or the trade is refused); "horizon_days"; "leverage" (1 for stocks; a perp up to the venue's limit); "risk_pct" (0.5 to ${b.risk_cap}); "confidence" 0-1. Symbols: any US stock or ETF on Robinhood (venue robinhood) or a BloFin perpetual written BASE-USDT (venue blofin); a symbol already on your book is dropped; no more than three new positions a session in all. An empty "ideas" is allowed only when you truly see nothing, and it counts as playing to survive. The team dies ${s.death_pct}% below its start, less its cushion. Write in English. Return ONLY JSON matching the schema.
 ${bookText(b)}`;
 
 type TeamRow = { id: string; name: string; frontier: string; workers: string[]; seniors: string[]; combo: string; tier: Tier; status: "live" | "dead"; season: number; formed_at: string; start_equity: number; equity: number; peak: number; return_pct: number; stats: J };
-type BookState = { equity: number; return_pct: number; death_line: number; distance_pct: number; open: string[]; openTrades: Trade[]; closedPnl: number; heat_pct: number; takes_day: number; passive_days: number; rank_score: number; funding?: Record<string, number>; regime?: string };
+type BookState = { equity: number; return_pct: number; death_line: number; distance_pct: number; open: string[]; openTrades: Trade[]; closedPnl: number; heat_pct: number; takes_day: number; passive_days: number; rank_score: number; rewards: Rewards; day_pnl: number; risk_cap: number; funding?: Record<string, number>; regime?: string };
 const toTeam = (x: J): TeamRow => ({ id: String(x.id), name: String(x.name ?? ""), frontier: String(x.frontier ?? ""), workers: Array.isArray(x.workers) ? (x.workers as string[]) : [], seniors: Array.isArray(x.seniors) ? (x.seniors as string[]) : [], combo: String(x.combo ?? ""), tier: (x.tier as Tier) ?? "bronze", status: x.status === "dead" ? "dead" : "live", season: num(x.season, 1), formed_at: String(x.formed_at ?? ""), start_equity: num(x.start_equity, START), equity: num(x.equity, START), peak: num(x.peak, START), return_pct: num(x.return_pct), stats: (x.stats as J) ?? {} });
+const startCash = (t: TeamRow): number => t.start_equity + rewardsOf(t.stats).refill; // the start plus what its life vests put back
 const teamLike = (t: TeamRow): TeamLike => ({ id: t.id, frontier: t.frontier, workers: t.workers, status: t.status, return_pct: t.return_pct, formed_at: t.formed_at, score: typeof t.stats.rank_score === "number" ? (t.stats.rank_score as number) : undefined });
 const heatOf = (open: Trade[], equity: number) => (equity > 0 ? open.filter((t) => t.status === "open").reduce((a, o) => a + Math.abs((o.entry_price ?? o.entry_ref) - o.stop) * o.qty * (o.unit === "contract" ? o.contract_value : 1), 0) / equity * 100 : 0);
 function toTrade(x: J): Trade {
@@ -270,14 +276,16 @@ async function bookState(uid: string, team: TeamRow, s: LeagueSettings, marks?: 
   const open = trades.filter((t) => t.status === "open" || t.status === "pending");
   const closed = trades.filter((t) => t.status === "closed");
   const mk = marks ?? (open.length ? await quotesFor(uid, open.map((t) => ({ symbol: t.symbol, venue: t.venue }))) : {});
-  const eq = bookEquity(team.start_equity, closed, open, mk);
-  const dl = deathLine(team.start_equity, s.death_pct);
+  const rw = rewardsOf(team.stats);
+  const eq = bookEquity(startCash(team), closed, open, mk);
+  const dl = deathLine(team.start_equity, s.death_pct, rw.cushion);
   const openLines = open.map((t) => `${t.symbol} ${t.side}${t.instrument === "crypto_perp" ? ` ${t.leverage}x` : ""} ${t.status}${t.entry_price ? ` in at ${t.entry_price}` : ""} stop ${t.stop} target ${t.target}${mk[t.symbol] && t.status === "open" ? ` now ${mk[t.symbol]} (${unrealized(t, mk[t.symbol]) >= 0 ? "+" : ""}$${unrealized(t, mk[t.symbol]).toFixed(0)})` : ""}`);
   const dayStart = Date.now() - 24 * 3_600_000;
   const takesDay = trades.filter((t) => Date.parse(t.decided_at) >= dayStart && t.status !== "cancelled").length;
   const ret = (eq.equity / team.start_equity - 1) * 100;
   const passiveDays = num(team.stats.passive_days);
-  return { equity: eq.equity, return_pct: ret, death_line: dl, distance_pct: (eq.equity - dl) / team.start_equity * 100, open: openLines, openTrades: open, closedPnl: closed.reduce((a, t) => a + (t.pnl ?? 0), 0), heat_pct: heatOf(open, eq.equity), takes_day: takesDay, passive_days: passiveDays, rank_score: rankScore(ret, passiveDays, s) };
+  const dayRef = typeof team.stats.day_ref === "number" ? (team.stats.day_ref as number) : team.start_equity; // the book at the last ranking, refills left out
+  return { equity: eq.equity, return_pct: ret, death_line: dl, distance_pct: (eq.equity - dl) / team.start_equity * 100, open: openLines, openTrades: open, closedPnl: closed.reduce((a, t) => a + (t.pnl ?? 0), 0), heat_pct: heatOf(open, eq.equity), takes_day: takesDay, passive_days: passiveDays, rank_score: rankScore(ret, passiveDays, s), rewards: rw, day_pnl: eq.equity - rw.refill - dayRef, risk_cap: riskCap(s, rw) };
 }
 async function bumpStats(teamId: string, delta: Record<string, number>): Promise<void> {
   const t = rows(await rest(`desk_teams?id=eq.${teamId}&select=stats`))[0];
@@ -327,30 +335,42 @@ async function dieTeam(uid: string, s: LeagueSettings, all: TeamRow[], team: Tea
   const made = await insertTeam(uid, s, all, team.frontier, "bronze", season, `${team.name} died (${reason}); a new life on a fresh book`);
   return { replacement: made };
 }
-/** Every live team's equity at live marks; a team at or below its death line dies here and a replacement forms. */
-async function markTeams(uid: string, s: LeagueSettings, all: TeamRow[], season: number): Promise<{ marked: number; died: string[] }> {
+/** Every live team's equity at live marks. A team at or below its death line spends a life vest when it holds one (the book is refilled to its start, no death on the record) and dies otherwise, and a replacement forms. */
+async function markTeams(uid: string, s: LeagueSettings, all: TeamRow[], season: number): Promise<{ marked: number; died: string[]; revived: string[] }> {
   const live = all.filter((t) => t.status === "live");
-  if (!live.length) return { marked: 0, died: [] };
+  if (!live.length) return { marked: 0, died: [], revived: [] };
   const trades = rows(await rest(`desk_trades?user_id=eq.${uid}&owner=like.team:*&status=in.(pending,open,closed)&select=${TRADE_COLS}&limit=5000`)).map(toTrade);
   const open = trades.filter((t) => t.status === "open");
   const marks = open.length ? await quotesFor(uid, open.map((t) => ({ symbol: t.symbol, venue: t.venue }))) : {};
-  const died: string[] = [];
+  const died: string[] = [], revived: string[] = [];
   let marked = 0;
   for (const team of live) {
     const mine = trades.filter((t) => t.owner === `team:${team.id}`);
-    const eq = bookEquity(team.start_equity, mine.filter((t) => t.status === "closed"), mine.filter((t) => t.status === "open" || t.status === "pending"), marks);
-    const ret = (eq.equity / team.start_equity - 1) * 100;
-    const peak = Math.max(team.peak, eq.equity);
-    await rest(`desk_teams?id=eq.${team.id}`, { method: "PATCH", body: JSON.stringify({ equity: round(eq.equity, 2), peak: round(peak, 2), return_pct: round(ret, 4), marked_at: new Date().toISOString() }) });
-    team.equity = eq.equity; team.peak = peak; team.return_pct = ret;
+    const rw = rewardsOf(team.stats);
+    const eq = bookEquity(startCash(team), mine.filter((t) => t.status === "closed"), mine.filter((t) => t.status === "open" || t.status === "pending"), marks);
+    const line = deathLine(team.start_equity, s.death_pct, rw.cushion);
+    let equity = eq.equity;
+    const patch: J = {};
+    if (equity <= line && rw.vests > 0) { // a life vest: the book is refilled to its start and the team lives on
+      const refill = team.start_equity - equity;
+      team.stats = { ...team.stats, vests: rw.vests - 1, refill: round(rw.refill + refill, 2), revivals: rw.revivals + 1 };
+      patch.stats = team.stats;
+      await log(uid, team.name, "revived", team.frontier, "", `the book fell to $${equity.toFixed(0)}, on the death line; a life vest was spent: $${refill.toFixed(0)} is put back so the book stands at its $${team.start_equity.toFixed(0)} start again, the team keeps its name, its tier and its record, and no death is recorded (${rw.vests - 1} vest${rw.vests - 1 === 1 ? "" : "s"} left)`);
+      revived.push(team.name);
+      equity = team.start_equity;
+    }
+    const ret = (equity / team.start_equity - 1) * 100;
+    const peak = Math.max(team.peak, equity);
+    await rest(`desk_teams?id=eq.${team.id}`, { method: "PATCH", body: JSON.stringify({ ...patch, equity: round(equity, 2), peak: round(peak, 2), return_pct: round(ret, 4), marked_at: new Date().toISOString() }) });
+    team.equity = equity; team.peak = peak; team.return_pct = ret;
     marked++;
-    if (eq.equity <= deathLine(team.start_equity, s.death_pct)) {
-      const reason = `the book fell to $${eq.equity.toFixed(0)}, ${((1 - eq.equity / team.start_equity) * 100).toFixed(2)}% below its start (the line is ${s.death_pct}%)`;
+    if (equity <= line) {
+      const reason = `the book fell to $${equity.toFixed(0)}, ${((1 - equity / team.start_equity) * 100).toFixed(2)}% below its start (the line is $${line.toFixed(0)}: ${s.death_pct}% below the start${rw.cushion ? ` less a $${rw.cushion.toFixed(0)} cushion` : ""})`;
       await dieTeam(uid, s, all, team, reason, season);
       died.push(team.name);
     }
   }
-  return { marked, died };
+  return { marked, died, revived };
 }
 
 /* ── the candidate brief (shared by every team) ───────────────────────── */
@@ -487,7 +507,7 @@ async function frontierDecide(uid: string, key: string, team: TeamRow, model: st
     const id = str(d.id, 64);
     const it = items.find((x) => x.decisionId === id) ?? items[Math.max(0, num(String(id).replace(/\D/g, ""), 1) - 1)];
     if (!it) continue;
-    out[it.decisionId] = { action: d.action === "take" ? "take" : "pass", reason: str(d.reason, 500), risk_pct: Math.min(s.risk_max_pct, Math.max(0.5, num(d.risk_pct, 1))), leverage: Math.max(1, num(d.leverage, 1)), stop: nul(d.stop), target: nul(d.target), model, acting };
+    out[it.decisionId] = { action: d.action === "take" ? "take" : "pass", reason: str(d.reason, 500), risk_pct: Math.min(book.risk_cap, Math.max(0.5, num(d.risk_pct, 1))), leverage: Math.max(1, num(d.leverage, 1)), stop: nul(d.stop), target: nul(d.target), model, acting };
   }
   for (const it of items) if (!out[it.decisionId]) out[it.decisionId] = { action: "pass", reason: res.error ? `the frontier did not answer (${res.error})` : "the frontier gave no verdict on this one", risk_pct: 0, leverage: 1, stop: null, target: null, model, error: res.error || "no verdict", acting };
   await saveOpinion(uid, items[0]?.decisionId ?? null, model, acting ? "acting" : "frontier", "frontier", res, res.json ? { decisions: list.slice(0, 8), note: str(res.json?.note, 600) } : {});
@@ -496,7 +516,7 @@ async function frontierDecide(uid: string, key: string, team: TeamRow, model: st
 const ETF_THEME: Record<string, string> = { XLE: "Energy", USO: "Energy", OIH: "Energy", XOP: "Energy", TLT: "Rates", IEF: "Rates", GLD: "Metals", SLV: "Metals", GDX: "Metals", SPY: "Index", QQQ: "Index", IWM: "Index", DIA: "Index", XLF: "Financials", KRE: "Financials", SMH: "Semis", SOXX: "Semis", XLK: "Tech", XLV: "Health", XLU: "Utilities", XLP: "Staples", XLY: "Discretionary", UUP: "Dollar", IBIT: "crypto", FBTC: "crypto", BITO: "crypto", ETHA: "crypto" };
 type Exec = { taken: boolean; trade_id?: string; reasons: string[]; ticket?: J; pass_reason?: string; by: "workers" | "frontier" | "budget" | "guardrail" | "price" };
 /** The take: the price now, the guardrail, the trade row with its ticket. */
-async function execute(uid: string, acct: J, team: TeamRow, decisionId: string, kind: "candidate" | "session", plan0: Plan, verdict: Verdict, ballots: Ballot[], book: BookState, rules: Rules, s: LeagueSettings, atr: number | null, quoteNow: number | null, champion: boolean, t0: number): Promise<Exec> {
+async function execute(uid: string, acct: J, team: TeamRow, decisionId: string, kind: "candidate" | "session" | "own", plan0: Plan, verdict: Verdict, ballots: Ballot[], book: BookState, rules: Rules, s: LeagueSettings, atr: number | null, quoteNow: number | null, champion: boolean, t0: number): Promise<Exec> {
   const dir = plan0.side === "long" ? 1 : -1;
   const entry0 = plan0.entry_ref, stop0 = plan0.stop, target0 = plan0.target;
   const entry = quoteNow ?? entry0;
@@ -514,7 +534,7 @@ async function execute(uid: string, acct: J, team: TeamRow, decisionId: string, 
   if (v.ok === true) { meta = v.meta as InstrumentMeta; name = str(v.name, 80); largeCap = v.largeCap === true; sector = str(v.sector, 40); }
   const themeOf = (sym: string) => ETF_THEME[sym] ? ETF_THEME[sym] : /-USDT?$/.test(sym) ? "crypto" : sector || "other";
   const live = book.openTrades;
-  const ctx: GuardCtx = { equity: book.equity, rules: { ...rules, risk_pct: s.risk_max_pct }, open: live, atr, meta, halted: false, themeOf, drawdownHalved: false, newTonight: 0 };
+  const ctx: GuardCtx = { equity: book.equity, rules: { ...rules, risk_pct: book.risk_cap }, open: live, atr, meta, halted: false, themeOf, drawdownHalved: false, newTonight: 0 };
   const g = guardrail(plan, ctx);
   const checks = [
     { name: "stop on the right side", pass: (plan.stop - plan.entry_ref) * dir < 0, detail: `stop ${plan.stop} against entry ${plan.entry_ref}` },
@@ -619,7 +639,7 @@ async function cycle(uid: string, body: J): Promise<J> {
   const now = etParts(t0);
   const season = await currentSeason(uid, s, today);
   const marks = await markTeams(uid, s, all, num(season.n, 1));
-  const out: J = { marked: marks.marked, died: marks.died, relaunched: 0, failed: 0, queued: 0, launched: 0, skipped: [] as string[] };
+  const out: J = { marked: marks.marked, died: marks.died, revived: marks.revived, relaunched: 0, failed: 0, queued: 0, launched: 0, skipped: [] as string[] };
   // a stale batch: launched more than four minutes ago and still not done → one relaunch, then failed
   const stale = rows(await rest(`desk_research?user_id=eq.${uid}&status=eq.launched&updated_at=lt.${iso(t0 - 240_000)}&select=id,launched&limit=50`));
   const relaunch: string[] = [];
@@ -869,10 +889,10 @@ async function sessionAll(uid: string, body: J): Promise<J> {
     const openSyms = new Set(book.openTrades.map((t) => t.symbol));
     const positions = book.openTrades.filter((t) => t.status === "open").map((t) => { const m = marks[t.symbol] ?? t.entry_price ?? t.entry_ref; const u = unrealized(t, m); return `trade ${t.id}: ${t.symbol} ${t.side}${t.instrument === "crypto_perp" ? ` ${t.leverage}x` : ""} in at ${t.entry_price} now ${m} (${u >= 0 ? "+" : ""}$${u.toFixed(0)}, ${((u / Math.max(1, t.margin)) * 100).toFixed(1)}% of margin) stop ${t.stop} target ${t.target} · ${t.strategy || "session idea"} · until ${t.expires_on ?? "?"}\n    thesis: ${str(t.thesis, 240)}`; });
     const fUser = `${digest.length ? `NEWS SINCE THE LAST SESSION\n${digest.slice(0, 20).join("\n")}\n\n` : ""}TAPE\n${context}\n\nOPEN POSITIONS\n${positions.join("\n") || "(none)"}\n\nPROPOSALS\n${propText.join("\n") || noIdea}\n\n${bookText(book)}`;
-    const fRes = await callModel(key, { model: team.frontier, system: SESSION_SYSTEM(team, book, s), user: fUser, schema: SESSION_SCHEMA, maxTokens: 2500, deadline: Math.min(deadline - 20_000, Date.now() + 50_000) });
+    const fRes = await callModel(key, { model: team.frontier, system: SESSION_SYSTEM(team, book, s, rules), user: fUser, schema: SESSION_SCHEMA, maxTokens: 2500, deadline: Math.min(deadline - 20_000, Date.now() + 50_000) });
     const fj = fRes.json ?? {};
-    await saveOpinion(uid, null, team.frontier, "frontier", "review", fRes, fRes.json ? { positions: fj.positions, takes: fj.takes, note: str(fj.note, 600) } : {});
-    const out: J = { team: team.name, proposals: proposals.length, closes: 0, tightened: 0, taken: 0, error: fRes.error };
+    await saveOpinion(uid, null, team.frontier, "frontier", "review", fRes, fRes.json ? { positions: fj.positions, takes: fj.takes, ideas: fj.ideas, note: str(fj.note, 600) } : {});
+    const out: J = { team: team.name, proposals: proposals.length, closes: 0, tightened: 0, taken: 0, own: 0, error: fRes.error };
     // positions
     for (const p of Array.isArray(fj.positions) ? (fj.positions as J[]) : []) {
       const t = book.openTrades.find((x) => x.id === str(p.trade_id, 64) && x.status === "open");
@@ -906,7 +926,7 @@ async function sessionAll(uid: string, body: J): Promise<J> {
     for (let i = 0; i < proposals.length; i++) {
       const p = proposals[i];
       const t = takes.get(i);
-      const verdict: Verdict = t ? { action: t.action === "take" ? "take" : "pass", reason: str(t.reason, 500), risk_pct: Math.min(s.risk_max_pct, Math.max(0.5, num(t.risk_pct, 1))), leverage: Math.max(1, num(t.leverage, 1)), stop: null, target: null, model: team.frontier, error: fRes.error || undefined } : { action: "pass", reason: fRes.error ? `the frontier did not answer (${fRes.error})` : "the frontier gave no verdict", risk_pct: 0, leverage: 1, stop: null, target: null, model: team.frontier, error: fRes.error || "no verdict" };
+      const verdict: Verdict = t ? { action: t.action === "take" ? "take" : "pass", reason: str(t.reason, 500), risk_pct: Math.min(book.risk_cap, Math.max(0.5, num(t.risk_pct, 1))), leverage: Math.max(1, num(t.leverage, 1)), stop: null, target: null, model: team.frontier, error: fRes.error || undefined } : { action: "pass", reason: fRes.error ? `the frontier did not answer (${fRes.error})` : "the frontier gave no verdict", risk_pct: 0, leverage: 1, stop: null, target: null, model: team.frontier, error: fRes.error || "no verdict" };
       const ballot: Ballot = { model: p.model, role: "worker", stance: "take", confidence: p.confidence, thesis: p.thesis, wrong_if: p.wrong_if, stop: p.stop, target: p.target, leverage: p.leverage, tags: [], checked: [], error: "", cost_usd: 0, latency_ms: 0 };
       const made = rows(await rest("desk_decisions", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: uid, team_id: team.id, kind: "session", symbol: p.symbol, strategy: "", timeframe: p.horizon_days <= 1 ? "scalp" : p.horizon_days <= 10 ? "swing" : "position", status: "launched", brief: { session_key: sessionKey, proposal: { ...p, meta: undefined }, digest: digest.slice(0, 12), digest_items: digestItems }, ballots: [ballot], verdict, launched: { at: t0, n: 1 } }) }))[0];
       if (!made) continue;
@@ -922,8 +942,56 @@ async function sessionAll(uid: string, body: J): Promise<J> {
       await rest(`desk_decisions?id=eq.${made.id}`, { method: "PATCH", body: JSON.stringify({ status: "done", ballots: [ballot, { model: team.frontier, role: "frontier", stance: verdict.action, confidence: verdict.action === "take" ? 0.6 : 0.4, thesis: verdict.reason, wrong_if: "", stop: null, target: null, leverage: verdict.leverage, tags: [], checked: [], error: verdict.error ?? "", cost_usd: 0, latency_ms: 0 }], outcome, cost_usd: round((workerCost / teams.length + fRes.cost) / Math.max(1, proposals.length), 5), updated_at: new Date().toISOString() }) });
       stats.decisions++; if (outcome.taken) stats.takes++; else stats.passes++;
     }
-    out.taken = taken;
-    await bumpStats(team.id, { ...stats, closes: num(out.closes) });
+    // the frontier's own ideas: its own playbook, placed at the live price, through the same guardrail and ticket
+    const own = (Array.isArray(fj.ideas) ? (fj.ideas as J[]) : []).slice(0, 2);
+    let ownTaken = 0;
+    for (const o of own) {
+      const raw = str(o.symbol, 20).toUpperCase().replace(/\s+/g, "");
+      const venue0 = o.venue === "blofin" ? "blofin" : "robinhood";
+      const sym = venue0 === "blofin" ? (raw.includes("-") ? raw.replace(/-(USD|USDC|PERP)$/, "-USDT") : `${raw}-USDT`) : raw;
+      if (!raw) continue;
+      const name = str(o.strategy, 40).trim() || "own idea";
+      const strategy = `own:${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "idea"}`;
+      const side: "long" | "short" = o.side === "short" ? "short" : "long";
+      const stopPct = Math.max(0.2, Math.min(30, num(o.stop_pct, 3))), targetPct = Math.max(0.3, Math.min(100, num(o.target_pct, 6)));
+      const horizon = Math.max(1, Math.min(60, Math.floor(num(o.horizon_days, 5))));
+      const timeframe = horizon <= 1 ? "scalp" : horizon <= 10 ? "swing" : "position";
+      const verdict: Verdict = { action: "take", reason: str(o.thesis, 500), risk_pct: Math.min(book.risk_cap, Math.max(0.5, num(o.risk_pct, 1))), leverage: Math.max(1, num(o.leverage, 1)), stop: null, target: null, model: team.frontier };
+      const ballot: Ballot = { model: team.frontier, role: "frontier", stance: "take", confidence: Math.min(0.99, Math.max(0.01, num(o.confidence, 0.5))), thesis: str(o.thesis, 600), wrong_if: str(o.wrong_if, 300), stop: null, target: null, leverage: verdict.leverage, tags: [], checked: [], error: "", cost_usd: 0, latency_ms: 0 };
+      let idea: J = { model: team.frontier, own: true, strategy, strategy_name: name, symbol: sym, venue: venue0, side, thesis: ballot.thesis, catalyst: str(o.catalyst, 300), wrong_if: ballot.wrong_if, stop_pct: stopPct, target_pct: targetPct, entry_ref: null, stop: null, target: null, horizon_days: horizon, leverage: verdict.leverage, risk_pct: verdict.risk_pct, confidence: ballot.confidence, evidence: [], reason: "" };
+      let outcome: Exec | null = null, plan: Plan | null = null, atr: number | null = null;
+      if (openSyms.has(sym)) outcome = { taken: false, reasons: [`${sym} is already on the team's book`], pass_reason: "already held", by: "guardrail" };
+      else if (taken + ownTaken >= 3) outcome = { taken: false, reasons: ["three new positions a session is the limit"], pass_reason: "three new positions a session", by: "guardrail" };
+      else {
+        const v = await tape(uid, { mode: "validate", symbol: sym, venue: venue0 }, 20000);
+        if (v.ok !== true) outcome = { taken: false, reasons: [`${sym}: ${str(v.error, 120) || "not a symbol the desk can trade"}`], pass_reason: "not a symbol the desk can trade", by: "guardrail" };
+        else {
+          const snap = await tape(uid, { mode: "snapshot", symbols: [{ symbol: sym, venue: String(v.venue) }] }, 30000);
+          const card = ((snap.cards as Record<string, J>) ?? {})[sym];
+          const price = card && "price" in card ? num(card.price) : 0;
+          if (!(price > 0)) outcome = { taken: false, reasons: [`${sym}: no price on the tape`], pass_reason: "no price on the tape", by: "price" };
+          else {
+            const dir = side === "long" ? 1 : -1;
+            const stop = round(price * (1 - (dir * stopPct) / 100), 6), target = round(price * (1 + (dir * targetPct) / 100), 6);
+            atr = card ? nul(card.atr14) : null;
+            idea = { ...idea, venue: String(v.venue), instrument: String(v.instrument), entry_ref: price, stop, target };
+            ballot.stop = stop; ballot.target = target;
+            plan = { venue: String(v.venue) as Venue, instrument: String(v.instrument) as Instrument, symbol: sym, side, leverage: verdict.leverage, template: 0, thesis: ballot.thesis, catalyst: str(o.catalyst, 300), falsifier: ballot.wrong_if, confidence: ballot.confidence, entry_ref: price, stop, target, horizon_days: horizon, risk_pct: verdict.risk_pct, evidence: [], key_risks: [], crosses_event: false, timeframe, strategy };
+          }
+        }
+      }
+      const made = rows(await rest("desk_decisions", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: uid, team_id: team.id, kind: "own", symbol: sym, strategy, timeframe, status: "launched", brief: { session_key: sessionKey, own: true, proposal: idea, digest: digest.slice(0, 12), digest_items: digestItems }, ballots: [ballot], verdict, launched: { at: t0, n: 1 } }) }))[0];
+      if (!made) continue;
+      if (!outcome && plan) {
+        (book as unknown as J).regime = str(ctx.regime, 60);
+        outcome = await execute(uid, acct, team, String(made.id), "own", plan, verdict, [ballot], book, rules, s, atr, plan.entry_ref, champion === team.id, Date.now());
+        if (outcome.taken) { ownTaken++; openSyms.add(sym); }
+      }
+      await rest(`desk_decisions?id=eq.${made.id}`, { method: "PATCH", body: JSON.stringify({ status: "done", ballots: [ballot], outcome: outcome ?? { taken: false, reasons: ["nothing to place"], pass_reason: "nothing to place", by: "guardrail" }, updated_at: new Date().toISOString() }) });
+      stats.decisions++; if (outcome?.taken) stats.takes++; else stats.passes++;
+    }
+    out.taken = taken; out.own = ownTaken;
+    await bumpStats(team.id, { ...stats, closes: num(out.closes), own_takes: ownTaken });
     return out;
   }));
   return { session: sessionKey, proposals: proposals.length, teams: results, ms: Date.now() - t0 };
@@ -944,7 +1012,8 @@ async function rank(uid: string, body: J): Promise<J> {
   if (!all.some((t) => t.status === "live")) return { note: "no live teams" };
   const season = await currentSeason(uid, s, today);
   const marks = await markTeams(uid, s, all, num(season.n, 1));
-  const out: J = { day: today, died: marks.died, moved: [] as string[], champion: "", passive: [] as string[] };
+  const out: J = { day: today, died: marks.died, revived: marks.revived, moved: [] as string[], champion: "", passive: [] as string[], rewards: [] as string[], shielded: [] as string[] };
+  const floors: Record<string, Tier | undefined> = {};
   // playing to survive: too few takes today and too little at risk → a passive day against the team, docked from its ranked return
   const dayStart = Date.parse(`${today}T04:00:00Z`);
   const takesR = rows(await rest(`desk_trades?user_id=eq.${uid}&owner=like.team:*&decided_at=gte.${iso(t0 - 24 * 3_600_000)}&status=neq.cancelled&select=owner`));
@@ -959,14 +1028,35 @@ async function rank(uid: string, body: J): Promise<J> {
       await log(uid, team.name, "passive", team.frontier, "", `playing to survive: ${takes} take${takes === 1 ? "" : "s"} today and ${heat.toFixed(1)}% of the book at risk; ${s.passive_penalty_pct}% docked from the ranked return (${passiveDays} passive day${passiveDays === 1 ? "" : "s"})`);
       (out.passive as string[]).push(team.name);
     }
+    // big days pay: the change in the book since the last ranking (what a vest put back does not count), judged once a day like the passive day
+    const rw = rewardsOf(team.stats);
+    const basis = team.equity - rw.refill;
+    const dayRef = typeof team.stats.day_ref === "number" ? (team.stats.day_ref as number) : team.start_equity;
+    const dayPnl = basis - dayRef;
+    let rewards = rw;
+    const hadShield = rw.shield > 0; // a shield earned at the last ranking protects this one and is spent by it
+    if (!ranToday) {
+      const g = grantRewards({ ...rw, shield: 0 }, dayPnl);
+      rewards = g.next;
+      if (g.earned.length) {
+        await log(uid, team.name, "reward", team.frontier, "", `a +$${dayPnl.toFixed(0)} day earns ${g.earned.map((e) => e.name).join(", ")}: ${g.earned.map((e) => e.what).join("; ")}. In hand now: ${rewardsText(rewards)}`);
+        (out.rewards as string[]).push(`${team.name}: ${g.earned.map((e) => e.name).join(", ")}`);
+      }
+    }
+    floors[team.id] = hadShield ? team.tier : undefined;
     const score = rankScore(team.return_pct, passiveDays, s);
-    team.stats = { ...team.stats, passive_days: passiveDays, rank_score: round(score, 4), takes_day: takes, heat_pct: round(heat) };
+    team.stats = { ...team.stats, passive_days: passiveDays, rank_score: round(score, 4), takes_day: takes, heat_pct: round(heat), ...(ranToday ? {} : { day_ref: round(basis, 2), day_pnl: round(dayPnl, 2) }), vests: rewards.vests, cushion: rewards.cushion, risk_bonus: rewards.risk_bonus, shield: rewards.shield, refill: rewards.refill, revivals: rewards.revivals };
     await rest(`desk_teams?id=eq.${team.id}`, { method: "PATCH", body: JSON.stringify({ stats: team.stats }) });
   }
-  // tiers by the ranked return
-  const ranked = rankTiers(all.map(teamLike), s.teams_per_tier);
+  // tiers by the ranked return; a shield keeps a team where it is
+  const ranked = rankTiers(all.map((t) => ({ ...teamLike(t), floor: floors[t.id] })), s.teams_per_tier);
   for (const r of ranked) {
     const team = all.find((t) => t.id === r.id)!;
+    if (r.shielded) {
+      const byScore = r.rank <= s.teams_per_tier ? "diamond" : r.rank <= 2 * s.teams_per_tier ? "gold" : "bronze";
+      await log(uid, team.name, "shielded", team.frontier, "", `ranked ${r.rank}, which is ${byScore}, but its shield keeps it in ${team.tier} today; the shield is spent`);
+      (out.shielded as string[]).push(team.name);
+    }
     if (team.tier === r.tier) continue;
     const up = ["bronze", "gold", "diamond"].indexOf(r.tier) > ["bronze", "gold", "diamond"].indexOf(team.tier);
     await rest(`desk_teams?id=eq.${team.id}`, { method: "PATCH", body: JSON.stringify({ tier: r.tier }) });
@@ -982,7 +1072,7 @@ async function rank(uid: string, body: J): Promise<J> {
     if (champ) { await log(uid, champ.name, "champion", champ.frontier, "", `season ${season.n}: ${champ.return_pct >= 0 ? "+" : ""}${champ.return_pct.toFixed(2)}%; the desk mirrors this team now`); out.champion = champ.name; }
     await rest("desk_seasons", { method: "POST", body: JSON.stringify({ user_id: uid, n: num(season.n) + 1, start_day: addDays(today, 1), end_day: addDays(today, 1 + s.season_days), status: "running" }) });
   }
-  await log(uid, "the leagues", "rank", "", "", `daily ranking ran: ${(out.moved as string[]).length} moved${(out.passive as string[]).length ? `; passive: ${(out.passive as string[]).join(", ")}` : ""}${marks.died.length ? `; died: ${marks.died.join(", ")}` : ""}${out.champion ? `; champion ${out.champion}` : ""}`);
+  await log(uid, "the leagues", "rank", "", "", `daily ranking ran: ${(out.moved as string[]).length} moved${(out.passive as string[]).length ? `; passive: ${(out.passive as string[]).join(", ")}` : ""}${(out.rewards as string[]).length ? `; rewards: ${(out.rewards as string[]).join("; ")}` : ""}${(out.shielded as string[]).length ? `; shielded: ${(out.shielded as string[]).join(", ")}` : ""}${marks.revived.length ? `; revived: ${marks.revived.join(", ")}` : ""}${marks.died.length ? `; died: ${marks.died.join(", ")}` : ""}${out.champion ? `; champion ${out.champion}` : ""}`);
   out.ms = Date.now() - t0;
   return out;
 }

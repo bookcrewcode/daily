@@ -428,7 +428,7 @@ export type Ballot = {
   stop: number | null; target: number | null; leverage: number | null; tags: string[]; checked: string[]; error: string; cost_usd: number; latency_ms: number;
 };
 export type TeamVerdict = { action: "take" | "pass" | "close" | "tighten" | "hold"; reason: string; risk_pct?: number; leverage?: number; stop?: number; target?: number; model: string; error?: string; acting?: boolean };
-export type DecisionKind = "candidate" | "session" | "close";
+export type DecisionKind = "candidate" | "session" | "close" | "own"; // own: a trade the frontier came up with itself, under a playbook name of its own
 // A headline as the league function keeps it inside a decision's brief (`headline_items`, `macro_items` on a
 // candidate, `digest_items` on a session). Older rows only hold the one-line strings `headlines`, `macro`, `digest`.
 export type BriefNewsItem = { title: string; plain: string; why: string; impact: number; direction: string; category: string; published: string; tickers: string[]; source?: string };

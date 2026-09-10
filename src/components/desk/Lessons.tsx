@@ -9,7 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Card, Eyebrow, SectionTitle } from "../ui";
 import { loadLessons, type Lesson } from "@/lib/desk/api";
 import { PLAYBOOK, ORGANISING_RULE, templateName } from "@/lib/desk/playbook";
-import { STRATEGIES } from "@/lib/desk/scan";
+import { strategyName } from "@/lib/desk/scan";
 
 const STATUS: Record<Lesson["status"], { label: string; note: string; color: string }> = {
   active: { label: "a rule", note: "seen five times and at least three times as often as it was contradicted; the jurors read it every night", color: "var(--ok)" },
@@ -95,7 +95,7 @@ function LessonCard({ l }: { l: Lesson }) {
   const s = STATUS[l.status];
   const scope = l.scope ?? {};
   const tpl = Number(scope.template);
-  const strategy = typeof scope.strategy === "string" && scope.strategy ? (STRATEGIES.find((x) => x.id === scope.strategy)?.name ?? String(scope.strategy)) : "";
+  const strategy = typeof scope.strategy === "string" && scope.strategy ? strategyName(String(scope.strategy)) : "";
   const bits = [tpl ? templateName(tpl) : "", strategy, typeof scope.timeframe === "string" ? String(scope.timeframe) : "", typeof scope.instrument === "string" ? String(scope.instrument).replace("_", " ") : ""].filter(Boolean);
   return (
     <Card className="mt-2">

@@ -18,7 +18,7 @@ import { Lingo, Term } from "./Term";
 import { InShort, NewsList, newsOf, tradeInShort, tradeOneLine } from "./Plain";
 import { fmtMoney, fmtPct, fmtPrice, fmtR, modelLabel, labTone, type DecisionRow, type TeamRow } from "@/lib/desk/api";
 import { unrealized } from "@/lib/desk/ledger";
-import { STRATEGIES } from "@/lib/desk/scan";
+import { strategyName } from "@/lib/desk/scan";
 import { templateName } from "@/lib/desk/playbook";
 import type { Tier } from "@/lib/desk/league";
 import type { Trade } from "@/lib/desk/types";
@@ -41,7 +41,7 @@ const TF: Record<string, string> = { scalp: "scalp · hours", swing: "swing · d
 const STATUS: Record<string, string> = { pending: "queued", open: "running", closed: "closed", cancelled: "never filled" };
 const FILL: Record<string, string> = { next_5m: "fills on the next 5-minute bar", next_hour: "fills on the next hourly candle" };
 
-const stratName = (id?: string) => (id ? STRATEGIES.find((s) => s.id === id)?.name ?? id : "");
+const stratName = (id?: string) => (id ? strategyName(id) : "");
 const tone = (v: number) => (v > 0 ? "var(--ok)" : v < 0 ? "var(--bad)" : "var(--text-3)");
 const signed = (v: number, d = 0) => (v >= 0 ? "+" : "-") + fmtMoney(Math.abs(v), d);
 const when = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
@@ -98,7 +98,7 @@ export default function TradeCard({ trade: t, team, decision, live, now, busy, o
   const short = open ? tradeInShort(t, decision ?? null, team ?? null) : "";
   // The headlines that were on the brief when the team decided: the ones on this name and the macro stories for a
   // flagged setup, or everything the crew read at the session for a session idea. Explained, not just named.
-  const news = open && decision ? (decision.kind === "session" ? newsOf(decision.brief, "digest") : [...newsOf(decision.brief, "headlines"), ...newsOf(decision.brief, "macro")]) : [];
+  const news = open && decision ? (decision.kind === "session" || decision.kind === "own" ? newsOf(decision.brief, "digest") : [...newsOf(decision.brief, "headlines"), ...newsOf(decision.brief, "macro")]) : [];
 
   return (
     <Card>
@@ -146,7 +146,7 @@ export default function TradeCard({ trade: t, team, decision, live, now, busy, o
             <div>
               <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)]">The news behind it</p>
               <p className="text-[10px] text-[var(--text-4)] leading-relaxed">
-                {decision?.kind === "session" ? "Everything the crew read at the session before it proposed this." : "The tagged headlines on this name and the big macro stories on the brief when the crew read the setup."} Under each one: what happened in plain words, then how strong it is and which way it points.
+                {decision?.kind === "session" ? "Everything the crew read at the session before it proposed this." : decision?.kind === "own" ? "Everything on the feed at the session when the frontier came up with this." : "The tagged headlines on this name and the big macro stories on the brief when the crew read the setup."} Under each one: what happened in plain words, then how strong it is and which way it points.
               </p>
               <NewsList items={news} foldAfter={2} foldLabel="headlines" />
             </div>

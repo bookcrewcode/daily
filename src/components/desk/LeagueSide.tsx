@@ -147,7 +147,7 @@ export default function LeagueSide({ uid, account, curve, live, today, onChanged
               // Rows from before the crew was shared may still carry the old actions; they are coloured, not renamed.
               <p key={x.id} className="text-[11px] leading-snug py-1.5 border-t border-[var(--border-1)]">
                 <span className="mono text-[9px] text-[var(--text-4)]">{timeLabel(x.at)}</span>{" "}
-                <span className="mono text-[9px] uppercase" style={{ color: ["cut", "died", "dead", "kick"].includes(x.action) ? "var(--bad)" : x.action === "notice" ? "var(--warn)" : "var(--text-4)" }}>{x.action}</span>{" "}
+                <span className="mono text-[9px] uppercase" style={{ color: ["cut", "died", "dead", "kick"].includes(x.action) ? "var(--bad)" : ["reward", "revived", "shielded"].includes(x.action) ? "var(--ok)" : x.action === "notice" ? "var(--warn)" : "var(--text-4)" }}>{x.action}</span>{" "}
                 <span className="font-semibold">{x.model ? modelLabel(x.model) : "—"}</span>
                 {x.seat ? <span className="text-[var(--text-4)]"> ({x.seat})</span> : null}
                 {x.replaced_by ? <> → {modelLabel(x.replaced_by)}</> : null}

@@ -112,6 +112,11 @@ export const STRATEGIES: StrategyDef[] = [
     rules: ["12-month momentum in the top tenth of the universe (bottom tenth for shorts)", "10-week average above the 40-week (weekly trend up) and price above the 10-week", "stop at the 10-week average minus 2.5 daily ATRs; target three times the risk; forty days"] },
 ];
 export function strategyDef(id: string): StrategyDef | undefined { return STRATEGIES.find((s) => s.id === id); }
+/** The name to show for a strategy id: a coded strategy's name, or a frontier's own playbook ("own:news-momentum" reads "own playbook: news momentum"). */
+export function strategyName(id: string): string {
+  if (id.startsWith("own:")) return `own playbook: ${id.slice(4).replace(/-/g, " ")}`;
+  return STRATEGIES.find((s) => s.id === id)?.name ?? id;
+}
 /* ── the scan ──────────────────────────────────────────────────────────── */
 type Ctx = {
   inp: ScanInput; d: Bar[]; closes: number[]; price: number; prevClose: number; last: Bar;

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_LEAGUE, teamKey, draftTeams, rankTiers, teamName, poolStanding, deathLine, sessionDue, leagueSettings, isPassive, rankScore, inHours, type TeamLike } from "./league";
+import { DEFAULT_LEAGUE, teamKey, draftTeams, rankTiers, teamName, poolStanding, deathLine, sessionDue, leagueSettings, isPassive, rankScore, inHours, rewardsFor, rewardsOf, grantRewards, riskCap, rewardsText, type TeamLike } from "./league";
 
 test("the draft deals one team per frontier, every team on the same crew, tiers interleaved, keys unique", () => {
   const teams = draftTeams(DEFAULT_LEAGUE);
@@ -38,6 +38,9 @@ test("names, standing, the death line, session windows, settings ranges", () => 
   assert.equal(poolStanding("a/z", teams), -1); // the ranked return when the team has one
   assert.equal(poolStanding("nobody", teams), null);
   assert.equal(deathLine(100000, 5), 95000);
+  assert.equal(deathLine(100000, 25), 75000);
+  assert.equal(deathLine(100000, 25, 10000), 65000);
+  assert.equal(leagueSettings({}).death_pct, 25);
   assert.equal(sessionDue(9, 36, ["09:35", "15:15"]), "09:35");
   assert.equal(sessionDue(9, 41, ["09:35"]), null);
   const s = leagueSettings({ death_pct: 99, risk_max_pct: 0, frontier_pool: ["bad id"], research: "off", worker_lookups: 9, hours: { stocks: ["9", "17:00"], crypto: ["10:00", "23:00"] } });
@@ -72,4 +75,30 @@ test("playing to survive is penalised in the ranking: a passive day docks the ra
     { id: "plays", frontier: "f/b", workers: [], status: "live", return_pct: -0.5, score: rankScore(-0.5, 0, s) },
   ];
   assert.equal(rankTiers(teams, 1)[0].id, "plays");
+});
+
+test("big days pay: the ladder is cumulative, the holdings are capped, a shield is a floor in the ranking", () => {
+  assert.deepEqual(rewardsFor(4999).map((r) => r.key), []);
+  assert.deepEqual(rewardsFor(5000).map((r) => r.key), ["vest"]);
+  assert.deepEqual(rewardsFor(31000).map((r) => r.key), ["vest", "cushion", "guns", "shield"]);
+  const none = rewardsOf({});
+  assert.deepEqual(none, { vests: 0, cushion: 0, risk_bonus: 0, shield: 0, refill: 0, revivals: 0 });
+  const big = grantRewards(none, 30000).next;
+  assert.deepEqual(big, { vests: 2, cushion: 10000, risk_bonus: 1, shield: 1, refill: 0, revivals: 0 }); // the vest and the shield's second vest
+  const capped = grantRewards(grantRewards(grantRewards(big, 30000).next, 30000).next, 30000).next;
+  assert.equal(capped.vests, 3); assert.equal(capped.cushion, 40000); assert.equal(capped.risk_bonus, 3);
+  assert.equal(riskCap(leagueSettings({}), big), 4);
+  assert.equal(riskCap(leagueSettings({ risk_max_pct: 9 }), capped), 10);
+  assert.equal(rewardsOf({ vests: "2", cushion: -5, shield: 3 }).vests, 2);
+  assert.equal(rewardsOf({ vests: "2", cushion: -5, shield: 3 }).cushion, 0);
+  assert.match(rewardsText(big), /2 life vests, a \$10,000 cushion/);
+  assert.equal(rewardsText(none), "");
+  // seven teams, one per tier slot plus one: the seventh by score holds a shield for gold and keeps it; gold holds four that day
+  const teams: TeamLike[] = Array.from({ length: 7 }, (_, i) => ({ id: `t${i}`, frontier: `f/${i}`, workers: [], status: "live", return_pct: 7 - i, floor: i === 6 ? "gold" : undefined }));
+  const ranked = rankTiers(teams, 3);
+  assert.equal(ranked[6].id, "t6"); assert.equal(ranked[6].tier, "gold"); assert.equal(ranked[6].shielded, true); assert.equal(ranked[6].rank, 7);
+  assert.equal(ranked.filter((r) => r.tier === "gold").length, 4);
+  assert.equal(ranked[0].shielded, false);
+  // a floor below the earned tier does nothing
+  assert.equal(rankTiers([{ id: "a", frontier: "f/a", workers: [], status: "live", return_pct: 1, floor: "bronze" }], 1)[0].tier, "diamond");
 });

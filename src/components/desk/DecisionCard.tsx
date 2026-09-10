@@ -16,7 +16,7 @@ import { Lingo } from "./Term";
 import { InShort, NewsList, inShort, newsOf, oneLine } from "./Plain";
 import { fmtMoney, fmtPct, fmtPrice, fmtR, labTone, modelLabel, type Ballot, type DecisionRow, type TeamRow } from "@/lib/desk/api";
 import type { Tier } from "@/lib/desk/league";
-import { STRATEGIES } from "@/lib/desk/scan";
+import { strategyName } from "@/lib/desk/scan";
 
 /* ── the shapes the desk writes into brief and outcome ─────────────────── */
 type Reason = { label?: string; value?: string; ok?: boolean; core?: boolean };
@@ -47,17 +47,18 @@ type Outcome = {
 
 /* ── words for the codes ───────────────────────────────────────────────── */
 const TF: Record<string, string> = { scalp: "scalp · hours", swing: "swing · days", position: "position · weeks" };
-const KIND_LABEL: Record<string, string> = { candidate: "candidate", session: "session idea", close: "close" };
+const KIND_LABEL: Record<string, string> = { candidate: "candidate", session: "session idea", close: "close", own: "own playbook" };
 const KIND_NOTE: Record<string, string> = {
   candidate: "A candidate is a setup the scan flagged; the crew votes once for every team, and each frontier decides for its own.",
   session: "A session idea is one the crew brought out of the news feed at a session; every frontier judged the same idea for its own team.",
   close: "A close is the frontier acting on a position the team already holds: closing it, or tightening its levels.",
+  own: "An own playbook trade is one the frontier came up with itself at a session, from the news and the tape, under a name it chose; the crew did not vote on it.",
 };
 const ACTION: Record<string, string> = { take: "take it", pass: "pass", close: "close it", tighten: "tighten it", hold: "hold" };
 const TIER_NAME: Record<Tier, string> = { diamond: "Diamond", gold: "Gold", bronze: "Bronze" };
 const TIER_COLOR: Record<Tier, string> = { diamond: "#7dd3fc", gold: "#fbbf24", bronze: "#d97706" };
 
-const stratName = (id: string) => STRATEGIES.find((s) => s.id === id)?.name ?? id;
+const stratName = (id: string) => strategyName(id);
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const has = (v: number | null | undefined): v is number => typeof v === "number" && Number.isFinite(v);
 const px = (v: number | null | undefined) => (has(v) ? `$${fmtPrice(v)}` : "");
@@ -102,11 +103,11 @@ export default function DecisionCard({ decision, team, expanded, onToggle, showT
         ? (verdict?.action === "tighten" ? { text: "tightened", color: "var(--warn)" } : { text: "closed", color: "var(--bad)" })
         : taken ? { text: "taken", color: "var(--ok)" } : { text: "passed", color: "var(--text-4)" };
 
-  const side = d.kind === "close" ? str(brief.trade?.side) : d.kind === "session" ? str(proposal.side) : str(setup.side);
+  const side = d.kind === "close" ? str(brief.trade?.side) : d.kind === "session" || d.kind === "own" ? str(proposal.side) : str(setup.side);
   const strategyId = d.strategy || str(setup.strategy);
   const headBits = [
     side,
-    d.kind === "candidate" && strategyId ? stratName(strategyId) : "",
+    (d.kind === "candidate" || d.kind === "own") && strategyId ? stratName(strategyId) : "",
     d.timeframe ? (TF[d.timeframe] ?? d.timeframe) : "",
   ].filter(Boolean).join(" · ");
 
@@ -117,7 +118,8 @@ export default function DecisionCard({ decision, team, expanded, onToggle, showT
   const short = expanded ? inShort(d, team) : "";
   const headlineNews = d.kind === "candidate" && expanded ? newsOf(d.brief, "headlines") : [];
   const macroNews = d.kind === "candidate" && expanded ? newsOf(d.brief, "macro") : [];
-  const digestNews = d.kind === "session" && expanded ? newsOf(d.brief, "digest") : [];
+  const digestNews = (d.kind === "session" || d.kind === "own") && expanded ? newsOf(d.brief, "digest") : [];
+  const loose = proposal as unknown as Record<string, unknown>; // the frontier's own idea carries its percent distances and its playbook name
   const ticket = outcome.ticket ?? null;
 
   return (
@@ -192,9 +194,9 @@ export default function DecisionCard({ decision, team, expanded, onToggle, showT
             </>
           )}
 
-          {d.kind === "session" && (
+          {(d.kind === "session" || d.kind === "own") && (
             <>
-              <Block title="The idea" note="A worker in the crew read the feed on its own and brought this. Nothing is sized until the frontier agrees.">
+              <Block title={d.kind === "own" ? "The frontier's own idea" : "The idea"} note={d.kind === "own" ? `The frontier brought this itself from the news and the tape${typeof loose.strategy_name === "string" && loose.strategy_name ? `, under a playbook it calls "${loose.strategy_name}"` : ""}; there is no crew vote on it. Code read the live price, placed the stop and the target from the distances the frontier gave, and ran the same guardrail as any trade.` : "A worker in the crew read the feed on its own and brought this. Nothing is sized until the frontier agrees."}>
                 <p className="mono text-[10px] text-[var(--text-4)]">
                   {[str(proposal.symbol) || d.symbol, str(proposal.side), str(proposal.venue), str(proposal.model) && modelLabel(str(proposal.model)),
                     has(proposal.confidence) ? `${(proposal.confidence * 100).toFixed(0)}% sure` : ""].filter(Boolean).join(" · ")}
@@ -203,7 +205,7 @@ export default function DecisionCard({ decision, team, expanded, onToggle, showT
                 {str(proposal.catalyst) && <p className="text-[11px] text-[var(--text-3)] mt-0.5"><span className="text-[var(--text-4)]">What moves it:</span> <Lingo text={str(proposal.catalyst)} /></p>}
                 {str(proposal.wrong_if) && <p className="text-[11px] text-[var(--text-3)] mt-0.5"><span className="text-[var(--text-4)]">Wrong if:</span> <Lingo text={str(proposal.wrong_if)} /></p>}
                 <p className="mono text-[10px] text-[var(--text-4)] mt-1">
-                  {[px(proposal.stop) && `stop ${px(proposal.stop)}`, px(proposal.target) && `target ${px(proposal.target)}`,
+                  {[px(proposal.stop) ? `stop ${px(proposal.stop)}` : typeof loose.stop_pct === "number" ? `stop ${loose.stop_pct}% away` : "", px(proposal.target) ? `target ${px(proposal.target)}` : typeof loose.target_pct === "number" ? `target ${loose.target_pct}% away` : "",
                     has(proposal.horizon_days) ? `${proposal.horizon_days} days` : "", has(proposal.leverage) && proposal.leverage > 1 ? `${proposal.leverage}x` : ""].filter(Boolean).join(" · ")}
                 </p>
                 {(proposal.evidence ?? []).length > 0 && (

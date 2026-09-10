@@ -13,7 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Card, Eyebrow } from "../ui";
 import { Lingo, LingoProse } from "./Term";
 import { callFn, REVIEW_FN, loadCards, fmtMoney, fmtR, modelLabel, labTone, type CoachCard } from "@/lib/desk/api";
-import { STRATEGIES } from "@/lib/desk/scan";
+import { STRATEGIES, strategyName } from "@/lib/desk/scan";
 import { sfx, buzz } from "@/lib/fx";
 
 /* ── the tournament card, read defensively ──────────────────────────────── */
@@ -81,7 +81,7 @@ const EXIT: Record<string, string> = { stop: "stopped out", target: "hit the tar
 const QUADRANT: Record<string, string> = { earned: "earned it: good process, good outcome", bad_luck: "bad luck: good process, bad outcome", dumb_luck: "dumb luck: bad process, good outcome", deserved: "deserved: bad process, bad outcome" };
 const HEADS: Record<string, string> = { "WHAT IS WORKING": "What is working", "WHAT IS NOT": "What is not", "WHAT THESE TRADES TEACH": "What these trades teach", "HOW TO PROCEED": "How to proceed" };
 
-const stratName = (id: string) => STRATEGIES.find((s) => s.id === id)?.name ?? id;
+const stratName = (id: string) => strategyName(id);
 const dec2 = (v: number | null) => (v === null ? "—" : `${v >= 0 ? "+" : ""}${v.toFixed(2)}`);
 const pct01 = (v: number | null) => (v === null ? "—" : `${(v * 100).toFixed(0)}%`);
 const pctU = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
@@ -218,7 +218,7 @@ export default function MacroReview({ uid, onChanged }: { uid: string; onChanged
                 </table>
               </div>
               <p className="text-[10px] text-[var(--text-4)] mt-1.5 leading-relaxed">
-                Diamond, Gold and Bronze are the three leagues, three teams each, re-sorted at the daily ranking. Return is percent from the team&apos;s $100,000 paper start; book is what that money is worth now. Days is how long the team has been alive. Open is positions it is holding right now. t/p/c is takes, passes and closes today: a pass is a candidate it read and refused. A team dies 5% below its start, and its frontier comes back with a new life and a fresh book.
+                Diamond, Gold and Bronze are the three leagues, three teams each, re-sorted at the daily ranking. Return is percent from the team&apos;s $100,000 paper start; book is what that money is worth now. Days is how long the team has been alive. Open is positions it is holding right now. t/p/c is takes, passes and closes today: a pass is a candidate it read and refused. A team dies 25% below its start (less any cushion it earned) unless it holds a life vest, and its frontier comes back with a new life and a fresh book. Vests, cushions, bigger guns and shields are the rewards for big days.
               </p>
             </Card>
           )}

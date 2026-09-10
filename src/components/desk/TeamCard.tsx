@@ -9,7 +9,7 @@ import { Card } from "../ui";
 import Team from "./Team";
 import { Member, Note, TIER_COLOR, daysSince, onDay, pct1, tone } from "./LeagueBits";
 import { fmtMoney, fmtPct, type DecisionRow, type Rating, type TeamRow } from "@/lib/desk/api";
-import { deathLine, type LeagueSettings } from "@/lib/desk/league";
+import { deathLine, rewardsOf, rewardsText, type LeagueSettings } from "@/lib/desk/league";
 import type { Trade } from "@/lib/desk/types";
 import type { LiveMarks } from "./DeskSpace";
 
@@ -21,12 +21,14 @@ export default function TeamCard({ uid, team, rank, live, settings, today, trade
 }) {
   const equity = live?.marks.find((m) => m.owner === `team:${team.id}`)?.equity ?? team.equity;
   const ret = team.start_equity > 0 ? (equity - team.start_equity) / team.start_equity : 0;
-  const line = deathLine(team.start_equity, settings.death_pct);
+  const rw = rewardsOf(team.stats);
+  const line = deathLine(team.start_equity, settings.death_pct, rw.cushion);
+  const held = rewardsText(rw);
   const away = equity > 0 ? (equity - line) / equity : 0;
 
   const mine = trades.filter((t) => t.owner === `team:${team.id}`);
   const dec = decisions.filter((d) => d.team_id === team.id && onDay(d.created_at, today));
-  const reads = dec.filter((d) => d.kind === "candidate" || d.kind === "session");
+  const reads = dec.filter((d) => d.kind !== "close");
   const taken = reads.filter(took).length;
   const passed = reads.length - taken;
   const closes = dec.filter((d) => d.kind === "close").length;
@@ -57,12 +59,16 @@ export default function TeamCard({ uid, team, rank, live, settings, today, trade
           dies at {fmtMoney(line)} · {equity <= line ? "below the line" : `${pct1(away)} away`} · {mine.length} open · {days === 0 ? "formed today" : days === 1 ? "1 day alive" : `${days} days alive`}
         </p>
         <p className="mono text-[10px] text-[var(--text-4)] mt-0.5 pl-6">today: {taken} taken · {passed} passed · {closes} closed</p>
+        {(held || rw.revivals > 0) && (
+          <p className="mono text-[10px] mt-0.5 pl-6" style={{ color: "var(--ok)" }}>in hand: {held || "nothing"}{rw.revivals ? ` · saved by a vest ${rw.revivals} time${rw.revivals === 1 ? "" : "s"}` : ""}</p>
+        )}
         {passiveDays > 0 && (
           <p className="mono text-[10px] mt-0.5 pl-6" style={{ color: "var(--warn)" }}>playing to survive: {passiveDays} passive day{passiveDays === 1 ? "" : "s"} · ranked at {rankScore >= 0 ? "+" : ""}{rankScore.toFixed(2)}% for the tiers</p>
         )}
         <Note className="mt-1 pl-6">
           {expanded ? "Tap to close." : "Tap for its book, its decisions, its crew and its curve."}
           {" "}Away is how far this book would have to fall from where it is now to hit the line.
+          {(held || rw.revivals > 0) && " Big days pay: a life vest is spent instead of the team when the book hits the line, a cushion pushes the line down, bigger guns raise the most it may risk on one trade, and a shield stops one relegation."}
         </Note>
       </button>
       {expanded && (
