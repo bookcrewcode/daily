@@ -21,7 +21,7 @@ Ben's decisions on 2026-09-09 evening, after the first afternoon of the leagues 
 
 **Hours.** The cycle only queues setups whose venue is open; sessions only fire inside hours; the feed tagger pauses 22:00 to 09:00 ET. The sync (fills, stops, funding, marks) runs round the clock; it costs nothing.
 
-**Budget** defaults to $5 a day.
+**Budget** defaults to $3 a day (Ben, 2026-09-09 evening: "3 dollar budget cap, it prob won't even get to that"). Candidates stop at 85% of it; the sessions keep the rest.
 
 **Learn.** The micro review gains a `teach` block: every input the trade used with its value, its plain meaning and why it mattered, and a glossary of the terms used. The app renders a "what went into this trade" panel from the ticket and the review, wraps lingo in a Term component that shows the meaning in parentheses until Ben marks it learned (`desk_accounts.learned_terms`), explains the strategies' rules the same way, and shows the trade on the chart with entry, stop, target and exit, with the TradingView toggle.
 

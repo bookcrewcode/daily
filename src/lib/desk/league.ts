@@ -28,7 +28,7 @@ export type LeagueSettings = {
 export const DEFAULT_LEAGUE: LeagueSettings = {
   frontier_pool: ["anthropic/claude-opus-5", "openai/gpt-6-astra", "anthropic/claude-fable-5.1", "google/gemini-3.1-pro-preview", "moonshotai/kimi-k3", "x-ai/grok-4.6", "anthropic/claude-sonnet-5", "openai/gpt-5.6-terra", "x-ai/grok-4.3"],
   worker_pool: ["google/gemini-3.5-flash-lite", "openai/gpt-5.6-luna", "minimax/minimax-m3", "google/gemini-3.8-flash"],
-  teams_per_tier: 3, death_pct: 5, risk_max_pct: 3, budget_usd_day: 5, research: "light", worker_lookups: 1,
+  teams_per_tier: 3, death_pct: 5, risk_max_pct: 3, budget_usd_day: 3, research: "light", worker_lookups: 1,
   hours: { stocks: ["09:00", "17:00"], crypto: ["09:00", "22:00"] },
   session_times: ["09:35", "15:15", "21:30"], season_days: 14,
   min_takes_day: 2, min_heat_pct: 4, passive_penalty_pct: 1,
@@ -52,7 +52,7 @@ export function leagueSettings(p?: Partial<LeagueSettings> | null): LeagueSettin
     teams_per_tier: Math.floor(clampN(x.teams_per_tier, 1, 5, 3)),
     death_pct: clampN(x.death_pct, 1, 50, 5),
     risk_max_pct: clampN(x.risk_max_pct, 0.5, 10, 3),
-    budget_usd_day: clampN(x.budget_usd_day, 0, 500, 5),
+    budget_usd_day: clampN(x.budget_usd_day, 0, 500, 3),
     research: x.research === "off" ? "off" : "light",
     worker_lookups: Math.floor(clampN(x.worker_lookups, 0, 2, 1)),
     hours: { stocks: pair(h.stocks, DEFAULT_LEAGUE.hours.stocks), crypto: pair(h.crypto, DEFAULT_LEAGUE.hours.crypto) },

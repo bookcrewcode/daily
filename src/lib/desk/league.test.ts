@@ -45,7 +45,7 @@ test("names, standing, the death line, session windows, settings ranges", () => 
   assert.equal(s.worker_lookups, 2);
   assert.deepEqual(s.hours.stocks, DEFAULT_LEAGUE.hours.stocks); // a malformed pair falls back on its own
   assert.deepEqual(s.hours.crypto, ["10:00", "23:00"]);
-  assert.equal(leagueSettings({}).budget_usd_day, 5);
+  assert.equal(leagueSettings({}).budget_usd_day, 3);
 });
 
 test("the trading hours: stocks 09:00 to 17:00, crypto 09:00 to 22:00, start in, end out, a window may cross midnight", () => {
