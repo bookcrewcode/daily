@@ -38,3 +38,6 @@ returns numeric language sql stable security definer set search_path = public as
 $$;
 revoke all on function public.desk_spend_since(uuid, timestamptz) from public;
 grant execute on function public.desk_spend_since(uuid, timestamptz) to service_role;
+
+-- Every tagged headline carries a plain-words line on what happened and what it means for the price (migration desk_news_plain).
+alter table public.desk_news add column if not exists plain text;

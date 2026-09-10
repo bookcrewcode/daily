@@ -1,6 +1,7 @@
 // desk-feed — the news funnel. Every fifteen minutes: pull the feeds, keep
 // what is new, tag it with a cheap model (tickers, category, impact,
-// direction, horizon, one line on why it matters), store it in desk_news.
+// direction, horizon, one line on why it matters, and a plain-words line on
+// what happened and what it means for the price), store it in desk_news.
 // The scan turns high-impact tagged items into triggers; the app shows the
 // stream. Shared table, no user column: the service role writes, signed-in
 // users read.
@@ -119,7 +120,7 @@ const TAG_SCHEMA = {
       items: {
         type: "array", items: {
           type: "object", additionalProperties: false,
-          required: ["i", "tickers", "venue", "category", "impact", "direction", "horizon", "why"],
+          required: ["i", "tickers", "venue", "category", "impact", "direction", "horizon", "why", "plain"],
           properties: {
             i: { type: "integer" },
             tickers: { type: "array", items: { type: "string" } },
@@ -129,13 +130,14 @@ const TAG_SCHEMA = {
             direction: { type: "string", enum: ["bullish", "bearish", "mixed", "none"] },
             horizon: { type: "string", enum: ["scalp", "swing", "position", "none"] },
             why: { type: "string" },
+            plain: { type: "string" },
           },
         },
       },
     },
   },
 };
-const TAG_SYSTEM = `You tag financial headlines for a paper-trading desk that trades US stocks and ETFs (Robinhood) and crypto perpetuals (BloFin). For each item return: tickers (up to 4; US tickers in uppercase like NVDA, SPY; for crypto the base coin like BTC, ETH, SOL; empty if none is directly affected), venue (stock | crypto | macro | none), category, impact 1-5 (5 = likely to move an index or a major coin over 1% today; 4 = moves a specific stock or coin materially today; 3 = relevant context for a position; 2 = minor; 1 = noise, opinion, evergreen or promotional), direction for the named tickers (bullish | bearish | mixed | none), horizon over which the effect plays out (scalp = hours, swing = days, position = weeks, none), and "why" in at most 25 words: the mechanism from the story to a price (revenue, costs, rates, flows, supply), not a restatement of the headline. Be stingy with 4 and 5. Return ONLY JSON matching the schema.`;
+const TAG_SYSTEM = `You tag financial headlines for a paper-trading desk that trades US stocks and ETFs (Robinhood) and crypto perpetuals (BloFin). For each item return: tickers (up to 4; US tickers in uppercase like NVDA, SPY; for crypto the base coin like BTC, ETH, SOL; empty if none is directly affected), venue (stock | crypto | macro | none), category, impact 1-5 (5 = likely to move an index or a major coin over 1% today; 4 = moves a specific stock or coin materially today; 3 = relevant context for a position; 2 = minor; 1 = noise, opinion, evergreen or promotional), direction for the named tickers (bullish | bearish | mixed | none), horizon over which the effect plays out (scalp = hours, swing = days, position = weeks, none), and "why" in at most 25 words: the mechanism from the story to a price (revenue, costs, rates, flows, supply), not a restatement of the headline. Then "plain": for Ben, 19, a beginner who reads only this, one or two short sentences (at most 45 words) on what actually happened and what it means for the price of the names it touches, in plain words; any piece of trading lingo gets a parenthesis with its meaning. Be stingy with 4 and 5. Return ONLY JSON matching the schema.`;
 
 async function tagItems(key: string, rows: J[]): Promise<{ tags: Map<number, J>; cost: number; model: string; error: string }> {
   const list = rows.map((r, i) => `${i}. [${r.source}] ${r.title}${r.summary ? ` — ${String(r.summary).slice(0, 160)}` : ""}`).join("\n");
@@ -146,7 +148,7 @@ async function tagItems(key: string, rows: J[]): Promise<{ tags: Map<number, J>;
       const r = await fetch(OR, {
         method: "POST", signal: ctl.signal,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, "HTTP-Referer": "https://bookcrewcode.github.io/daily/", "X-Title": "Daily Desk" },
-        body: JSON.stringify({ model, messages: [{ role: "system", content: TAG_SYSTEM }, { role: "user", content: list }], max_tokens: 8000, reasoning: { effort: "low", exclude: true }, response_format: { type: "json_schema", json_schema: TAG_SCHEMA }, provider: { require_parameters: true } }),
+        body: JSON.stringify({ model, messages: [{ role: "system", content: TAG_SYSTEM }, { role: "user", content: list }], max_tokens: 16000, reasoning: { effort: "low", exclude: true }, response_format: { type: "json_schema", json_schema: TAG_SCHEMA }, provider: { require_parameters: true } }),
       });
       const d = (await r.json().catch(() => null)) as J | null;
       const content = String((((d?.choices as J[]) ?? [])[0]?.message as J)?.content ?? "");
@@ -193,7 +195,7 @@ async function ingest(): Promise<J> {
 
   // tag the newest untagged items (this batch plus any left over from a failed run)
   const key = (await secret("anthropic_api_key")) || ENV_KEY;
-  const untR = await rest("desk_news?tagged=eq.false&select=link,title,source,summary&order=published.desc&limit=80");
+  const untR = await rest("desk_news?tagged=eq.false&select=link,title,source,summary&order=published.desc&limit=60");
   const untagged = untR.ok ? (untR.json as J[]) : [];
   let tagged = 0, cost = 0, model = "", tagError = "";
   if (key && untagged.length) {
@@ -205,7 +207,7 @@ async function ingest(): Promise<J> {
       const tickers = (Array.isArray(t.tickers) ? t.tickers : []).map((x) => str(x, 12).toUpperCase().replace(/[^A-Z0-9.\-]/g, "")).filter((x) => /^[A-Z][A-Z0-9.\-]{0,9}$/.test(x)).slice(0, 4);
       return {
         link: r.link, title: r.title, tagged: true, tickers, venue: str(t.venue, 10) || "none", category: str(t.category, 20) || "other",
-        impact: Math.max(1, Math.min(5, Math.round(num(t.impact, 1)))), direction: str(t.direction, 10) || "none", horizon: str(t.horizon, 10) || "none", why: str(t.why, 200),
+        impact: Math.max(1, Math.min(5, Math.round(num(t.impact, 1)))), direction: str(t.direction, 10) || "none", horizon: str(t.horizon, 10) || "none", why: str(t.why, 200), plain: str(t.plain, 400),
       };
     }).filter((x): x is NonNullable<typeof x> => !!x);
     if (rows.length) {
@@ -216,6 +218,38 @@ async function ingest(): Promise<J> {
   // retention: thirty days
   await rest(`desk_news?published=lt.${new Date(t0 - 30 * 86_400_000).toISOString()}`, { method: "DELETE" });
   return { fetched: parsed.length, per_source: perSource, new: fresh.length, inserted, untagged: untagged.length, tagged, cost, model, tag_error: tagError, ms: Date.now() - t0 };
+}
+
+/* ── the plain line for headlines tagged before it existed ─────────────── */
+const PLAIN_SCHEMA = { name: "plain", strict: true, schema: { type: "object", additionalProperties: false, required: ["items"], properties: { items: { type: "array", items: { type: "object", additionalProperties: false, required: ["i", "plain"], properties: { i: { type: "integer" }, plain: { type: "string" } } } } } } };
+const PLAIN_SYSTEM = `For each financial headline, write "plain" for Ben, 19, a beginner who reads only this: one or two short sentences (at most 45 words) on what actually happened and what it means for the price of the names it touches, in plain words; any piece of trading lingo gets a parenthesis with its meaning. Return ONLY JSON matching the schema.`;
+async function backfillPlain(body: J): Promise<J> {
+  const t0 = Date.now();
+  const key = (await secret("anthropic_api_key")) || ENV_KEY;
+  if (!key) return { error: "no key" };
+  const hours = Math.max(1, Math.min(240, num(body.hours, 48)));
+  const minImpact = Math.max(1, Math.min(5, num(body.min_impact, 3)));
+  const r = await rest(`desk_news?tagged=eq.true&plain=is.null&impact=gte.${minImpact}&published=gte.${new Date(t0 - hours * 3_600_000).toISOString()}&select=link,title,source,summary,why&order=published.desc&limit=${Math.max(1, Math.min(300, num(body.limit, 200)))}`);
+  const todo = r.ok ? (r.json as J[]) : [];
+  let written = 0, cost = 0, error = "";
+  for (let i = 0; i < todo.length && Date.now() - t0 < 120_000; i += 50) {
+    const batch = todo.slice(i, i + 50);
+    const list = batch.map((x, k) => `${k}. [${x.source}] ${x.title}${x.summary ? ` — ${String(x.summary).slice(0, 160)}` : ""}${x.why ? ` (why it matters: ${x.why})` : ""}`).join("\n");
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 80_000);
+    try {
+      const res = await fetch(OR, { method: "POST", signal: ctl.signal, headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, "HTTP-Referer": "https://bookcrewcode.github.io/daily/", "X-Title": "Daily Desk" },
+        body: JSON.stringify({ model: TAGGER_FALLBACK, messages: [{ role: "system", content: PLAIN_SYSTEM }, { role: "user", content: list }], max_tokens: 12000, reasoning: { effort: "low", exclude: true }, response_format: { type: "json_schema", json_schema: PLAIN_SCHEMA }, provider: { require_parameters: true } }) });
+      const d = (await res.json().catch(() => null)) as J | null;
+      cost += num((d?.usage as J)?.cost);
+      const content = String((((d?.choices as J[]) ?? [])[0]?.message as J)?.content ?? "");
+      const j = content ? (JSON.parse(content) as J) : null;
+      const rows = (Array.isArray(j?.items) ? (j!.items as J[]) : []).map((it) => { const x = batch[Math.floor(num(it.i, -1))]; return x && str(it.plain) ? { link: x.link, title: x.title, plain: str(it.plain, 400) } : null; }).filter((x): x is NonNullable<typeof x> => !!x);
+      if (rows.length) { const up = await rest("desk_news?on_conflict=link", { method: "POST", headers: { Prefer: "resolution=merge-duplicates" }, body: JSON.stringify(rows) }); if (up.ok) written += rows.length; }
+    } catch (e) { error = e instanceof Error ? e.message : String(e); }
+    finally { clearTimeout(t); }
+  }
+  return { todo: todo.length, written, cost, error, ms: Date.now() - t0 };
 }
 
 Deno.serve(async (req) => {
@@ -234,6 +268,7 @@ Deno.serve(async (req) => {
     if (!uid) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { ...cors, "Content-Type": "application/json" } });
     const mode = String(body.mode ?? "ingest");
     if (mode === "ingest") return ok(await ingest());
+    if (mode === "plain") return ok(await backfillPlain(body));
     return ok({ error: "Unknown mode." });
   } catch (e) {
     console.error("[desk-feed] fatal", e instanceof Error ? e.stack ?? e.message : e);

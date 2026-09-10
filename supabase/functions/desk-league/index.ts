@@ -354,6 +354,8 @@ async function markTeams(uid: string, s: LeagueSettings, all: TeamRow[], season:
 }
 
 /* ── the candidate brief (shared by every team) ───────────────────────── */
+/** A headline as the app shows it: the title, the plain-words line on what happened, the mechanism, and the tags. */
+const newsItem = (n: J): J => ({ title: str(n.title, 200), plain: str(n.plain, 400), why: str(n.why, 200), impact: num(n.impact), direction: str(n.direction, 10), category: str(n.category, 20), published: str(n.published, 40), source: str(n.source, 40), tickers: (Array.isArray(n.tickers) ? (n.tickers as unknown[]) : []).map((t) => str(t, 12)).slice(0, 4) });
 async function candidateBrief(uid: string, su: J, news: J[]): Promise<J> {
   const sym = String(su.symbol), base = sym.split("-")[0];
   const line = (n: J) => `${str(n.title, 110)} (impact ${n.impact}, ${n.direction}, ${n.category}${n.why ? `: ${str(n.why, 120)}` : ""})`;
@@ -367,7 +369,7 @@ async function candidateBrief(uid: string, su: J, news: J[]): Promise<J> {
   return {
     setup: { symbol: sym, venue: su.venue, instrument: su.instrument, side: su.side, timeframe: su.timeframe, entry_ref: num(su.entry_ref), stop: num(su.stop), target: num(su.target), leverage_hint: num(su.leverage_hint, 1), horizon_hours: su.horizon_hours ?? null, horizon_days: su.horizon_days ?? null, score: num(su.score), reasons: su.reasons ?? [], invalidation: str(su.invalidation, 300), card: su.card ?? {}, strategy: su.strategy },
     strategy: def ? { name: def.name, what: def.what, why: def.why, fails: def.fails } : { name: String(su.strategy) },
-    headlines: mine.map(line), macro: macro.map(line), regime: str((su.card as J)?.regime, 60), record,
+    headlines: mine.map(line), macro: macro.map(line), headline_items: mine.map(newsItem), macro_items: macro.map(newsItem), regime: str((su.card as J)?.regime, 60), record,
   };
 }
 function briefText(b: J, book: BookState | null, rules: Rules): string {
@@ -634,7 +636,7 @@ async function cycle(uid: string, body: J): Promise<J> {
   // new candidates: every fresh setup whose venue is open goes to the crew once and to every live team
   const fresh = rows(await rest(`desk_setups?user_id=eq.${uid}&status=eq.new&expires_at=gte.${iso(t0)}&select=*&order=score.desc,created_at.desc&limit=30`)).filter((su) => inHours(String(su.venue), now.hour, now.minute, s)).slice(0, 10);
   if (fresh.length) {
-    const news = rows(await rest(`desk_news?tagged=eq.true&published=gte.${iso(t0 - 24 * 3_600_000)}&select=title,tickers,impact,direction,category,why,published,venue&order=impact.desc,published.desc&limit=300`));
+    const news = rows(await rest(`desk_news?tagged=eq.true&published=gte.${iso(t0 - 24 * 3_600_000)}&select=title,tickers,impact,direction,category,why,plain,source,published,venue&order=impact.desc,published.desc&limit=300`));
     for (const su of fresh) {
       const brief = await candidateBrief(uid, su, news);
       const rs = rows(await rest("desk_research", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: uid, setup_id: su.id, symbol: su.symbol, strategy: su.strategy, timeframe: su.timeframe, status: "queued", brief }) }))[0];
@@ -821,10 +823,11 @@ async function sessionAll(uid: string, body: J): Promise<J> {
   }
   const rules = rulesFor(String(acct.preset ?? "aggressive") as "no_limits", (acct.rules as Partial<Rules>) ?? {});
   const [newsR, ctx, movers] = await Promise.all([
-    rest(`desk_news?tagged=eq.true&impact=gte.3&published=gte.${iso(t0 - 9 * 3_600_000)}&select=title,tickers,impact,direction,category,why,published,venue&order=impact.desc,published.desc&limit=30`),
+    rest(`desk_news?tagged=eq.true&impact=gte.3&published=gte.${iso(t0 - 9 * 3_600_000)}&select=title,tickers,impact,direction,category,why,plain,source,published,venue&order=impact.desc,published.desc&limit=30`),
     tape(uid, { mode: "context" }, 40000), tape(uid, { mode: "movers" }, 30000),
   ]);
   const news = rows(newsR);
+  const digestItems = news.slice(0, 12).map(newsItem);
   const digest = news.map((n, i) => `[${i}] ${str(n.title, 120)} (${n.venue}, impact ${n.impact}, ${n.direction}, ${n.category}${n.why ? `: ${str(n.why, 140)}` : ""}${Array.isArray(n.tickers) && (n.tickers as string[]).length ? ` · ${(n.tickers as string[]).slice(0, 4).join(" ")}` : ""})`);
   const context = `REGIME: ${str(ctx.regime, 60)}\n${((ctx.cards as J[]) ?? []).map((c) => `${c.symbol} $${num(c.price).toFixed(2)} 1d ${(num(c.ret1d) * 100).toFixed(1)}% 5d ${(num(c.ret5d) * 100).toFixed(1)}% trend ${c.trend} rsi ${num(c.rsi14).toFixed(0)}`).join("\n")}\nPERPS TOP VOLUME: ${((movers.volume as J[]) ?? []).slice(0, 12).map((m) => `${m.inst_id} $${num(m.last)} 24h ${(num(m.change24h) * 100).toFixed(1)}%`).join(" · ")}`;
   const setups = rows(await rest(`desk_setups?user_id=eq.${uid}&expires_at=gte.${iso(t0)}&created_at=gte.${iso(t0 - 24 * 3_600_000)}&select=strategy,symbol,side,timeframe,entry_ref,stop,target,score&order=score.desc&limit=12`)).map((x) => `${x.symbol} ${x.side} · ${x.strategy} (${x.timeframe}) ref ${num(x.entry_ref)} stop ${num(x.stop)} target ${num(x.target)} · confluence ${(num(x.score) * 100).toFixed(0)}%`);
@@ -897,7 +900,7 @@ async function sessionAll(uid: string, body: J): Promise<J> {
     let taken = 0;
     const stats = { decisions: 0, takes: 0, passes: 0, sessions: 1 };
     if (!proposals.length) {
-      await rest("desk_decisions", { method: "POST", body: JSON.stringify({ user_id: uid, team_id: team.id, kind: "session", symbol: "", status: "done", brief: { session_key: sessionKey, note: "no proposals", workers: ideas.map((x) => ({ model: x.model, reason: x.reason || x.error || "no idea" })), digest: digest.slice(0, 12) }, ballots: [], verdict: fRes.json ? { action: "pass", reason: str(fj.note, 500), model: team.frontier } : null, outcome: { taken: false, reasons: [str(fj.note, 300) || "no one on the crew had an idea"], pass_reason: "no proposals", by: "workers" }, cost_usd: round(workerCost / teams.length + fRes.cost, 5) }) });
+      await rest("desk_decisions", { method: "POST", body: JSON.stringify({ user_id: uid, team_id: team.id, kind: "session", symbol: "", status: "done", brief: { session_key: sessionKey, note: "no proposals", workers: ideas.map((x) => ({ model: x.model, reason: x.reason || x.error || "no idea" })), digest: digest.slice(0, 12), digest_items: digestItems }, ballots: [], verdict: fRes.json ? { action: "pass", reason: str(fj.note, 500), model: team.frontier } : null, outcome: { taken: false, reasons: [str(fj.note, 300) || "no one on the crew had an idea"], pass_reason: "no proposals", by: "workers" }, cost_usd: round(workerCost / teams.length + fRes.cost, 5) }) });
       stats.decisions++; stats.passes++;
     }
     for (let i = 0; i < proposals.length; i++) {
@@ -905,7 +908,7 @@ async function sessionAll(uid: string, body: J): Promise<J> {
       const t = takes.get(i);
       const verdict: Verdict = t ? { action: t.action === "take" ? "take" : "pass", reason: str(t.reason, 500), risk_pct: Math.min(s.risk_max_pct, Math.max(0.5, num(t.risk_pct, 1))), leverage: Math.max(1, num(t.leverage, 1)), stop: null, target: null, model: team.frontier, error: fRes.error || undefined } : { action: "pass", reason: fRes.error ? `the frontier did not answer (${fRes.error})` : "the frontier gave no verdict", risk_pct: 0, leverage: 1, stop: null, target: null, model: team.frontier, error: fRes.error || "no verdict" };
       const ballot: Ballot = { model: p.model, role: "worker", stance: "take", confidence: p.confidence, thesis: p.thesis, wrong_if: p.wrong_if, stop: p.stop, target: p.target, leverage: p.leverage, tags: [], checked: [], error: "", cost_usd: 0, latency_ms: 0 };
-      const made = rows(await rest("desk_decisions", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: uid, team_id: team.id, kind: "session", symbol: p.symbol, strategy: "", timeframe: p.horizon_days <= 1 ? "scalp" : p.horizon_days <= 10 ? "swing" : "position", status: "launched", brief: { session_key: sessionKey, proposal: { ...p, meta: undefined }, digest: digest.slice(0, 12) }, ballots: [ballot], verdict, launched: { at: t0, n: 1 } }) }))[0];
+      const made = rows(await rest("desk_decisions", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: uid, team_id: team.id, kind: "session", symbol: p.symbol, strategy: "", timeframe: p.horizon_days <= 1 ? "scalp" : p.horizon_days <= 10 ? "swing" : "position", status: "launched", brief: { session_key: sessionKey, proposal: { ...p, meta: undefined }, digest: digest.slice(0, 12), digest_items: digestItems }, ballots: [ballot], verdict, launched: { at: t0, n: 1 } }) }))[0];
       if (!made) continue;
       let outcome: Exec;
       if (openSyms.has(p.symbol)) outcome = { taken: false, reasons: [`${p.symbol} is already on the team's book`], pass_reason: "already held", by: "guardrail" };
