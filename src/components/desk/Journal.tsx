@@ -5,11 +5,14 @@
 // team passed sitting next to the reason another took it. Trades: the ones
 // that became real positions, each on its chart, with everything it used and
 // why, the crew's ballots, where it stands or what happened, and its micro
-// review. Paper money on every line; every label explained where it sits.
+// review. Every row is one plain sentence written by code from the record, and every
+// opened entry leads with the whole thing in short. Paper money on every line; every
+// label explained where it sits.
 
 import { useCallback, useEffect, useState } from "react";
 import { Card, Eyebrow, Pill, Segmented } from "../ui";
 import DecisionCard from "./DecisionCard";
+import { oneLine } from "./Plain";
 import TradeCard, { TIER_COLOR, TierChip } from "./TradeCard";
 import { loadTeams, loadDecisions, loadTrades, callFn, REVIEW_FN, type DecisionRow, type TeamRow } from "@/lib/desk/api";
 import { STRATEGIES } from "@/lib/desk/scan";
@@ -160,7 +163,7 @@ export default function Journal({ uid, live }: { uid: string; live: LiveMarks | 
               <li><span className="mono text-[10px] text-[var(--neon)]">close</span> — the frontier asking to end a position early, before its stop, target or clock.</li>
             </ul>
             <p className="text-[11.5px] text-[var(--text-2)] leading-relaxed mt-2">
-              A pass is written down with its reason, exactly like a take. The trades a team refused teach as much as the ones it made.
+              A pass is written down with its reason, exactly like a take. The trades a team refused teach as much as the ones it made. Each row is the decision in one plain sentence; open it for the whole thing in short, then the record underneath.
             </p>
             <p className="mono text-[10px] text-[var(--text-4)] mt-2">{decisions.length} decisions in the last 3 days · {takenCount} taken · {passedCount} passed · {liveTeams} teams alive</p>
           </Card>
@@ -212,8 +215,6 @@ export default function Journal({ uid, live }: { uid: string; live: LiveMarks | 
                       {g.rows.map((d) => {
                         const team = teamById.get(d.team_id) ?? null;
                         const o = outcomeOf(d);
-                        const workers = d.ballots.filter((b) => b.role === "worker" && !b.error);
-                        const takes = workers.filter((b) => b.stance === "take").length;
                         return (
                           <div key={d.id} className="border-t border-[var(--border-1)] mt-1.5 pt-1.5">
                             <button onClick={() => setOpenId(openId === d.id ? null : d.id)} className="w-full text-left active:scale-[0.995]">
@@ -223,10 +224,7 @@ export default function Journal({ uid, live }: { uid: string; live: LiveMarks | 
                                 <span className="flex-1" />
                                 <span className="mono text-[9.5px] shrink-0" style={{ color: o.taken ? "var(--ok)" : "var(--text-4)" }}>{o.taken ? "taken" : o.by ? `passed: ${o.by}` : "passed"}</span>
                               </div>
-                              <p className="mono text-[10px] text-[var(--text-4)] mt-0.5">
-                                {workers.length ? `workers ${takes} of ${workers.length} take` : "the workers have not voted yet"} · frontier {d.verdict ? d.verdict.action : "not asked"}
-                              </p>
-                              {d.verdict?.reason && <p className="text-[11px] text-[var(--text-3)] leading-snug mt-0.5 line-clamp-2">{d.verdict.reason}</p>}
+                              <p className="text-[11px] text-[var(--text-2)] leading-snug mt-0.5 line-clamp-3">{oneLine(d, team)}</p>
                               {o.result && ruleLine(o.result) && (
                                 <p className="mono text-[10px] mt-0.5" style={{ color: o.result.won ? "var(--ok)" : "var(--bad)" }}>{ruleLine(o.result)}</p>
                               )}
@@ -235,7 +233,7 @@ export default function Journal({ uid, live }: { uid: string; live: LiveMarks | 
                           </div>
                         );
                       })}
-                      <p className="text-[10px] text-[var(--text-4)] leading-relaxed mt-1.5">Workers x of 4 take is how the shared crew voted, once, for every team; each frontier still decides alone. The rule line is what the strategy would have done with no team at all, so a pass that dodged a loss reads as plainly as a take that won.</p>
+                      <p className="text-[10px] text-[var(--text-4)] leading-relaxed mt-1.5">Each line is how the shared crew voted, once, for every team, and what that team&apos;s frontier did with the vote; each frontier still decides alone. The rule line is what the strategy would have done with no team at all, so a pass that dodged a loss reads as plainly as a take that won.</p>
                     </Card>
                   );
                 })}

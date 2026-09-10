@@ -5,12 +5,15 @@
 // single call: what was put in front of them, how each worker voted, what the frontier
 // decided, and what the desk actually did with paper money. Three kinds share the card
 // — a flagged setup, a session idea, and a close — and each one says in a line what it
-// is. Every word of lingo is explained until Ben has learned it.
+// is. The collapsed row is one plain sentence; the opened card leads with the whole
+// thing in short, then the record, with the headlines it rested on explained rather
+// than just named. Every word of lingo is explained until Ben has learned it.
 
 import { useEffect, useState } from "react";
 import { Card } from "../ui";
 import Ticket from "./Ticket";
 import { Lingo } from "./Term";
+import { InShort, NewsList, inShort, newsOf, oneLine } from "./Plain";
 import { fmtMoney, fmtPct, fmtPrice, fmtR, labTone, modelLabel, type Ballot, type DecisionRow, type TeamRow } from "@/lib/desk/api";
 import type { Tier } from "@/lib/desk/league";
 import { STRATEGIES } from "@/lib/desk/scan";
@@ -51,10 +54,6 @@ const KIND_NOTE: Record<string, string> = {
   close: "A close is the frontier acting on a position the team already holds: closing it, or tightening its levels.",
 };
 const ACTION: Record<string, string> = { take: "take it", pass: "pass", close: "close it", tighten: "tighten it", hold: "hold" };
-const BY: Record<string, string> = {
-  workers: "the crew", frontier: "the frontier", budget: "the day's model budget",
-  guardrail: "a desk rule", price: "the price check", hours: "the trading hours",
-};
 const TIER_NAME: Record<Tier, string> = { diamond: "Diamond", gold: "Gold", bronze: "Bronze" };
 const TIER_COLOR: Record<Tier, string> = { diamond: "#7dd3fc", gold: "#fbbf24", bronze: "#d97706" };
 
@@ -89,8 +88,6 @@ export default function DecisionCard({ decision, team, expanded, onToggle, showT
   const verdict = d.verdict;
   const workers = d.ballots.filter((b) => b.role === "worker");
   const frontierBallot = d.ballots.find((b) => b.role === "frontier") ?? null;
-  const answered = workers.filter((b) => !b.error).length;
-  const takers = workers.filter((b) => !b.error && b.stance === "take").length;
   const setup = brief.setup ?? {};
   const proposal = brief.proposal ?? {};
   const state = String(d.status);
@@ -113,11 +110,14 @@ export default function DecisionCard({ decision, team, expanded, onToggle, showT
     d.timeframe ? (TF[d.timeframe] ?? d.timeframe) : "",
   ].filter(Boolean).join(" · ");
 
-  const summary: string[] = [];
-  if (workers.length > 0) summary.push(`${takers} of ${answered || workers.length} said take`);
-  if (verdict) summary.push(`${modelLabel(verdict.model)}: ${ACTION[verdict.action] ?? verdict.action}`);
-  if (!taken && !deciding && d.kind !== "close" && str(outcome.by)) summary.push(`passed by ${BY[str(outcome.by)] ?? str(outcome.by)}`);
-  const reasonLine = str(verdict?.reason) || str(outcome.pass_reason) || str(outcome.reason);
+  // The row is one plain sentence and the opened card leads with three or four; both are
+  // written by code from the record, never by a model. The row sits inside a button, so
+  // it stays plain text; the opened summary goes through Lingo.
+  const rowLine = oneLine(d, team);
+  const short = expanded ? inShort(d, team) : "";
+  const headlineNews = d.kind === "candidate" && expanded ? newsOf(d.brief, "headlines") : [];
+  const macroNews = d.kind === "candidate" && expanded ? newsOf(d.brief, "macro") : [];
+  const digestNews = d.kind === "session" && expanded ? newsOf(d.brief, "digest") : [];
   const ticket = outcome.ticket ?? null;
 
   return (
@@ -142,12 +142,12 @@ export default function DecisionCard({ decision, team, expanded, onToggle, showT
             </>
           )}
         </div>
-        {summary.length > 0 && <p className="text-[11.5px] text-[var(--text-2)] mt-1 leading-snug">{summary.join(" · ")}</p>}
-        {reasonLine && <p className="text-[11px] text-[var(--text-3)] mt-0.5 leading-snug">{reasonLine}</p>}
+        {!expanded && rowLine && <p className="text-[11.5px] text-[var(--text-2)] mt-1 leading-snug line-clamp-3">{rowLine}</p>}
       </button>
 
       {expanded && (
         <div className="mt-2.5 pt-2.5 border-t border-[var(--border-1)] rise-in space-y-3">
+          <InShort text={short} />
           <p className="text-[11px] text-[var(--text-3)] leading-snug">{KIND_NOTE[d.kind] ?? "One decision by one team."}</p>
 
           {d.kind === "candidate" && (
@@ -169,6 +169,18 @@ export default function DecisionCard({ decision, team, expanded, onToggle, showT
                 {str(setup.invalidation) && <p className="text-[11px] text-[var(--text-3)] mt-1"><span className="text-[var(--text-4)]">Wrong if:</span> <Lingo text={str(setup.invalidation)} /></p>}
                 {str(brief.strategy?.what) && <p className="text-[11px] text-[var(--text-3)] mt-1">{brief.strategy?.name ? `${brief.strategy.name}: ` : ""}<Lingo text={str(brief.strategy?.what)} /></p>}
               </Block>
+
+              {(headlineNews.length > 0 || macroNews.length > 0) && (
+                <Block title="The news behind it" note="The tagged headlines on this name and the big macro stories that were on the brief when the crew read the setup. Under each one: what happened in plain words, then how strong it is and which way it points.">
+                  {headlineNews.length > 0 && <NewsList items={headlineNews} foldAfter={3} foldLabel={`headlines on ${d.symbol || "the symbol"}`} />}
+                  {macroNews.length > 0 && (
+                    <div className={headlineNews.length > 0 ? "mt-1.5" : ""}>
+                      <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)]">Macro, the whole market</p>
+                      <NewsList items={macroNews} foldAfter={2} foldLabel="macro stories" />
+                    </div>
+                  )}
+                </Block>
+              )}
 
               <Block title="The crew" note="The same four cheap models for every team. Each reads the setup with the day's headlines, may look one thing up, and votes take or pass with a confidence that the target is hit before the stop. A worker may tighten the stop or target, never widen them.">
                 {workers.length === 0 && <Muted>{deciding ? "Still coming in. Each worker answers in its own call, usually inside a minute." : "No worker ballots were kept."}</Muted>}
@@ -200,7 +212,15 @@ export default function DecisionCard({ decision, team, expanded, onToggle, showT
                     {(proposal.evidence ?? []).map((e, i) => <p key={i} className="text-[11px] text-[var(--text-3)] leading-snug">{e}</p>)}
                   </div>
                 )}
-                <p className="mono text-[9px] text-[var(--text-4)] mt-1.5">read {(brief.digest ?? []).length} headlines from the feed first</p>
+                {digestNews.length > 0 ? (
+                  <div className="mt-2">
+                    <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)]">The news it read first · {digestNews.length} headline{digestNews.length === 1 ? "" : "s"}</p>
+                    <p className="text-[10px] text-[var(--text-4)] leading-snug mt-0.5">Everything the crew read since the last session before it proposed anything. Under each one: what happened in plain words, then how strong it is and which way it points.</p>
+                    <NewsList items={digestNews} foldAfter={3} foldLabel="headlines the crew read" />
+                  </div>
+                ) : (
+                  <p className="mono text-[9px] text-[var(--text-4)] mt-1.5">no headlines were kept with this session</p>
+                )}
                 {workers.length > 0 && <div className="space-y-1.5 mt-2">{workers.map((b, i) => <BallotBox key={i} b={b} />)}</div>}
               </Block>
               <FrontierBlock verdict={verdict} ballot={frontierBallot} deciding={deciding} />

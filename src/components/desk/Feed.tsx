@@ -2,9 +2,10 @@
 
 // Feed — the news funnel, live. Seventeen sources every fifteen minutes,
 // each headline tagged by a cheap model with the tickers it touches, an
-// impact score, a direction, a horizon and one line on the mechanism. The
-// scan turns the strong ones into setups; here Ben sees the raw stream and
-// learns to read it. Every label is explained where it sits.
+// impact score, a direction, a horizon, a plain-words line on what actually
+// happened and what it means for the price, and one line on the mechanism.
+// The scan turns the strong ones into setups; here Ben sees the raw stream
+// and learns to read it. Every label is explained where it sits.
 
 import { useCallback, useEffect, useState } from "react";
 import { Card, Pill } from "../ui";
@@ -62,7 +63,7 @@ export default function Feed() {
       </div>
       {(note || err) && <p className={`text-[11px] mt-1 ${err ? "text-orange-400" : "text-[var(--text-3)]"}`}>{err || note}</p>}
       <p className="text-[10px] text-[var(--text-4)] mt-1 leading-relaxed">
-        {items.length} headlines from the last two days{untagged ? `, ${untagged} not tagged yet` : ""}. Dots are impact: five means it can move an index or a major coin today, four moves a specific name, three is context, one is noise. Chips are the tickers the story touches, green for bullish, red for bearish. The line under each headline is the mechanism, not the headline again.
+        {items.length} headlines from the last two days{untagged ? `, ${untagged} not tagged yet` : ""}. Dots are impact: five means it can move an index or a major coin today, four moves a specific name, three is context, one is noise. Chips are the tickers the story touches, green for bullish, red for bearish. Under each headline is what actually happened and what it means for the price, in plain words; the smaller line beneath it is the mechanism, how the story reaches the price. Older headlines tagged before the plain line existed show the mechanism alone.
       </p>
 
       <div className="mt-2 space-y-1.5">
@@ -77,7 +78,8 @@ export default function Feed() {
                   <div className="flex-1 min-w-0">
                     <p className="text-[12.5px] font-semibold leading-snug">{x.title}</p>
                     <p className="mono text-[9px] text-[var(--text-4)] mt-0.5">{x.source} · {ago(x.published, now)}{CATEGORY[x.category] ? ` · ${CATEGORY[x.category]}` : ""}{HORIZON[x.horizon] ? ` · ${HORIZON[x.horizon]}` : ""}</p>
-                    {x.why && <p className="text-[11px] text-[var(--text-2)] mt-1 leading-snug">{x.why}</p>}
+                    {(x.plain || x.why) && <p className="text-[11px] text-[var(--text-2)] mt-1 leading-snug">{x.plain || x.why}</p>}
+                    {x.plain && x.why && x.why.trim() !== x.plain.trim() && <p className="text-[10px] text-[var(--text-4)] mt-0.5 leading-snug">How it moves the price: {x.why}</p>}
                     {x.tickers.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-1.5">
                         {x.tickers.map((t) => (

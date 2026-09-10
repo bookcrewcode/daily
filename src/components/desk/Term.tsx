@@ -95,6 +95,16 @@ export const GLOSSARY: Record<string, GlossaryEntry> = {
   spot: { label: "spot price", aliases: ["spot crypto"], meaning: "the plain coin bought and held, as opposed to a contract on it" },
   contract: { label: "contract", meaning: "one unit of a perpetual future, worth a fixed amount of the coin", auto: false },
   process: { label: "process", meaning: "how well the trade was run, judged apart from how it turned out", auto: false },
+  // the crew's tags and the words the plain summaries lean on
+  chase: { label: "chase", aliases: ["chasing", "chased"], meaning: "buying after the move already happened, so the entry is late and the stop is far away" },
+  extended: { label: "extended", aliases: ["over-extended", "overextended"], meaning: "already far above its average after a run, so the easy part of the move is gone" },
+  catalyst: { label: "catalyst", aliases: ["catalysts"], meaning: "a coming event or piece of news that gives the price a reason to move" },
+  eventrisk: { label: "event risk", aliases: ["event-risk"], meaning: "an earnings report, a decision or a data release lands inside the trade's window and can jump the price straight over the stop" },
+  crowded: { label: "crowded", aliases: ["crowded trade"], meaning: "too many traders already hold the same side, so there is nobody left to push it further and everyone rushes for the exit when it turns" },
+  thinvol: { label: "thin volume", aliases: ["thin-volume", "light volume"], meaning: "few shares or coins actually traded, so the move has little real demand behind it and can reverse easily" },
+  countertrend: { label: "counter-trend", aliases: ["countertrend", "counter trend"], meaning: "betting against the direction the price has been moving, which fails more often than going with it" },
+  etf: { label: "ETF", aliases: ["ETFs", "exchange-traded fund"], meaning: "a fund that trades like a single stock and holds a basket of things, such as the S&P 500 or oil" },
+  atrisk: { label: "at risk", aliases: ["of the book at risk"], meaning: "the most one stop can cost" },
 };
 
 /* ── the store: what Ben has learned, shared by every Term on the screen ─── */

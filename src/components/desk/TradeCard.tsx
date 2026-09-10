@@ -4,8 +4,10 @@
 // trade drawn on the chart with its entry, stop and target, everything that went into
 // it and why each piece mattered, what the crew said and what the frontier decided, the
 // whole ticket, where it stands at live prices while it runs, what happened when it
-// closed, and the micro review that judges the reasoning apart from the money. Paper
-// money, said plainly; every word of lingo explained until Ben has learned it.
+// closed, and the micro review that judges the reasoning apart from the money. The
+// collapsed row is one plain sentence and the opened card leads with the whole trade in
+// short, both written by code from the record. Paper money, said plainly; every word of
+// lingo explained until Ben has learned it.
 
 import { useState } from "react";
 import { Card } from "../ui";
@@ -13,6 +15,7 @@ import Chart from "./Chart";
 import Ticket from "./Ticket";
 import TradeInputs, { TeachBlock, teachOf } from "./TradeInputs";
 import { Lingo, Term } from "./Term";
+import { InShort, NewsList, newsOf, tradeInShort, tradeOneLine } from "./Plain";
 import { fmtMoney, fmtPct, fmtPrice, fmtR, modelLabel, labTone, type DecisionRow, type TeamRow } from "@/lib/desk/api";
 import { unrealized } from "@/lib/desk/ledger";
 import { STRATEGIES } from "@/lib/desk/scan";
@@ -90,6 +93,12 @@ export default function TradeCard({ trade: t, team, decision, live, now, busy, o
   const takes = workers.filter((b) => b.stance === "take").length;
   const ordered = [...workers.filter((b) => b.stance === "take"), ...workers.filter((b) => b.stance !== "take")];
   const frontierSaid = asText(decision?.verdict?.reason);
+  // The row's sentence sits inside a button, so it stays plain text; the opened summary goes through Lingo.
+  const rowLine = tradeOneLine(t, decision ?? null, team ?? null);
+  const short = open ? tradeInShort(t, decision ?? null, team ?? null) : "";
+  // The headlines that were on the brief when the team decided: the ones on this name and the macro stories for a
+  // flagged setup, or everything the crew read at the session for a session idea. Explained, not just named.
+  const news = open && decision ? (decision.kind === "session" ? newsOf(decision.brief, "digest") : [...newsOf(decision.brief, "headlines"), ...newsOf(decision.brief, "macro")]) : [];
 
   return (
     <Card>
@@ -117,11 +126,12 @@ export default function TradeCard({ trade: t, team, decision, live, now, busy, o
             : cancelled ? " · never filled, so it never became a position"
             : ` · ${clockLeft(t, now) || (STATUS[t.status] ?? t.status)}`}
         </p>
-        <p className="text-[11.5px] leading-snug mt-1.5 line-clamp-2">{t.thesis}</p>
+        {!open && <p className="text-[11.5px] leading-snug mt-1.5 line-clamp-3">{rowLine}</p>}
       </button>
 
       {open && (
         <div className="mt-2.5 pt-2.5 border-t border-[var(--border-1)] rise-in space-y-3">
+          <InShort text={short} />
           <div>
             <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] mb-1">Why it was taken</p>
             <p className="text-[12px] leading-relaxed"><Lingo text={t.thesis} /></p>
@@ -131,6 +141,16 @@ export default function TradeCard({ trade: t, team, decision, live, now, busy, o
               {t.side === "long" ? <Term id="long">long</Term> : <Term id="short">short</Term>} · {t.qty} {t.unit}{t.qty === 1 ? "" : "s"} · {fmtMoney(t.notional)} position · <Term id="confidence">confidence</Term> {(t.confidence * 100).toFixed(0)}%
             </p>
           </div>
+
+          {news.length > 0 && (
+            <div>
+              <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)]">The news behind it</p>
+              <p className="text-[10px] text-[var(--text-4)] leading-relaxed">
+                {decision?.kind === "session" ? "Everything the crew read at the session before it proposed this." : "The tagged headlines on this name and the big macro stories on the brief when the crew read the setup."} Under each one: what happened in plain words, then how strong it is and which way it points.
+              </p>
+              <NewsList items={news} foldAfter={2} foldLabel="headlines" />
+            </div>
+          )}
 
           <div>
             <div className="flex items-center gap-2">

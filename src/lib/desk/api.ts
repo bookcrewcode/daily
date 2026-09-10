@@ -310,6 +310,7 @@ export function deskChipText(c: DeskChip): string {
 export type NewsItem = {
   id: string; link: string; title: string; source: string; published: string; summary: string;
   tickers: string[]; venue: string; category: string; impact: number; direction: string; horizon: string; why: string; tagged: boolean;
+  plain: string; // one or two beginner's sentences on what happened and what it means for the price; empty on rows tagged before it existed
 };
 export async function loadNews(limit = 150, opts: { minImpact?: number; venue?: string; ticker?: string; sinceHours?: number } = {}): Promise<{ items: NewsItem[]; error: string }> {
   let q = supabase.from("desk_news").select("*").order("published", { ascending: false }).limit(limit);
@@ -324,6 +325,7 @@ export async function loadNews(limit = 150, opts: { minImpact?: number; venue?: 
       id: String(r.id), link: String(r.link), title: String(r.title ?? ""), source: String(r.source ?? ""), published: String(r.published ?? ""), summary: String(r.summary ?? ""),
       tickers: Array.isArray(r.tickers) ? (r.tickers as string[]) : [], venue: String(r.venue ?? "none"), category: String(r.category ?? "other"), impact: n(r.impact),
       direction: String(r.direction ?? "none"), horizon: String(r.horizon ?? "none"), why: String(r.why ?? ""), tagged: r.tagged === true,
+      plain: String(r.plain ?? ""),
     })),
     error: "",
   };
@@ -427,6 +429,9 @@ export type Ballot = {
 };
 export type TeamVerdict = { action: "take" | "pass" | "close" | "tighten" | "hold"; reason: string; risk_pct?: number; leverage?: number; stop?: number; target?: number; model: string; error?: string; acting?: boolean };
 export type DecisionKind = "candidate" | "session" | "close";
+// A headline as the league function keeps it inside a decision's brief (`headline_items`, `macro_items` on a
+// candidate, `digest_items` on a session). Older rows only hold the one-line strings `headlines`, `macro`, `digest`.
+export type BriefNewsItem = { title: string; plain: string; why: string; impact: number; direction: string; category: string; published: string; tickers: string[]; source?: string };
 export type DecisionRow = {
   id: string; team_id: string; kind: DecisionKind; setup_id: string | null; symbol: string; strategy: string; timeframe: string; status: "launched" | "done" | "failed";
   brief: Record<string, unknown>; ballots: Ballot[]; verdict: TeamVerdict | null; outcome: Record<string, unknown> | null; cost_usd: number; created_at: string; updated_at: string;
