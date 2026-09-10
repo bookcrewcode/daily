@@ -883,6 +883,27 @@ async function sessionAll(uid: string, body: J): Promise<J> {
   const noIdea = `(no one on the crew had one${ideas.some((x) => x.reason) ? ": " + ideas.map((x) => `${x.model}: ${x.reason || x.error || "no idea"}`).join("; ") : ""})`;
   const champion = await championId(uid);
   const marks = await marksForAll(uid);
+  // The frontiers' own ideas cluster on the same few names and arrive nine teams at once, and the data source
+  // behind the tape refuses a burst: each symbol is looked up once for every team, two look-ups at a time,
+  // with one retry after a pause when the source asks for one. Orders go through the same gate.
+  let busy = 0;
+  const queue: (() => void)[] = [];
+  const withSlot = async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (busy >= 2) await new Promise<void>((res) => queue.push(res)); else busy++;
+    try { return await fn(); } finally { const next = queue.shift(); if (next) next(); else busy--; }
+  };
+  const looked = new Map<string, Promise<{ v: J; card: J | undefined }>>();
+  const lookup = (sym: string, venue: string): Promise<{ v: J; card: J | undefined }> => {
+    const k = `${venue}:${sym}`;
+    if (!looked.has(k)) looked.set(k, withSlot(async () => {
+      let v = await tape(uid, { mode: "validate", symbol: sym, venue }, 20000);
+      if (v.ok !== true && /rate limit/i.test(str(v.error))) { await new Promise((r) => setTimeout(r, 6000)); v = await tape(uid, { mode: "validate", symbol: sym, venue }, 20000); }
+      if (v.ok !== true) return { v, card: undefined };
+      const snap = await tape(uid, { mode: "snapshot", symbols: [{ symbol: sym, venue: String(v.venue) }] }, 30000);
+      return { v, card: ((snap.cards as Record<string, J>) ?? {})[sym] };
+    }));
+    return looked.get(k)!;
+  };
   // every frontier at once: its own book and positions, the same proposals
   const results = await Promise.all(teams.map(async (team) => {
     const book = await bookState(uid, team, s, marks);
@@ -963,11 +984,9 @@ async function sessionAll(uid: string, body: J): Promise<J> {
       if (openSyms.has(sym)) outcome = { taken: false, reasons: [`${sym} is already on the team's book`], pass_reason: "already held", by: "guardrail" };
       else if (taken + ownTaken >= 3) outcome = { taken: false, reasons: ["three new positions a session is the limit"], pass_reason: "three new positions a session", by: "guardrail" };
       else {
-        const v = await tape(uid, { mode: "validate", symbol: sym, venue: venue0 }, 20000);
-        if (v.ok !== true) outcome = { taken: false, reasons: [`${sym}: ${str(v.error, 120) || "not a symbol the desk can trade"}`], pass_reason: "not a symbol the desk can trade", by: "guardrail" };
+        const { v, card } = await lookup(sym, venue0);
+        if (v.ok !== true) outcome = { taken: false, reasons: [`${sym}: ${str(v.error, 120) || "not a symbol the desk can trade"}`], pass_reason: /rate limit/i.test(str(v.error)) ? "the tape was busy" : "not a symbol the desk can trade", by: "guardrail" };
         else {
-          const snap = await tape(uid, { mode: "snapshot", symbols: [{ symbol: sym, venue: String(v.venue) }] }, 30000);
-          const card = ((snap.cards as Record<string, J>) ?? {})[sym];
           const price = card && "price" in card ? num(card.price) : 0;
           if (!(price > 0)) outcome = { taken: false, reasons: [`${sym}: no price on the tape`], pass_reason: "no price on the tape", by: "price" };
           else {
@@ -984,7 +1003,8 @@ async function sessionAll(uid: string, body: J): Promise<J> {
       if (!made) continue;
       if (!outcome && plan) {
         (book as unknown as J).regime = str(ctx.regime, 60);
-        outcome = await execute(uid, acct, team, String(made.id), "own", plan, verdict, [ballot], book, rules, s, atr, plan.entry_ref, champion === team.id, Date.now());
+        const p2 = plan;
+        outcome = await withSlot(() => execute(uid, acct, team, String(made.id), "own", p2, verdict, [ballot], book, rules, s, atr, p2.entry_ref, champion === team.id, Date.now()));
         if (outcome.taken) { ownTaken++; openSyms.add(sym); }
       }
       await rest(`desk_decisions?id=eq.${made.id}`, { method: "PATCH", body: JSON.stringify({ status: "done", ballots: [ballot], outcome: outcome ?? { taken: false, reasons: ["nothing to place"], pass_reason: "nothing to place", by: "guardrail" }, updated_at: new Date().toISOString() }) });
