@@ -294,9 +294,12 @@ async function championId(uid: string): Promise<string | null> {
   const done = rows(await rest(`desk_seasons?user_id=eq.${uid}&status=eq.done&champion_team=not.is.null&select=champion_team&order=n.desc&limit=1`))[0];
   return done?.champion_team ? String(done.champion_team) : null;
 }
+/** Today's model spend, every opinion since 04:00Z, summed on the server: PostgREST caps a plain select at 1000 rows, which under-counted a busy day. */
 async function spentToday(uid: string, day: string): Promise<number> {
-  const r = rows(await rest(`desk_opinions?user_id=eq.${uid}&created_at=gte.${day}T04:00:00Z&select=cost_usd&limit=5000`));
-  return r.reduce((a, o) => a + num(o.cost_usd), 0);
+  const r = await rest("rpc/desk_spend_since", { method: "POST", body: JSON.stringify({ p_user: uid, p_since: `${day}T04:00:00Z` }) });
+  if (r.ok && Number.isFinite(Number(r.json))) return Number(r.json);
+  const latest = rows(await rest(`desk_opinions?user_id=eq.${uid}&created_at=gte.${day}T04:00:00Z&select=cost_usd&order=created_at.desc&limit=1000`));
+  return latest.reduce((a, o) => a + num(o.cost_usd), 0);
 }
 async function insertTeam(uid: string, s: LeagueSettings, all: TeamRow[], frontier: string, tier: Tier, season: number, why: string): Promise<TeamRow | null> {
   const ordinal = all.filter((t) => t.frontier === frontier).length + 1;

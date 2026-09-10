@@ -29,3 +29,12 @@ create index if not exists desk_opinions_research on public.desk_opinions (resea
 
 -- The Learn tab stops explaining a term once Ben marks it learned.
 alter table public.desk_accounts add column if not exists learned_terms text[] not null default '{}';
+
+-- The league's daily budget check sums the day's spend on the server (migration desk_spend_since):
+-- PostgREST caps a plain select at 1000 rows, which under-counted a busy day.
+create or replace function public.desk_spend_since(p_user uuid, p_since timestamptz)
+returns numeric language sql stable security definer set search_path = public as $$
+  select coalesce(sum(cost_usd), 0)::numeric from public.desk_opinions where user_id = p_user and created_at >= p_since;
+$$;
+revoke all on function public.desk_spend_since(uuid, timestamptz) from public;
+grant execute on function public.desk_spend_since(uuid, timestamptz) to service_role;
