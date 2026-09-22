@@ -45,3 +45,11 @@ alter table public.desk_news add column if not exists plain text;
 -- A frontier's own trade is its own kind of decision (migration desk_decisions_kind_own).
 alter table public.desk_decisions drop constraint if exists desk_decisions_kind_check;
 alter table public.desk_decisions add constraint desk_decisions_kind_check check (kind in ('candidate','session','close','council','own'));
+
+-- The app's spend line reads the same sum the budget gate uses, for the signed-in user only (migration desk_my_spend_since).
+create or replace function public.desk_my_spend_since(p_since timestamptz)
+returns numeric language sql stable security definer set search_path = public as $$
+  select coalesce(sum(cost_usd), 0)::numeric from public.desk_opinions where user_id = auth.uid() and created_at >= p_since;
+$$;
+revoke all on function public.desk_my_spend_since(timestamptz) from public;
+grant execute on function public.desk_my_spend_since(timestamptz) to authenticated;

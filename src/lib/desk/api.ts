@@ -209,6 +209,13 @@ export async function loadLatestEquity(uid: string): Promise<{ latest: Record<st
   return { latest, error: "" };
 }
 
+/** The signed-in user's model spend since a moment, every opinion's cost summed on the server: the same number the league's daily budget gate uses, so the page and the gate agree. */
+export async function loadSpendSince(since: string): Promise<{ usd: number; error: string }> {
+  const { data, error } = await supabase.rpc("desk_my_spend_since", { p_since: since });
+  if (error) return { usd: 0, error: "Couldn't load the day's spend." };
+  return { usd: n(data), error: "" };
+}
+
 export type LessonStatus = "hidden" | "emerging" | "active";
 export type Lesson = {
   id: string; text: string; scope: Record<string, unknown>; for_count: number; against_count: number; applied_count: number;

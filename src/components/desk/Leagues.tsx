@@ -13,13 +13,15 @@ import LeagueSide from "./LeagueSide";
 import LeagueSettings from "./LeagueSettings";
 import { Note, TIER_COLOR, TIER_LABEL, dayLabel, daysSince, onDay, tierMeaning } from "./LeagueBits";
 import {
-  loadTeams, loadSeasons, loadDecisions, loadTrades, loadRatings, loadStrategies, loadRosterLog, loadLatestEquity,
+  loadTeams, loadSeasons, loadDecisions, loadTrades, loadRatings, loadStrategies, loadRosterLog, loadLatestEquity, loadSpendSince,
   callFn, LEAGUE_FN, fmtMoney, type Account, type DecisionRow, type EquityPoint, type Rating, type RosterLogRow,
   type SeasonRow, type StrategyRow, type TeamRow,
 } from "@/lib/desk/api";
 import { leagueSettings, REWARD_LADDER, TIERS, type TeamLike, type Tier } from "@/lib/desk/league";
 import type { Trade } from "@/lib/desk/types";
 import type { LiveMarks } from "./DeskSpace";
+
+const ET_TIME = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
 export default function Leagues({ uid, account, live, curve, today, onChanged }: {
   uid: string; account: Account; live: LiveMarks | null; curve: EquityPoint[]; today: string; onChanged: () => void;
@@ -32,6 +34,7 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
   const [strategies, setStrategies] = useState<StrategyRow[]>([]);
   const [log, setLog] = useState<RosterLogRow[]>([]);
   const [latest, setLatest] = useState<Record<string, { day: string; equity: number }>>({});
+  const [spent, setSpent] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
   const [openTeam, setOpenTeam] = useState<string | null>(null);
@@ -39,7 +42,7 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
   const [formNote, setFormNote] = useState("");
 
   const load = useCallback(async () => {
-    const [t, s, d, tr, r, g, l, e] = await Promise.all([
+    const [t, s, d, tr, r, g, l, e, sp] = await Promise.all([
       loadTeams(uid),
       loadSeasons(uid),
       loadDecisions(uid, { sinceHours: 24, limit: 500 }),
@@ -48,8 +51,9 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
       loadStrategies(uid),
       loadRosterLog(uid, 40),
       loadLatestEquity(uid),
+      loadSpendSince(`${today}T04:00:00Z`), // the desk's day starts at midnight New York time
     ]);
-    setErr(t.error || s.error || d.error || tr.error || r.error || g.error || l.error || e.error);
+    setErr(t.error || s.error || d.error || tr.error || r.error || g.error || l.error || e.error || sp.error);
     if (!t.error) setTeams(t.teams);
     if (!s.error) setSeasons(s.seasons);
     if (!d.error) setDecisions(d.decisions);
@@ -58,8 +62,9 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
     if (!g.error) setStrategies(g.strategies);
     if (!l.error) setLog(l.log);
     if (!e.error) setLatest(e.latest);
+    if (!sp.error) setSpent(sp.usd);
     setLoaded(true);
-  }, [uid]);
+  }, [uid, today]);
   useEffect(() => { Promise.resolve().then(load); }, [load]);
 
   async function form() {
@@ -90,12 +95,28 @@ export default function Leagues({ uid, account, live, curve, today, onChanged }:
   const seasonDay = running ? Math.min(settings.season_days, daysSince(running.start_day, today) + 1) : 0;
   const champSeason = seasons.find((s) => s.champion_team);
   const champion = champSeason ? teams.find((t) => t.id === champSeason.champion_team) ?? null : null;
-  const spentToday = decisions.filter((d) => onDay(d.created_at, today)).reduce((a, d) => a + d.cost_usd, 0);
+  // The spend line is the server's sum of every model call today (the number the budget gate uses); the decision rows
+  // alone would leave out the frontiers' candidate calls, which are most of it.
+  const spentToday = spent;
   const readToday = decisions.filter((d) => onDay(d.created_at, today)).length;
+  // Every model call fails when the OpenRouter account is empty; the rows say so, and a page that stays quiet about it
+  // let the desk sit dead for days. A decision is "blocked" when its frontier, its crew or its session got that answer.
+  const outOfCredits = (d: DecisionRow) => /credits are out/i.test(String(d.verdict?.error ?? "")) || d.ballots.some((b) => /credits are out/i.test(b.error))
+    || (d.outcome && Array.isArray(d.outcome.reasons) ? (d.outcome.reasons as unknown[]).some((x) => /credits are out/i.test(String(x))) : false);
+  const blocked = decisions.filter(outOfCredits);
+  const blockedAt = blocked.length ? ET_TIME.format(Date.parse(blocked.map((d) => d.created_at).sort().at(-1) ?? "")) : "";
 
   return (
     <div className="pt-3">
       {err && <button onClick={load} className="w-full mb-2 rounded-lg bg-orange-500/15 text-orange-300 text-xs font-semibold py-2.5 active:scale-95">{err} — tap to retry</button>}
+      {blocked.length > 0 && (
+        <Card>
+          <p className="text-[12px] font-semibold" style={{ color: "var(--warn)" }}>The desk cannot reach its models: OpenRouter says the credits are out.</p>
+          <p className="text-[11px] text-[var(--text-3)] leading-relaxed mt-1">
+            {blocked.length} decision{blocked.length === 1 ? "" : "s"} in the last day got no answer for that reason, the last at {blockedAt} New York time. Until the OpenRouter account is topped up nothing new is decided: no candidates, no sessions, no own ideas. Open positions are still marked every five minutes and closed by their stops, targets and clocks, and the daily ranking still runs.
+          </p>
+        </Card>
+      )}
 
       {/* ── the rules, up front ─────────────────────────────────────── */}
       <Card>
