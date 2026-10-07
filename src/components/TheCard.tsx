@@ -146,7 +146,7 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         // stale backlog must never bury the day's real list
         supabase.from("goals").select("id,title").eq("user_id", uid).eq("status", "active")
           .gte("due", addDays(today, -7)).lte("due", today).order("due", { ascending: true }).limit(3),
-        supabase.from("class_blocks").select("label,location,start_t").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
+        supabase.from("class_blocks").select("label,location,start_t,kind").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
         supabase.from("gig_shifts").select("id,platform,hours,earnings").eq("user_id", uid).eq("day", today).order("created_at"),
       ]);
       // a failed read must never look like an empty card — the streak number
@@ -749,10 +749,10 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         )}
       </div>
 
-      {/* class timetable context — not scored, just "what's next" */}
+      {/* weekly timetable context (classes + fixed blocks) — not scored, just "what's next" */}
       {nextBlocks.length > 0 && (
         <div className="mt-3 rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5">
-          <Eyebrow className="mb-1.5">Next class</Eyebrow>
+          <Eyebrow className="mb-1.5">Next up</Eyebrow>
           {nextBlocks.map((b, i) => (
             <div key={i} className="flex gap-3 text-sm py-0.5">
               <span className="mono text-xs opacity-45 w-11 shrink-0 pt-0.5">{b.time}</span>

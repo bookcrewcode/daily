@@ -11,7 +11,7 @@ import { supabase, todayStr } from "@/lib/supabase";
 import { sfx } from "@/lib/fx";
 import { Card } from "./ui";
 
-export type ClassBlock = { id: string; weekday: number; label: string; location: string; start_t: string; end_t: string };
+export type ClassBlock = { id: string; weekday: number; label: string; location: string; start_t: string; end_t: string; kind?: string | null };
 export type SemesterInfo = { title: string; start: string; end: string };
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -50,7 +50,7 @@ export default function Semester({ uid }: { uid: string }) {
     try {
       const [{ data: us, error: usErr }, { data: cb, error: cbErr }] = await Promise.all([
         supabase.from("user_settings").select("semester").eq("user_id", uid).maybeSingle(),
-        supabase.from("class_blocks").select("id,weekday,label,location,start_t,end_t").eq("user_id", uid).order("weekday").order("start_t"),
+        supabase.from("class_blocks").select("id,weekday,label,location,start_t,end_t,kind").eq("user_id", uid).order("weekday").order("start_t"),
       ]);
       // a failed read must never render as "no semester / no classes"
       if (usErr || cbErr) { setLoadErr(true); setLoaded(true); return; }
@@ -216,7 +216,9 @@ export default function Semester({ uid }: { uid: string }) {
                   <div key={b.id} className="flex items-center gap-2 rounded-lg bg-white/[0.03] border border-white/10 px-2.5 py-2 mb-1">
                     <span className="tabular-nums text-xs opacity-55 shrink-0 w-[5.5rem]">{b.start_t}{b.end_t ? `–${b.end_t}` : ""}</span>
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm truncate">{b.label}</p>
+                      <p className="text-sm truncate">{b.label}
+                        {b.kind && b.kind !== "class" && <span className="text-[9px] uppercase tracking-wider opacity-40 ml-2">{b.kind}</span>}
+                      </p>
                       {b.location && <p className="text-[10px] opacity-40 truncate">{b.location}</p>}
                     </div>
                     <button onClick={() => removeBlock(b.id)} disabled={removingIds.includes(b.id)}
