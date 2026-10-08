@@ -31,7 +31,7 @@ type Ev = DayItem;
 // Classes and calendar events are context, not checklist items: they are things
 // that happen TO the day, so they are never scored and never carry a tick.
 // tag = the timetable row's kind: class, or a fixed weekly block (gym, read, drive…)
-type Slot = { time: string; what: string; tag: string };
+type Slot = { time: string; what: string; tag: string; id: string };
 type Goal = { id: string; title: string; due: string | null; status: string };
 type Capture = { id: string; text: string };
 
@@ -81,7 +81,7 @@ export default function PlanSpace({ uid }: { uid: string }) {
     try {
       const [n, cb, g, c, us] = await Promise.all([
         supabase.from("nights").select("items,gcal_event_ids").eq("user_id", uid).eq("day", day).maybeSingle(),
-        supabase.from("class_blocks").select("label,location,start_t,kind").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
+        supabase.from("class_blocks").select("id,label,location,start_t,kind").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
         supabase.from("goals").select("id,title,due,status").eq("user_id", uid).in("status", ["active"]).order("due", { ascending: true, nullsFirst: false }).order("title").limit(30),
         supabase.from("captures").select("id,text").eq("user_id", uid).eq("done", false).order("created_at", { ascending: false }).limit(30),
         supabase.from("user_settings").select("gcal_ics_url,gcal_client_id").eq("user_id", uid).maybeSingle(),
@@ -90,8 +90,8 @@ export default function PlanSpace({ uid }: { uid: string }) {
       if (n.error || g.error || cb.error || c.error) { setLoadErr(true); setLoaded(true); return; }
       setItems(sortItems(normalizeItems(n.data?.items)));
       setGcalIds(((n.data?.gcal_event_ids ?? []) as string[]));
-      setClasses(((cb.data ?? []) as { label: string; location: string; start_t: string; kind: string | null }[])
-        .map((x) => ({ time: x.start_t, what: `${x.label}${x.location ? ` · ${x.location}` : ""}`, tag: x.kind || "class" })));
+      setClasses(((cb.data ?? []) as { id: string; label: string; location: string; start_t: string; kind: string | null }[])
+        .map((x) => ({ id: x.id, time: x.start_t, what: `${x.label}${x.location ? ` · ${x.location}` : ""}`, tag: x.kind || "class" })));
       setGoals((g.data ?? []) as Goal[]);
       setCaptures((c.data ?? []) as Capture[]);
       // calendar settings are auxiliary — a failed read hides the feed, never the plan
@@ -296,8 +296,11 @@ export default function PlanSpace({ uid }: { uid: string }) {
       return { time: `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`, what: e.title, idx: -1 };
     });
   const calAllDay = (calDay === todayStr() ? calEvents : []).filter((e) => e.allDay);
+  // timetable blocks already on the day's list (seeded by the Card) show once, as items
+  const listed = new Set(items.map((i) => i?.block_id).filter(Boolean));
+  const unlisted = classes.filter((c) => !listed.has(c.id));
   const timeline = [
-    ...classes.map((c) => ({ ...c, kind: "class" as const, idx: -1 })),
+    ...unlisted.map((c) => ({ ...c, kind: "class" as const, idx: -1 })),
     ...calTimed.map((c) => ({ ...c, kind: "cal" as const })),
     ...planned.map((p2) => ({ ...p2, kind: "plan" as const })),
   ].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
@@ -334,7 +337,7 @@ export default function PlanSpace({ uid }: { uid: string }) {
             dayLabel="today"
             items={items.filter((x) => x?.what).map((x) => ({ time: x.time, what: x.what }))}
             fixed={[
-              ...classes.map((c) => ({ time: c.time, what: `${c.what} (${c.tag === "class" ? "class" : `fixed weekly ${c.tag} block`})` })),
+              ...unlisted.map((c) => ({ time: c.time, what: `${c.what} (${c.tag === "class" ? "class" : `fixed weekly ${c.tag} block`})` })),
               ...calTimed.map((c) => ({ time: c.time, what: `${c.what} (already on your calendar)` })),
             ]}
             onApply={(next) => writeItems(mergeItems(items, normalizeItems(next)), "chat")}

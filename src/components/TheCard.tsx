@@ -151,13 +151,13 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
     try {
       const [gd, ni, gl, cb, gg] = await Promise.all([
         supabase.from("game_days").select(GD_COLS).eq("user_id", uid).gte("day", SEASON_START),
-        supabase.from("nights").select("items").eq("user_id", uid).eq("day", today).maybeSingle(),
+        supabase.from("nights").select("items,blocks_seeded").eq("user_id", uid).eq("day", today).maybeSingle(),
         // due today or up to a week overdue, nearest due first, at most 3 — an
         // unfinished deadline keeps showing up until it's checked off, but a
         // stale backlog must never bury the day's real list
         supabase.from("goals").select("id,title").eq("user_id", uid).eq("status", "active")
           .gte("due", addDays(today, -7)).lte("due", today).order("due", { ascending: true }).limit(3),
-        supabase.from("class_blocks").select("label,location,start_t,kind").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
+        supabase.from("class_blocks").select("id,label,location,start_t,kind").eq("user_id", uid).eq("weekday", new Date().getDay()).order("start_t"),
         supabase.from("gig_shifts").select("id,platform,hours,earnings").eq("user_id", uid).eq("day", today).order("created_at"),
       ]);
       // a failed read must never look like an empty card — the streak number
@@ -168,6 +168,24 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
       })));
 
       let list = normalizeItems(ni.data?.items);
+      // The day's weekly timetable (classes, gym, read, drill, drive…) joins the
+      // list ONCE per day as real items, so every block can be checked off.
+      // blocks_seeded is stamped on the row, so a block deleted from the day
+      // stays deleted, and a failed timetable read never seeds (or wipes) anything.
+      if (!cb.error && !ni.data?.blocks_seeded) {
+        const have = new Set(list.map((i) => i.block_id).filter(Boolean));
+        const add = ((cb.data ?? []) as { id: string; label: string; location: string; start_t: string; kind: string | null }[])
+          .filter((c) => !have.has(c.id))
+          .map((c) => ({
+            id: newItemId(), time: c.start_t,
+            what: `${c.label}${(c.kind ?? "class") === "class" && c.location ? ` · ${c.location}` : ""}`.slice(0, 200),
+            src: "block" as const, block_id: c.id,
+          }));
+        const merged = [...list, ...add];
+        const { error } = await supabase.from("nights")
+          .upsert({ user_id: uid, day: today, items: merged, blocks_seeded: true }, { onConflict: "user_id,day" });
+        if (!error) list = merged;
+      }
       // Deadlines due today join the list for real (not as a decoration), so
       // checking one both scores the day and closes the goal. Materialised once
       // per day and only ever ADDITIVE — a goal read failure just means no
@@ -210,7 +228,10 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         if (!error) commitDays((ds) => [...ds.filter((d) => d.day !== today), fixed]);
       }
 
-      const cls = (cb.error ? [] : ((cb.data ?? []) as { label: string; location: string; start_t: string }[]))
+      // "Next up" only for timetable blocks that are NOT already on the list
+      const onList = new Set(listNow.map((i) => i.block_id).filter(Boolean));
+      const cls = (cb.error ? [] : ((cb.data ?? []) as { id: string; label: string; location: string; start_t: string }[]))
+        .filter((c) => !onList.has(c.id))
         .map((c) => ({ time: c.start_t, what: `${c.label}${c.location ? ` · ${c.location}` : ""}` }));
       setBlocks(cls.sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99")));
       setTodayGigs(gg.error ? [] : ((gg.data ?? []) as Gig[]));
