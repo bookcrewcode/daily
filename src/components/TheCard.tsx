@@ -30,6 +30,7 @@ import { splitsFor } from "@/lib/dayList";
 import { burstConfetti } from "@/lib/confetti";
 import { readPlanCache } from "@/lib/learnApi";
 import { loadDeskChip, deskChipText, type DeskChip } from "@/lib/desk/api";
+import { loadReadChip, readChipText, type ReadChip } from "@/lib/readingChip";
 import { studyDay } from "@/lib/session";
 import { sfx, buzz } from "@/lib/fx";
 import { Num, Eyebrow, SegRing, ProgressCircle } from "./ui";
@@ -112,6 +113,16 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   useEffect(() => {
     let live = true;
     const read = () => { Promise.resolve().then(() => loadDeskChip(uid)).then((c) => { if (live && c) setDeskChip(c); }); };
+    read();
+    document.addEventListener("visibilitychange", read);
+    return () => { live = false; document.removeEventListener("visibilitychange", read); };
+  }, [uid]);
+
+  // reading in one line: minutes vs the 40-min slot + the active book's drill
+  const [readChip, setReadChip] = useState<ReadChip | null>(null);
+  useEffect(() => {
+    let live = true;
+    const read = () => { Promise.resolve().then(() => loadReadChip(uid)).then((c) => { if (live) setReadChip(c); }).catch(() => {}); };
     read();
     document.addEventListener("visibilitychange", read);
     return () => { live = false; document.removeEventListener("visibilitychange", read); };
@@ -602,6 +613,15 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
               </div>
             )}
           </div>
+
+          {readChip && (
+            <button onClick={() => onGoTab("read")}
+              className="w-full mt-2 rounded-xl border border-[var(--border-1)] bg-[var(--card)] px-3.5 py-2.5 text-left flex items-center gap-2 active:scale-[0.99]">
+              <span className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)] shrink-0">Read</span>
+              <p className="text-[12px] font-semibold flex-1 min-w-0 truncate">{readChipText(readChip)}</p>
+              <span className={`text-[10px] ${readChip.minutes >= 40 && readChip.drillOk ? "text-[var(--ok)]" : "opacity-45"}`}>{readChip.minutes >= 40 && readChip.drillOk ? "done" : "→"}</span>
+            </button>
+          )}
 
           {deskChip && (
             <button onClick={() => onGoTab("desk")}
