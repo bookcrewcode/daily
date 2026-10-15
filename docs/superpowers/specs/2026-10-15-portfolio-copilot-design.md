@@ -59,11 +59,16 @@ Ben, 2026-10-15: plays "like Chris Camillo's social arbitrage ... doesn't have t
 - **The app does the checks Camillo does,** in one research pass, and writes an idea card:
   1. Which company and ticker it really points to (verify the ticker; the Reddit example wrote VSXY for Victoria's Secret, which trades as VSCO).
   2. **Materiality:** how big the product or category is against the company's total sales, from the latest 10-Q, 10-K and earnings call.
-  3. **Is the trend still growing:** Wikipedia page views (free official API) and Reddit mentions over the last 90 days; Google Trends when a reliable source is available.
+  3. **Is the trend still growing:** Wikipedia page views over the last 90 days (free official API), plus app-chart rank and Google's daily trending searches where they apply. Reddit mentions only once Ben adds a free Reddit API key in settings (Reddit refuses requests without one, checked 2026-10-15).
   4. **Has the market noticed:** the stock's move since the trend began, news count, analyst mentions.
   5. **Timing:** the next earnings date, when the trend would show up in reported sales.
 - The card ends with long, short or pass, a conviction from 0 to 1, the thesis, what would prove it wrong, and a horizon through the next earnings report. A take goes into the same paper book as the other plays, scored on the same graduation line, and labelled as a social-arbitrage play so its record can be read separately.
-- **Automatic attention check:** once a week the app looks for unusual jumps in Wikipedia views and Reddit mentions for the watchlist names and their products, and sends any jump as a starting point for an idea, never as a play.
+- **The app hunts too** (Ben, 2026-10-15: "I want you also to be looking"). Every trading day at 07:00 ET:
+  1. **Gather risers, no model:** Wikipedia's most-viewed pages of the previous day against each page's 30-day average, App Store top free and top grossing apps that climbed in rank, Steam's most-played games that climbed, and Google's daily trending searches. All four sources are free and answered a test request on 2026-10-15. TikTok and Amazon have no allowed source, so they are left out.
+  2. **Sort, one cheap model call:** drop what can't move a public company (deaths, sports results, celebrities, holidays), and map the rest to a product and a verified ticker.
+  3. **Research the best three** with the same idea card as Ben's inbox. A take with conviction of at least 0.75 opens a paper play. Cards below that go on a "watching" list and are re-checked once a week, then dropped after four weeks unless the trend is still growing.
+  4. Telegram gets an alert only when a card opens a play, plus a short Monday note with the watching list.
+- Social plays carry who found them, so the scorecard shows **your finds** and **the app's finds** separately. Expect most cards to say pass, and expect the app's finds to come later than Ben's best ones: these sources show what many people already see, while Camillo's edge is noticing something in real life first. The scorecard will show whether the app's hunting is worth its cost.
 
 ### 4c. Watchlist and lessons
 
@@ -87,25 +92,25 @@ A new alert-only bot that Ben creates in BotFather and connects in the app's set
 
 ## Cost
 
-A hard cap of $1 a day on model calls, enforced on the server like the Desk's budget gate. The morning report costs about one to two cents. A play judgment costs one to five cents depending on the model; the default judge is Gemini 3.1 Pro, which finished second of nine in the Desk's league at low cost, and Ben can switch it. An idea card costs about five to fifteen cents (it reads filings and runs several look-ups), with at most five idea cards a day. Feed tagging stays on its own cheap model. Expected spend: well under $1 on a normal day.
+A hard cap of $1 a day on model calls, enforced on the server like the Desk's budget gate. The morning report costs about one to two cents. A play judgment costs one to five cents depending on the model; the default judge is Gemini 3.1 Pro, which finished second of nine in the Desk's league at low cost, and Ben can switch it. An idea card costs about five to fifteen cents (it reads filings and runs several look-ups), with at most five of Ben's idea cards and three of the app's a day; the daily sort call costs about one to two cents. When the day's budget runs short, Ben's ideas go first, then plays, then the app's hunt. Feed tagging stays on its own cheap model. Expected spend: well under $1 on a normal day.
 
 ## Pieces
 
-- Tables: `pf_holdings`, `pf_lots`, `pf_settings` (watchlist, caps, judge model, alert hours, Telegram chat id), `pf_reports`, `pf_plays` (the play, its paper trade id, conviction, reasoning, Ben's decision and when), `pf_events_test` (unlock-test rows), `pf_ideas` (Ben's observation, the idea card, its take, its paper trade id), `pf_lessons` (one-line lessons and how often each repeats). Paper trades go in `desk_trades` with owner `pilot`; a play's source (setup, headline or social) is stored on `pf_plays`.
-- Edge function `pilot` with modes `report`, `scan`, `events`, `telegram` (webhook), `lots` (Monday lot), `scorecard`, `idea` (one research pass), `attention` (weekly check).
-- One cron, `pilot-tick`, every five minutes: runs the paper sync, the feed ingest every 15 minutes in hours, the play scan every 15 minutes in hours, the morning report at 08:30 ET, the Monday lot after the open, event alerts at 08:35 ET. The Desk's crons stay off.
+- Tables: `pf_holdings`, `pf_lots`, `pf_settings` (watchlist, caps, judge model, alert hours, Telegram chat id), `pf_reports`, `pf_plays` (the play, its paper trade id, conviction, reasoning, Ben's decision and when), `pf_events_test` (unlock-test rows), `pf_ideas` (who found it, Ben's observation or the riser, the idea card, its take, watching status, its paper trade id), `pf_trends` (each day's risers by source, score and mapped ticker), `pf_lessons` (one-line lessons and how often each repeats). Paper trades go in `desk_trades` with owner `pilot`; a play's source (setup, headline or social) is stored on `pf_plays`.
+- Edge function `pilot` with modes `report`, `scan`, `events`, `telegram` (webhook), `lots` (Monday lot), `scorecard`, `idea` (one research pass), `hunt` (the daily trend hunt and the weekly watching re-check).
+- One cron, `pilot-tick`, every five minutes: runs the paper sync, the feed ingest every 15 minutes in hours, the play scan every 15 minutes in hours, the morning report at 08:30 ET, the Monday lot after the open, event alerts at 08:35 ET, the trend hunt at 07:00 ET. The Desk's crons stay off.
 - App: the Portfolio tab (holdings, report, plays and both scorecards, unlock test, graduation line, settings) replacing the Desk tab.
 
 ## Testing
 
-Unit tests for lot math, the Monday lot, the unlock test, the alert throttle, the two scorecards, the graduation rule and the attention-jump rule. The Telegram sender has a dry-run mode. The play scan runs for one full trading day writing to the app only before alerts go to Ben's phone.
+Unit tests for lot math, the Monday lot, the unlock test, the alert throttle, the two scorecards, the graduation rule, the riser score and the watching-list expiry. The Telegram sender has a dry-run mode. The play scan runs for one full trading day writing to the app only before alerts go to Ben's phone.
 
 ## Build order
 
 1. Holdings, Monday lots and the morning report in the app.
 2. Telegram bot, morning summary and event alerts with the unlock test.
 3. Paper plays with alerts, Yes or No, and both scorecards.
-4. The idea inbox and the weekly attention check.
+4. The idea inbox and the app's daily trend hunt.
 5. The graduation line and the real-money sizes, which stay hidden until the paper record earns them.
 
 ## Open items
