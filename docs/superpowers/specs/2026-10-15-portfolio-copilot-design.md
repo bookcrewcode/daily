@@ -5,15 +5,15 @@ Status: draft for Ben's review, 2026-10-15. Replaces the paused Desk as the mone
 ## What Ben wants (his words, 2026-10-14 and 15)
 
 - "Get my money working for me ... a riskier savings account" that compounds for years, without "watching charts 24/7."
-- He buys $400 every Monday on Robinhood, mostly SpaceX (SPCX), about $1.2k so far, and holds for the long run.
+- He buys $400 every week on Robinhood (Mondays until 2026-10-15, then Wednesdays: "stop buys on monday ... wednesday is the best"), mostly SpaceX (SPCX), about $1.2k so far, and holds for the long run.
 - "Agents each day run reports on the individual stock, the market, etc., and then news around it."
 - Telegram alerts "if there's something important," with a yes or no, and "a breakdown with why it thinks so and why it has the conviction so I can learn from it."
-- Unlock days: test whether buying on them beats his normal Monday buys.
+- Unlock days: test whether buying on them beats his normal weekly buys.
 - "Add alerts for high conviction plays through the day. We can do paper and track profitability before going with real money, and with real money still nothing crazy."
 
 ## Lines this design keeps
 
-- **No order placement.** Nothing in the app places, cancels or changes a real order, and the app never holds broker credentials. Real money moves only when Ben taps in Robinhood himself. The Monday buys are Robinhood's own recurring investment, set up once by Ben in the Robinhood app.
+- **No order placement.** Nothing in the app places, cancels or changes a real order, and the app never holds broker credentials. Real money moves only when Ben taps in Robinhood himself. The weekly buys are Robinhood's own recurring investment, set up once by Ben in the Robinhood app.
 - **No autonomy grant.** Ben shared a Reddit guide (2026-10-15) whose step 3 tells Claude it may "execute trades without asking permission." This design never does that and never connects Robinhood's trading tools to Claude. If Ben later wants hands-off trading, Robinhood's own in-app agent with approvals off is his to set up.
 - **No borrowing, no options in v1.** Options can be added to the paper book later; they never get a real-money suggestion until they have their own paper record.
 - **News is data.** A headline can only ever lead to a paper play inside the guardrails; it can never trigger anything else.
@@ -24,7 +24,7 @@ Status: draft for Ben's review, 2026-10-15. Replaces the paused Desk as the mone
 
 ### 1. Holdings
 
-Ben types his positions once: symbol, shares or coins, average cost. Each Monday the app adds the recurring buy as a new lot at the first five-minute price after the open, marked "assumed, edit if Robinhood filled differently." He can edit or delete any lot. The page shows value, gain or loss in dollars and percent, and each holding's share of the account.
+Ben types his positions once: symbol, shares or coins, average cost. On Ben's buy day (a setting, Wednesday from 2026-10-15) the app adds the recurring buy as a new lot at the first five-minute price after the open, marked "assumed, edit if Robinhood filled differently." He can edit or delete any lot. The page shows value, gain or loss in dollars and percent, and each holding's share of the account.
 
 Later option, not in v1: read holdings from Robinhood's official read-only connection through a daily job on Ben's Mac, with every trading tool switched off.
 
@@ -36,7 +36,7 @@ For each holding: price, day and week move, the tagged news that touched it in t
 
 Unlock dates, earnings and Fed meetings live in the existing events calendar. SPCX's known unlocks: August 6 and September 9, 2026; the later tranches through June 2027 must be confirmed from the prospectus before they are entered. Three trading days before each event Ben gets a Telegram note: what happens, who can sell or what is announced, and how the stock moved at the previous ones.
 
-The unlock test: on each unlock the app records the closing price on unlock day and five trading days later, and compares buying on unlock day with his Monday buy that week. A small table on the Portfolio tab shows the running result, so Ben can see from his own numbers whether buying extra on unlock days helps.
+The unlock test: on each unlock the app records the closing price on unlock day and five trading days later, and compares buying on unlock day with his recurring buy that week. A small table on the Portfolio tab shows the running result, so Ben can see from his own numbers whether buying extra on unlock days helps.
 
 ### 4. High-conviction plays, paper only
 
@@ -97,17 +97,17 @@ A hard cap of $1 a day on model calls, enforced on the server like the Desk's bu
 ## Pieces
 
 - Tables: `pf_holdings`, `pf_lots`, `pf_settings` (watchlist, caps, judge model, alert hours, Telegram chat id), `pf_reports`, `pf_plays` (the play, its paper trade id, conviction, reasoning, Ben's decision and when), `pf_events_test` (unlock-test rows), `pf_ideas` (who found it, Ben's observation or the riser, the idea card, its take, watching status, its paper trade id), `pf_trends` (each day's risers by source, score and mapped ticker), `pf_lessons` (one-line lessons and how often each repeats). Paper trades go in `desk_trades` with owner `pilot`; a play's source (setup, headline or social) is stored on `pf_plays`.
-- Edge function `pilot` with modes `report`, `scan`, `events`, `telegram` (webhook), `lots` (Monday lot), `scorecard`, `idea` (one research pass), `hunt` (the daily trend hunt and the weekly watching re-check).
-- One cron, `pilot-tick`, every five minutes: runs the paper sync, the feed ingest every 15 minutes in hours, the play scan every 15 minutes in hours, the morning report at 08:30 ET, the Monday lot after the open, event alerts at 08:35 ET, the trend hunt at 07:00 ET. The Desk's crons stay off.
+- Edge function `pilot` with modes `report`, `scan`, `events`, `telegram` (webhook), `lots` (weekly lot), `scorecard`, `idea` (one research pass), `hunt` (the daily trend hunt and the weekly watching re-check).
+- One cron, `pilot-tick`, every five minutes: runs the paper sync, the feed ingest every 15 minutes in hours, the play scan every 15 minutes in hours, the morning report at 08:30 ET, the weekly lot after the open on the buy day, event alerts at 08:35 ET, the trend hunt at 07:00 ET. The Desk's crons stay off.
 - App: the Portfolio tab (holdings, report, plays and both scorecards, unlock test, graduation line, settings) replacing the Desk tab.
 
 ## Testing
 
-Unit tests for lot math, the Monday lot, the unlock test, the alert throttle, the two scorecards, the graduation rule, the riser score and the watching-list expiry. The Telegram sender has a dry-run mode. The play scan runs for one full trading day writing to the app only before alerts go to Ben's phone.
+Unit tests for lot math, the weekly lot, the unlock test, the alert throttle, the two scorecards, the graduation rule, the riser score and the watching-list expiry. The Telegram sender has a dry-run mode. The play scan runs for one full trading day writing to the app only before alerts go to Ben's phone.
 
 ## Build order
 
-1. Holdings, Monday lots and the morning report in the app.
+1. Holdings, weekly lots and the morning report in the app.
 2. Telegram bot, morning summary and event alerts with the unlock test.
 3. Paper plays with alerts, Yes or No, and both scorecards.
 4. The idea inbox and the app's daily trend hunt.
