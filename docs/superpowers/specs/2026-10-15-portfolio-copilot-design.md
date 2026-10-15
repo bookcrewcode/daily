@@ -36,6 +36,8 @@ For each holding: price, day and week move, the tagged news that touched it in t
 
 Unlock dates, earnings and Fed meetings live in the existing events calendar. SPCX's known unlocks: August 6 and September 9, 2026; the later tranches through June 2027 must be confirmed from the prospectus before they are entered. Three trading days before each event Ben gets a Telegram note: what happens, who can sell or what is announced, and how the stock moved at the previous ones.
 
+Drop-day alert: when a holding is down 5% or more on the day, Ben gets one Telegram note with the move, the news behind it in plain words, and how the stock did in the five days after its earlier 5% drops. It is information for an extra buy Ben may choose to make; it never suggests options. (A friend's tip Ben shared on 2026-10-15 was year-out out-of-the-money calls on 5% drop days; options stay out of v1.)
+
 The unlock test: on each unlock the app records the closing price on unlock day and five trading days later, and compares buying on unlock day with his recurring buy that week. A small table on the Portfolio tab shows the running result, so Ben can see from his own numbers whether buying extra on unlock days helps.
 
 ### 4. High-conviction plays, paper only
