@@ -79,7 +79,7 @@ The Portfolio tab shows a graduation line, and real-money suggestions stay off u
 - ahead of the S&P 500 over the same weeks,
 - the paper book never more than 15% below its high.
 
-After graduation, "nothing crazy" means these defaults, which Ben can change in settings: stocks and ETFs only; at most 5% of the real account on one play; at most two real plays open; a stop always set. The app then shows the real-money size next to each alert, and Ben places it himself in Robinhood or ignores it.
+After graduation, "nothing crazy" means these defaults, which Ben can change in settings: stocks and ETFs only; at most 5% of the real account on one play; at most two real plays open; a stop always set. The app then shows the real-money size next to each alert, and Ben places it himself in Robinhood or ignores it. Tapping Yes on a graduated alert replies with a ready order ticket (buy or sell, shares, limit price, stop price, copyable) and a link that opens that stock in the Robinhood app, so placing it takes about thirty seconds. A Yes tap never places an order (Ben, 2026-10-15: confirmation through Telegram, "no AI glitch ... losing me money").
 
 ### 6. Telegram
 
