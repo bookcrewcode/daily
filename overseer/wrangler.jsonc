@@ -9,5 +9,9 @@
     "SUPABASE_URL": "https://pciljeqsrricybdnhvsu.supabase.co",
     "BEN_USER_ID": "f0e1e204-aa54-4a45-bbb5-99c83114fecb",
     "APP_ORIGIN": "https://bookcrewcode.github.io"
-  }
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "Overseer", "class_name": "Overseer" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Overseer"] }]
 }
