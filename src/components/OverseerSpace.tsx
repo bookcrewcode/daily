@@ -19,7 +19,7 @@ type Message = { id: number; direction: "in" | "out"; peer: "ben" | "partner"; t
 type Line = { id: string; text: string; used: number };
 type Partner = { id: string; name: string; joined_at: string | null; left_at: string | null; sent: number };
 
-const KINDS = ["study", "work", "read", "drill", "class", "gym", "drive", "reset"];
+const KINDS = ["study", "work", "read", "drill", "plan", "class", "gym", "drive", "reset"];
 const CARD = "mt-4 rounded-2xl p-4 border bg-[var(--raised)] border-[var(--border-1)]";
 const HEAD = "mono text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-3)]";
 const HINT = "text-xs text-[var(--text-3)] leading-snug";
@@ -90,7 +90,7 @@ export default function OverseerSpace({ uid }: { uid: string }) {
     const { error } = await supabase.from("overseer_settings").update({
       wake: next.wake, wrap: next.wrap, ping_kinds: next.ping_kinds, ping_every_min: next.ping_every_min,
       cap_usd: next.cap_usd, cheap_model: next.cheap_model, smart_model: next.smart_model,
-      paused: next.paused, dry_run: next.dry_run, updated_at: new Date().toISOString(),
+      dry_run: next.dry_run, updated_at: new Date().toISOString(),
     }).eq("user_id", uid);
     setBusy("");
     if (error) { setNote("Couldn't save. Nothing changed."); return; }
@@ -109,6 +109,14 @@ export default function OverseerSpace({ uid }: { uid: string }) {
     const r = await call("link");
     if (r.ok && r.url) { setLink(r.url); window.open(r.url, "_blank"); }
     else setNote(r.error ?? "Couldn't make a link.");
+  }
+  // Pause goes through the agent, so it is named in the evening wrap and the
+  // check-in ladder starts fresh on resume.
+  async function togglePause() {
+    if (!s) return;
+    const r = await call(s.paused ? "resume" : "pause");
+    if (!r.ok) setNote(r.error ?? "Couldn't reach the Overseer.");
+    await load();
   }
   async function undo(id: string) {
     const r = await call("undo", { action_id: id });
@@ -166,7 +174,7 @@ export default function OverseerSpace({ uid }: { uid: string }) {
             <div className="mt-3 flex flex-wrap gap-2">
               <button className={BTN} disabled={!!busy} onClick={connect}>{s.chat_id ? "Reconnect Telegram" : "Connect Telegram"}</button>
               <button className={BTN} disabled={!!busy} onClick={test}>Send a test message</button>
-              <button className={BTN} disabled={!!busy} onClick={() => save({ paused: !s.paused })}>{s.paused ? "Resume" : "Pause"}</button>
+              <button className={BTN} disabled={!!busy} onClick={togglePause}>{s.paused ? "Resume" : "Pause"}</button>
               <button className={BTN} disabled={!!busy} onClick={() => save({ dry_run: !s.dry_run })}>{s.dry_run ? "Turn dry run off" : "Turn dry run on"}</button>
             </div>
             {link && (
@@ -227,7 +235,7 @@ export default function OverseerSpace({ uid }: { uid: string }) {
           </div>
           <p className={`mt-3 ${HINT}`}>Check in every: minutes between check-ins while you&apos;re in a drill block. If you don&apos;t answer, it follows up after 20 and 10 minutes, then cuts the task to a two-minute step, then moves it.</p>
           <p className="mt-4 text-sm">Drill block kinds</p>
-          <p className={HINT}>Drill block kinds: timetable blocks of these kinds get check-ins. All other blocks stay quiet. With none picked, it never checks in.</p>
+          <p className={HINT}>Drill block kinds: timetable blocks of these kinds get check-ins; &quot;plan&quot; means timed items from the Plan chat. All other blocks stay quiet. With none picked, it never checks in.</p>
           <div className="mt-2 flex flex-wrap gap-2">
             {KINDS.map((k) => (
               <button key={k}

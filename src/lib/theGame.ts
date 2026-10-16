@@ -249,6 +249,13 @@ export function normalizeItems(raw: unknown): DayItem[] {
     .slice(0, 60);
 }
 
+// The Card saves on top of the freshest list, not the copy it loaded, so a
+// tick made elsewhere since then (Telegram, the Overseer, the Plan chat)
+// survives. `fresh` is the row's raw items, or null when that read failed.
+export function rebase(fresh: unknown, fallback: DayItem[], edit: (items: DayItem[]) => DayItem[]): DayItem[] {
+  return edit(fresh === null ? fallback : normalizeItems(fresh));
+}
+
 export function sortItems(items: DayItem[]): DayItem[] {
   // timed first in clock order, untimed after in the order they were added
   return [...items].sort((a, b) => (a.time || "99:99").localeCompare(b.time || "99:99"));
