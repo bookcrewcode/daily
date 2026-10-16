@@ -1,0 +1,18 @@
+{
+  "name": "overseer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "wrangler types && tsc --noEmit",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "agents": "0.26.0"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "vitest": "5.0.3",
+    "wrangler": "4.151.0"
+  }
+}
