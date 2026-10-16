@@ -5,6 +5,7 @@ import { firstWindowStart } from "./agenda";
 import { addItem, checkItem, editItem, loadDay, moveItem, READ_FAIL, removeItem, setTop3, undoItem, WRITE_FAIL, type ToolCtx, type ToolOutcome } from "./dayops";
 import type { SettingsRow } from "./db";
 import type { ToolSpec } from "./llm";
+import { CAL_HANDLERS } from "./caltools";
 import { stakesOffAllowed } from "./stakes";
 import { isHhmm } from "./time";
 import { dayArg, dayOf, fn, S, str, type Handler } from "./toolkit";
@@ -224,8 +225,7 @@ const ITEM_HANDLERS: Record<string, Handler> = {
 };
 
 function handlers(withCal: boolean): Record<string, Handler> {
-  void withCal;   // calendar tools join in Task 13
-  return ITEM_HANDLERS;
+  return withCal ? { ...ITEM_HANDLERS, ...CAL_HANDLERS } : ITEM_HANDLERS;
 }
 
 export const toolSpecs = (withCal: boolean): ToolSpec[] => Object.values(handlers(withCal)).map((h) => h.spec);

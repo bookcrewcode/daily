@@ -7,6 +7,7 @@ import { handle, undo as undoInBrain, type Deps, type Event, type Out } from "./
 import { SupabaseDb } from "./core/db";
 import { openRouter } from "./core/llm";
 import { parseUpdate, TgClient } from "./core/telegram";
+import { authUrl, exchangeCode, GoogleCal, type Tokens } from "./google";
 import { initialState as freshState, type CalPort, type State } from "./core/types";
 import type { OverseerEnv } from "./env";
 
@@ -46,7 +47,25 @@ export class Overseer extends Agent<OverseerEnv, State> {
     return new SupabaseDb(this.env.SUPABASE_URL, this.env.SUPABASE_SERVICE_ROLE_KEY, this.env.BEN_USER_ID);
   }
   private cal(): CalPort | null {
-    return null;
+    const id = this.env.GOOGLE_CLIENT_ID;
+    const secret = this.env.GOOGLE_CLIENT_SECRET;
+    if (!id || !secret || !this.kvGet("google")) return null;
+    return new GoogleCal({
+      get: async () => JSON.parse(this.kvGet("google") ?? "null") as Tokens | null,
+      set: async (t) => this.kvSet("google", JSON.stringify(t)),
+    }, id, secret);
+  }
+
+  async googleCallback(code: string, state: string, origin: string): Promise<boolean> {
+    const want = this.kvGet("google_state");
+    this.kvSet("google_state", null);
+    const id = this.env.GOOGLE_CLIENT_ID;
+    const secret = this.env.GOOGLE_CLIENT_SECRET;
+    if (!want || state !== want || !code || !id || !secret) return false;
+    const t = await exchangeCode(code, id, secret, `${origin}/google/callback`);
+    if (!t) return false;
+    this.kvSet("google", JSON.stringify(t));
+    return true;
   }
   private deps(): Deps {
     return { db: this.db(), llm: openRouter(this.env.OPENROUTER_API_KEY), cal: this.cal(), now: () => Date.now(), ids: () => crypto.randomUUID() };
@@ -112,7 +131,7 @@ export class Overseer extends Agent<OverseerEnv, State> {
     switch (op) {
       case "status": {
         const s = await db.settings();
-        return { ok: !!s, linked: !!s?.chat_id, paused: s?.paused ?? false, dry_run: s?.dry_run ?? true, google: false };
+        return { ok: !!s, linked: !!s?.chat_id, paused: s?.paused ?? false, dry_run: s?.dry_run ?? true, google: !!this.kvGet("google") };
       }
       case "link": {
         if (!(await tg.setWebhook(`${origin}/telegram`, this.env.TELEGRAM_WEBHOOK_SECRET))) return { ok: false, error: "Telegram didn't accept the webhook. Check the bot token." };
@@ -138,6 +157,12 @@ export class Overseer extends Agent<OverseerEnv, State> {
       case "test":
         await this.serial(() => this.step({ kind: "test" }));
         return { ok: true };
+      case "google_start": {
+        if (!this.env.GOOGLE_CLIENT_ID || !this.env.GOOGLE_CLIENT_SECRET) return { ok: false, error: "Google sign-in isn't set up yet." };
+        const state = randomCode();
+        this.kvSet("google_state", state);
+        return { ok: true, url: authUrl(this.env.GOOGLE_CLIENT_ID, `${origin}/google/callback`, state) };
+      }
       default:
         return { ok: false, error: `Unknown request ${op}.` };
     }

@@ -5,6 +5,7 @@ import { webhookOk } from "./core/telegram";
 export type Stub = {
   inbound(update: unknown): Promise<void>;
   api(op: string, body: Record<string, unknown>, origin: string): Promise<Record<string, unknown>>;
+  googleCallback(code: string, state: string, origin: string): Promise<boolean>;
 };
 export type RouterEnv = { SUPABASE_URL: string; SUPABASE_SERVICE_ROLE_KEY: string; BEN_USER_ID: string; APP_ORIGIN: string; TELEGRAM_WEBHOOK_SECRET: string };
 
@@ -37,6 +38,11 @@ export async function route(req: Request, env: RouterEnv, stub: () => Promise<St
     }
     await (await stub()).inbound(update);
     return new Response("ok");
+  }
+
+  if (url.pathname === "/google/callback" && req.method === "GET") {
+    const ok = await (await stub()).googleCallback(url.searchParams.get("code") ?? "", url.searchParams.get("state") ?? "", url.origin);
+    return Response.redirect(`${env.APP_ORIGIN}/daily/?go=overseer&google=${ok ? "ok" : "fail"}`, 302);
   }
 
   if (url.pathname.startsWith("/api/") && req.method === "POST") {

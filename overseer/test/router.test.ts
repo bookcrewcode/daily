@@ -12,6 +12,7 @@ function spy() {
   const stub: Stub = {
     inbound: async (u) => { seen.inbound.push(u); },
     api: async (op, body) => { seen.api.push([op, body]); return { ok: true }; },
+    googleCallback: async (code, state) => code === "c1" && state === "s1",
   };
   return { seen, get: async () => stub };
 }
@@ -53,5 +54,11 @@ describe("router", () => {
   });
   it("404s anything else", async () => {
     expect((await route(new Request("https://w.test/"), env, spy().get)).status).toBe(404);
+  });
+  it("sends Google's sign-in back to the app's Overseer page", async () => {
+    const s = spy();
+    const r = await route(new Request("https://w.test/google/callback?code=c1&state=s1"), env, s.get);
+    expect(r.status).toBe(302);
+    expect(r.headers.get("Location")).toBe("https://bookcrewcode.github.io/daily/?go=overseer&google=ok");
   });
 });
