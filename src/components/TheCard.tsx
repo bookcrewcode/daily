@@ -28,6 +28,7 @@ import {
 } from "@/lib/theGame";
 import { splitsFor } from "@/lib/dayList";
 import { burstConfetti } from "@/lib/confetti";
+import Overseer from "@/components/Overseer";
 import { readPlanCache } from "@/lib/learnApi";
 import { loadDeskChip, deskChipText, type DeskChip } from "@/lib/desk/api";
 import { loadReadChip, readChipText, type ReadChip } from "@/lib/readingChip";
@@ -515,6 +516,7 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
 
   return (
     <div className="pt-3">
+      <Overseer uid={uid} />
       {/* header: the ring is the list */}
       <div className="relative">
         <div className="glow-hero" />
