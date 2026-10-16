@@ -7,13 +7,13 @@ export type Stub = {
   api(op: string, body: Record<string, unknown>, origin: string): Promise<Record<string, unknown>>;
   googleCallback(code: string, state: string, origin: string): Promise<boolean>;
 };
-export type RouterEnv = { SUPABASE_URL: string; SUPABASE_SERVICE_ROLE_KEY: string; BEN_USER_ID: string; APP_ORIGIN: string; TELEGRAM_WEBHOOK_SECRET: string };
+export type RouterEnv = { SUPABASE_URL: string; SUPABASE_ANON_KEY: string; BEN_USER_ID: string; APP_ORIGIN: string; TELEGRAM_WEBHOOK_SECRET: string };
 
 export async function userIdOf(auth: string | null, env: RouterEnv, f: typeof fetch): Promise<string | null> {
   const token = auth?.replace(/^Bearer\s+/i, "").trim() ?? "";
   if (!token) return null;
   try {
-    const r = await f(`${env.SUPABASE_URL}/auth/v1/user`, { headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${token}` } });
+    const r = await f(`${env.SUPABASE_URL}/auth/v1/user`, { headers: { apikey: env.SUPABASE_ANON_KEY, Authorization: `Bearer ${token}` } });
     if (!r.ok) return null;
     return ((await r.json()) as { id?: string }).id ?? null;
   } catch {

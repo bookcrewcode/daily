@@ -43,8 +43,10 @@ export class Overseer extends Agent<OverseerEnv, State> {
     else this.sql`insert into kv (k, v) values (${k}, ${v}) on conflict(k) do update set v = excluded.v`;
   }
 
+  // The database is reached through the overseer-db edge function, so the
+  // service-role key never leaves Supabase.
   private db() {
-    return new SupabaseDb(this.env.SUPABASE_URL, this.env.SUPABASE_SERVICE_ROLE_KEY, this.env.BEN_USER_ID);
+    return new SupabaseDb(`${this.env.SUPABASE_URL}/functions/v1/overseer-db`, this.env.OVERSEER_DB_SECRET, this.env.BEN_USER_ID);
   }
   private cal(): CalPort | null {
     const id = this.env.GOOGLE_CLIENT_ID;

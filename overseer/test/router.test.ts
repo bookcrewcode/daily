@@ -3,7 +3,7 @@ import { route, type RouterEnv, type Stub } from "../src/router";
 import { mockFetch } from "./fakes";
 
 const env: RouterEnv = {
-  SUPABASE_URL: "https://sb.test", SUPABASE_SERVICE_ROLE_KEY: "SERVICE", BEN_USER_ID: "ben-id",
+  SUPABASE_URL: "https://sb.test", SUPABASE_ANON_KEY: "ANON", BEN_USER_ID: "ben-id",
   APP_ORIGIN: "https://bookcrewcode.github.io", TELEGRAM_WEBHOOK_SECRET: "hook-secret",
 };
 
@@ -51,6 +51,8 @@ describe("router", () => {
     expect(s.seen.api).toEqual([["undo", { action_id: "a1" }]]);
     expect(a.calls[0].url).toBe("https://sb.test/auth/v1/user");
     expect((a.calls[0].init?.headers as Record<string, string>).Authorization).toBe("Bearer tok");
+    // the sign-in check uses the public app key, never a service key
+    expect((a.calls[0].init?.headers as Record<string, string>).apikey).toBe("ANON");
   });
   it("404s anything else", async () => {
     expect((await route(new Request("https://w.test/"), env, spy().get)).status).toBe(404);

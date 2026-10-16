@@ -3,7 +3,8 @@
 export interface OverseerEnv extends Cloudflare.Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_WEBHOOK_SECRET: string;
-  SUPABASE_SERVICE_ROLE_KEY: string;
+  // shared secret for the overseer-db proxy (its SHA-256 sits in the Supabase vault)
+  OVERSEER_DB_SECRET: string;
   OPENROUTER_API_KEY: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
