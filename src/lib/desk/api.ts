@@ -290,12 +290,13 @@ export async function saveDeskChat(uid: string, sessionId: string, role: ChatTur
 export type DeskChip = { equity: number; start: number; day_pnl: number; open: number; pending: number; halted: boolean; tonight: string };
 export async function loadDeskChip(uid: string): Promise<DeskChip | null> {
   const [a, t, s, e] = await Promise.all([
-    supabase.from("desk_accounts").select("equity,starting_equity,halted_until").eq("user_id", uid).maybeSingle(),
+    supabase.from("desk_accounts").select("equity,starting_equity,halted_until,league").eq("user_id", uid).maybeSingle(),
     supabase.from("desk_trades").select("status").eq("user_id", uid).eq("owner", "desk").in("status", ["open", "pending"]),
     supabase.from("desk_sessions").select("day,status,stage").eq("user_id", uid).neq("status", "dry").order("day", { ascending: false }).order("seq", { ascending: false }).limit(1),
     supabase.from("desk_equity").select("day,pnl_day").eq("user_id", uid).eq("owner", "desk").order("day", { ascending: false }).limit(1),
   ]);
   if (a.error || !a.data) return null; // no account yet: no chip, not a fake zero
+  if ((a.data.league as { paused?: boolean } | null)?.paused) return null; // league switched off: keep it off the Card
   const rows = (t.data ?? []) as { status: string }[];
   const sess = ((s.data ?? []) as { day: string; status: string; stage: string }[])[0];
   const today = todayStr();

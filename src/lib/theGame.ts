@@ -33,8 +33,9 @@ export type DayItem = {
   what: string;
   done?: boolean;
   at?: number;        // seconds-of-day it was checked
-  src?: "plan" | "goal" | "card";
+  src?: "plan" | "goal" | "card" | "block";
   goal_id?: string;   // set when the item IS a deadline, so checking it closes the goal
+  block_id?: string;  // set when the item came from the weekly timetable (class_blocks.id)
 };
 
 export type GameDayRow = {
@@ -239,8 +240,9 @@ export function normalizeItems(raw: unknown): DayItem[] {
         what,
         done: x.done === true,
         at: typeof x.at === "number" && x.at >= 0 ? x.at : undefined,
-        src: x.src === "goal" || x.src === "card" ? x.src : "plan",
+        src: x.src === "goal" || x.src === "card" || x.src === "block" ? x.src : "plan",
         goal_id: typeof x.goal_id === "string" && x.goal_id ? x.goal_id : undefined,
+        block_id: typeof x.block_id === "string" && x.block_id ? x.block_id : undefined,
       } as DayItem;
     })
     .filter((i) => i.what.trim().length > 0)
@@ -257,11 +259,14 @@ export function sortItems(items: DayItem[]): DayItem[] {
 // across, so replanning the afternoon never resets the morning.
 export function mergeItems(prev: DayItem[], next: DayItem[]): DayItem[] {
   const key = (i: DayItem) => `${i.time}|${i.what.trim().toLowerCase()}`;
-  const done = new Map<string, DayItem>();
-  for (const p of prev) if (p.done) done.set(key(p), p);
+  const byKey = new Map<string, DayItem>();
+  for (const p of prev) if (p.done || p.block_id) byKey.set(key(p), p);
   return next.map((n) => {
-    const hit = done.get(key(n));
-    return hit ? { ...n, id: hit.id, done: true, at: hit.at } : n;
+    const hit = byKey.get(key(n));
+    if (!hit) return n;
+    // a timetable block keeps its link so it's never shown twice; a tick carries over
+    const linked = hit.block_id && !n.block_id ? { ...n, src: "block" as const, block_id: hit.block_id } : n;
+    return hit.done ? { ...linked, id: hit.id, done: true, at: hit.at } : linked;
   });
 }
 

@@ -2,7 +2,7 @@
 
 // The shell, v2 — a serious instrument, not an arcade.
 //
-// FIVE spaces: Card (THE GAME) · Plan · Body · Learn · Desk. The app ALWAYS opens on
+// FIVE spaces: Card (THE GAME) · Plan · Body · Learn · Read. The app ALWAYS opens on
 // the Card — a front door you don't land on isn't a front door (the old shell
 // restored the last-visited tab, which is why a whole redesign once shipped
 // invisibly). Everything retired from the old twelve-tab era stays reachable
@@ -17,6 +17,7 @@ import PlanSpace from "@/components/PlanSpace";
 import Body from "@/components/Body";
 import Notebooks from "@/components/Notebooks";
 import DeskSpace from "@/components/desk/DeskSpace";
+import ReadSpace from "@/components/ReadSpace";
 import AIOffBanner from "@/components/AIOffBanner";
 import AIKey from "@/components/AIKey";
 import AIModels from "@/components/AIModels";
@@ -40,7 +41,7 @@ import { registerSw } from "@/lib/push";
 import { sfx, buzz } from "@/lib/fx";
 
 type Tab =
-  | "home" | "plan" | "body" | "learning" | "desk"
+  | "home" | "plan" | "body" | "learning" | "read" | "desk"
   | "today" | "planlegacy" | "goals" | "food" | "night" | "money" | "markets" | "hustle" | "vocab" | "affirmations" | "tools";
 
 const SPACES: { key: Tab; label: string }[] = [
@@ -48,10 +49,13 @@ const SPACES: { key: Tab; label: string }[] = [
   { key: "plan", label: "Plan" },
   { key: "body", label: "Body" },
   { key: "learning", label: "Learn" },
-  { key: "desk", label: "Desk" },
+  { key: "read", label: "Read" },
 ];
 
+// The Desk (model trading league) is paused as of 2026-10-08 (too costly per
+// day); it lives here until it is switched back on, with all its data intact.
 const LEGACY: { key: Tab; label: string }[] = [
+  { key: "desk", label: "Desk (paused)" },
   { key: "today", label: "Today (old)" },
   { key: "planlegacy", label: "Planner (old)" },
   { key: "goals", label: "Goals (old)" },
@@ -167,6 +171,7 @@ function Shell({ uid }: { uid: string }) {
           {tab === "plan" && <PlanSpace uid={uid} />}
           {tab === "body" && <Body uid={uid} />}
           {tab === "learning" && <Notebooks uid={uid} autostart={autostart} onGoFix={() => setSettingsOpen(true)} />}
+          {tab === "read" && <ReadSpace uid={uid} />}
           {tab === "desk" && <DeskSpace uid={uid} />}
 
           {tab === "today" && <Today uid={uid} onOpenAdvisor={() => setBoardOpen(true)} onGoTab={(t) => go(t as Tab)} />}
