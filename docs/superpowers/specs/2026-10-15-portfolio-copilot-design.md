@@ -1,11 +1,11 @@
 # Portfolio copilot: design
 
-Status: draft for Ben's review, 2026-10-15. Replaces the paused Desk as the money part of the Daily app.
+Status: approved by Ben 2026-10-16 ("go"); section 4d added the same day from his themes. Replaces the paused Desk as the money part of the Daily app.
 
 ## What Ben wants (his words, 2026-10-14 and 15)
 
 - "Get my money working for me ... a riskier savings account" that compounds for years, without "watching charts 24/7."
-- He buys $400 every week on Robinhood (Mondays until 2026-10-15, then Wednesdays: "stop buys on monday ... wednesday is the best"), mostly SpaceX (SPCX), about $1.2k so far, and holds for the long run.
+- He buys $400 every week on Robinhood (Mondays until 2026-10-15, then Wednesdays: "stop buys on monday ... wednesday is the best"; he keeps the bank deposit on Monday and the buy on Wednesday), mostly SpaceX (SPCX), about $1.2k so far, and holds for the long run.
 - "Agents each day run reports on the individual stock, the market, etc., and then news around it."
 - Telegram alerts "if there's something important," with a yes or no, and "a breakdown with why it thinks so and why it has the conviction so I can learn from it."
 - Unlock days: test whether buying on them beats his normal weekly buys.
@@ -42,10 +42,11 @@ The unlock test: on each unlock the app records the closing price on unlock day 
 
 ### 4. High-conviction plays, paper only
 
-Through the trading day (stocks 09:30 to 16:00 ET, crypto 09:00 to 22:00 ET, every 15 minutes) the app looks for candidates on Ben's holdings and a watchlist he edits (up to 20 symbols):
+Through the trading day (stocks 09:30 to 16:00 ET, crypto 09:00 to 22:00 ET, every 15 minutes) the app looks for candidates on Ben's holdings and the watchlist (section 4c, up to 30 symbols):
 
 - a coded setup from the Desk's scanner (breakout, trend pullback and the others), or
-- a high-impact headline (impact 4 or 5) on one of those names.
+- a high-impact headline (impact 4 or 5) on one of those names, or
+- a policy or economic event that the map in section 4d links strongly to one of those names.
 
 No model is called unless a candidate exists. When one does, a single model call judges it and returns: long or short, entry, stop, target, size as a percent of the paper book, conviction from 0 to 1, the thesis in plain words, and the one thing that would prove it wrong. Only plays with conviction of at least 0.75 go further, at most three a day, and never the same symbol twice in a day.
 
@@ -74,8 +75,28 @@ Ben, 2026-10-15: plays "like Chris Camillo's social arbitrage ... doesn't have t
 
 ### 4c. Watchlist and lessons
 
-- The watchlist holds two or three themes at most, with the related names Ben chooses for each (for example AI power and data centers, space and satellites). The scan watches those names, not the whole market.
+Ben's themes (2026-10-16). The scan watches these names, not the whole market, and Ben can edit every list in settings. All tickers below returned a live quote on 2026-10-16; EchoStar (SATS) did not and is left out.
+
+- **SpaceX, its field and its competitors:** SPCX (held), RKLB, ASTS, PL, LUNR, FLY, IRDM, GSAT, VSAT, AMZN (Kuiper satellites), TSLA (Musk link).
+- **AI and energy:** NVDA, AVGO, TSM, VRT, GEV, CEG, VST, TLN, OKLO, IREN, WULF, APLD.
+- **Social moves:** no fixed names. The ticker of any idea card that is on the watching list or has an open play joins the scan automatically and leaves when the card is dropped, at most five at a time.
+- **Policy and economy:** not a list of names but the map in section 4d, which links events to the names above.
+
+That is 23 fixed names plus up to five social ones, under the cap of 30. SOL, ETH and HYPE from the earlier candidate list are left out; Ben can add them in settings.
+
+Lessons:
 - Every closed paper play gets the Desk's plain-words review and a one-line lesson, and repeated lessons are counted, so the record of what worked and what didn't builds up for Ben to read.
+
+### 4d. Policy and economy map
+
+Ben, 2026-10-16: "Ontology that tracks how economic and policy moves impact equities in real time." The map links what happens in the economy and in government to the stocks it moves, then measures how much each link really moves prices, so trusted links rise and empty ones fade.
+
+- **Three layers.** Events (Fed decisions, inflation and jobs reports, tariffs, chip export rules, FAA launch licences, FCC spectrum rulings, nuclear (NRC) approvals, power and permitting rules, NASA and defense contracts, about 15 types to start), what each moves (interest rates, the dollar, oil and power prices, chip supply, launch cadence, spectrum), and the watchlist names plus a few market funds used as yardsticks (SPY, QQQ, IWM, TLT, XLE, XLU, SMH).
+- **Each link has a direction and a record.** For example: "FCC spectrum ruling, moves spectrum, helps or hurts ASTS, GSAT, SPCX," or "inflation hotter than expected, rates up, hurts RKLB and OKLO." A starter set of links is written by hand from these themes and shown to Ben before it goes live.
+- **In real time.** The news feed already runs every 15 minutes. Its cheap tagging call also labels each economic or policy item with its event type and whether it surprised up or down. The map then names the linked stocks and the expected direction.
+- **Measured, not assumed.** After each tagged event the app records how each linked stock moved one hour later and at the close, against the S&P 500. Each link keeps a count, its average move and how often the direction was right. A link with at least five events and the right direction at least 60% of the time is marked strong; a link that hasn't moved prices after ten events is greyed out.
+- **What it feeds.** The morning report lists today's scheduled events and which holdings and watchlist names they touch. A high-impact event on a strong link becomes a play candidate for the judge, under the same paper rules, labelled as a policy play with its own record. The Portfolio tab shows the map as plain sentences, for example: "Hotter inflation report: RKLB fell 2.1% more than the market on average, 7 of 9 times."
+- No new model calls beyond the feed's existing tagging. Release dates for the inflation, jobs and growth reports and the Fed meetings are entered in the events calendar from the official schedules.
 
 ### 5. From paper to real money
 
@@ -98,14 +119,14 @@ A hard cap of $1 a day on model calls, enforced on the server like the Desk's bu
 
 ## Pieces
 
-- Tables: `pf_holdings`, `pf_lots`, `pf_settings` (watchlist, caps, judge model, alert hours, Telegram chat id), `pf_reports`, `pf_plays` (the play, its paper trade id, conviction, reasoning, Ben's decision and when), `pf_events_test` (unlock-test rows), `pf_ideas` (who found it, Ben's observation or the riser, the idea card, its take, watching status, its paper trade id), `pf_trends` (each day's risers by source, score and mapped ticker), `pf_lessons` (one-line lessons and how often each repeats). Paper trades go in `desk_trades` with owner `pilot`; a play's source (setup, headline or social) is stored on `pf_plays`.
-- Edge function `pilot` with modes `report`, `scan`, `events`, `telegram` (webhook), `lots` (weekly lot), `scorecard`, `idea` (one research pass), `hunt` (the daily trend hunt and the weekly watching re-check).
-- One cron, `pilot-tick`, every five minutes: runs the paper sync, the feed ingest every 15 minutes in hours, the play scan every 15 minutes in hours, the morning report at 08:30 ET, the weekly lot after the open on the buy day, event alerts at 08:35 ET, the trend hunt at 07:00 ET. The Desk's crons stay off.
+- Tables: `pf_holdings`, `pf_lots`, `pf_settings` (watchlist, caps, judge model, alert hours, Telegram chat id), `pf_reports`, `pf_plays` (the play, its paper trade id, conviction, reasoning, Ben's decision and when), `pf_events_test` (unlock-test rows), `pf_ideas` (who found it, Ben's observation or the riser, the idea card, its take, watching status, its paper trade id), `pf_trends` (each day's risers by source, score and mapped ticker), `pf_lessons` (one-line lessons and how often each repeats), `pf_map_links` (event type, what it moves, symbol, expected direction, count, average move after one hour and at the close, times right), `pf_map_events` (each tagged event and the measured moves). Paper trades go in `desk_trades` with owner `pilot`; a play's source (setup, headline, social or policy) is stored on `pf_plays`.
+- Edge function `pilot` with modes `report`, `scan`, `events`, `telegram` (webhook), `lots` (weekly lot), `scorecard`, `idea` (one research pass), `hunt` (the daily trend hunt and the weekly watching re-check), `map` (measures the moves after tagged events).
+- One cron, `pilot-tick`, every five minutes: runs the paper sync, the feed ingest every 15 minutes in hours, the play scan every 15 minutes in hours, the morning report at 08:30 ET, the weekly lot after the open on the buy day, event alerts at 08:35 ET, the trend hunt at 07:00 ET, the map measurements every 15 minutes in hours. The Desk's crons stay off.
 - App: the Portfolio tab (holdings, report, plays and both scorecards, unlock test, graduation line, settings) replacing the Desk tab.
 
 ## Testing
 
-Unit tests for lot math, the weekly lot, the unlock test, the alert throttle, the two scorecards, the graduation rule, the riser score and the watching-list expiry. The Telegram sender has a dry-run mode. The play scan runs for one full trading day writing to the app only before alerts go to Ben's phone.
+Unit tests for lot math, the weekly lot, the unlock test, the alert throttle, the two scorecards, the graduation rule, the riser score, the watching-list expiry and the map's link record (strong and greyed-out rules). The Telegram sender has a dry-run mode. The play scan runs for one full trading day writing to the app only before alerts go to Ben's phone.
 
 ## Build order
 
@@ -113,10 +134,12 @@ Unit tests for lot math, the weekly lot, the unlock test, the alert throttle, th
 2. Telegram bot, morning summary and event alerts with the unlock test.
 3. Paper plays with alerts, Yes or No, and both scorecards.
 4. The idea inbox and the app's daily trend hunt.
-5. The graduation line and the real-money sizes, which stay hidden until the paper record earns them.
+5. The policy and economy map.
+6. The graduation line and the real-money sizes, which stay hidden until the paper record earns them.
 
 ## Open items
 
-- Holdings come from Ben typing them in for v1, unless he wants the Robinhood read-only connection first.
 - SPCX unlock dates after September 9 need confirming from the prospectus.
-- Whether the watchlist starts empty or seeded with his earlier candidate names (APLD, WULF, IREN, SOL, ETH, HYPE).
+- The starter links of the policy and economy map, shown to Ben before step 5 goes live.
+
+Settled 2026-10-16: holdings are typed in for v1; the watchlist is seeded with Ben's themes (section 4c).
