@@ -1,6 +1,6 @@
 # Telegram alerts — design
 
-2026-10-15 · status: draft for Ben's review
+2026-10-15 · status: paused 2026-10-16, handed to the Overseer (see docs/superpowers/handoffs/2026-10-16-telegram-alerts-to-overseer.md)
 
 ## Why
 
