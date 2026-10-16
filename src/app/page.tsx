@@ -18,6 +18,7 @@ import Body from "@/components/Body";
 import Notebooks from "@/components/Notebooks";
 import DeskSpace from "@/components/desk/DeskSpace";
 import ReadSpace from "@/components/ReadSpace";
+import OverseerSpace from "@/components/OverseerSpace";
 import AIOffBanner from "@/components/AIOffBanner";
 import AIKey from "@/components/AIKey";
 import AIModels from "@/components/AIModels";
@@ -41,7 +42,7 @@ import { registerSw } from "@/lib/push";
 import { sfx, buzz } from "@/lib/fx";
 
 type Tab =
-  | "home" | "plan" | "body" | "learning" | "read" | "desk"
+  | "home" | "plan" | "body" | "learning" | "read" | "desk" | "overseer"
   | "today" | "planlegacy" | "goals" | "food" | "night" | "money" | "markets" | "hustle" | "vocab" | "affirmations" | "tools";
 
 const SPACES: { key: Tab; label: string }[] = [
@@ -55,6 +56,7 @@ const SPACES: { key: Tab; label: string }[] = [
 // The Desk (model trading league) is paused as of 2026-10-08 (too costly per
 // day); it lives here until it is switched back on, with all its data intact.
 const LEGACY: { key: Tab; label: string }[] = [
+  { key: "overseer", label: "Overseer" },
   { key: "desk", label: "Desk (paused)" },
   { key: "today", label: "Today (old)" },
   { key: "planlegacy", label: "Planner (old)" },
@@ -107,15 +109,16 @@ function LegacyGameSync() {
   return null;
 }
 
-// The one deep link: a tapped reminder opens /daily/?go=learn and the round
-// should just start. Read once at mount; the URL is cleaned so a reload
-// doesn't start it twice.
-const wantsLearn = () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("go") === "learn";
+// Deep links: a tapped reminder opens /daily/?go=learn and the round should
+// just start; Google sign-in returns to /daily/?go=overseer. Read once at
+// mount; the URL is cleaned so a reload doesn't repeat it.
+const goParam = () => (typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("go") : null);
+const wantsLearn = () => goParam() === "learn";
 
 function Shell({ uid }: { uid: string }) {
   // ALWAYS open on the Card (no remembered-tab restore — that "feature" hid an
   // entire redesign from Ben for a day). The reminder deep link is the one exception.
-  const [tab, setTab] = useState<Tab>(() => (wantsLearn() ? "learning" : "home"));
+  const [tab, setTab] = useState<Tab>(() => (wantsLearn() ? "learning" : goParam() === "overseer" ? "overseer" : "home"));
   // counts up so a second notification tap while the app is open starts again
   const [autostart, setAutostart] = useState(() => (wantsLearn() ? 1 : 0));
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -128,7 +131,7 @@ function Shell({ uid }: { uid: string }) {
   }
 
   useEffect(() => {
-    if (wantsLearn()) history.replaceState(null, "", window.location.pathname);
+    if (goParam()) history.replaceState(null, "", window.location.pathname);
     registerSw();   // standalone only; the worker is push-only (see public/sw.js)
     // a notification tapped while the app is open: the worker asks us to jump to Learn
     const onMsg = (e: MessageEvent) => {
@@ -173,6 +176,7 @@ function Shell({ uid }: { uid: string }) {
           {tab === "learning" && <Notebooks uid={uid} autostart={autostart} onGoFix={() => setSettingsOpen(true)} />}
           {tab === "read" && <ReadSpace uid={uid} />}
           {tab === "desk" && <DeskSpace uid={uid} />}
+          {tab === "overseer" && <OverseerSpace uid={uid} />}
 
           {tab === "today" && <Today uid={uid} onOpenAdvisor={() => setBoardOpen(true)} onGoTab={(t) => go(t as Tab)} />}
           {tab === "planlegacy" && <Plan uid={uid} onGoTab={(t) => go(t as Tab)} />}
