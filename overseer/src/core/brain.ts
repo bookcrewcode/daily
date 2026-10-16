@@ -7,7 +7,7 @@ import { countDone, normalizeItems, sortItems, type DayItem } from "../../../src
 import { buildWindows, firstWindowStart, floatingOf, nextWindowAfter, taskFor, windowAt } from "./agenda";
 import { overCap } from "./budget";
 import { checkItem, moveItem, setTop3, type ToolCtx } from "./dayops";
-import type { Db } from "./db";
+import type { Db, SettingsRow } from "./db";
 import { runAgentLoop, type LlmPort, type Msg } from "./llm";
 import { morningPlan, recordSpend, shrinkStep, wrapNote, type Spend } from "./llmflows";
 import { onAnswer, onTick, startTask } from "./ladder";
@@ -248,7 +248,7 @@ async function wrap(st: State, d: Deps, s: Settings, L: Local, out: Out[]): Prom
 
 // ── Telegram updates ────────────────────────────────────────────────────────
 
-async function inbound(st: State, d: Deps, s: Settings, ev: Inbound, L: Local, now: number, out: Out[]): Promise<State> {
+async function inbound(st: State, d: Deps, s: SettingsRow, ev: Inbound, L: Local, now: number, out: Out[]): Promise<State> {
   const partners = (await d.db.partners()) ?? [];
   const who = classify(ev, s.chat_id, activePartners(partners).map((p) => p.chat_id as number));
   if (who.role === "ignore" || ev.kind === "other") return st;
