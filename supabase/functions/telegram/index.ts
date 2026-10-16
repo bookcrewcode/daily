@@ -10,12 +10,14 @@
 // Done taps and /today go through the alerts function, which owns all
 // day/time logic. verify_jwt=false at the gateway; both callers are checked here.
 
+import { tapResult, pauseMs, pauseLabel } from "./taps.ts";
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const SVC = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" };
 const OWNER = "f0e1e204-aa54-4a45-bbb5-99c83114fecb"; // the same single owner set_ai_key allows
-const HELP = "Commands:\n/today shows today's plan\n/pause 2h stops alerts for 2 hours (1-24)\n/resume turns them back on";
+const HELP = "Commands:\n/today shows today's plan\n/pause 30m or /pause 2h stops alerts for a while (5 minutes to 24 hours)\n/resume turns them back on";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -80,7 +82,7 @@ async function callAlerts(body: C): Promise<C> {
 
 async function userByChat(chat: unknown): Promise<UserRow | null> {
   if (typeof chat !== "number") return null;
-  const rows = await get<UserRow>(`user_settings?select=user_id,telegram&telegram->>chat_id=eq.${chat}`);
+  const rows = await get<UserRow>(`user_settings?select=user_id,telegram&user_id=eq.${OWNER}&telegram->>chat_id=eq.${chat}`);
   return rows?.[0] ? { ...rows[0], telegram: rows[0].telegram ?? {} } : null;
 }
 
@@ -93,22 +95,21 @@ async function onButton(cq: C) {
   const chat = (msg?.chat as C | undefined)?.id;
   const u = await userByChat(chat);
   if (!u || !key) { await answer(cq.id, "This chat isn't linked to Daily."); return; }
-  const stamp = new Date().toISOString();
-  const change: C = { updated_at: stamp };
-  let label = "";
-  if (code === "s") { change.state = "started"; label = "Starting"; }
-  else if (code === "z") { change.state = "snoozed"; change.snooze_until = new Date(Date.now() + 15 * 60_000).toISOString(); label = "Snoozed 15 min"; }
-  else if (code === "k") { change.state = "skipped"; label = "Skipped today"; }
-  else if (code === "d") { change.state = "done"; label = "Done"; }
-  else { await answer(cq.id, "That button is out of date."); return; }
-  if (code === "d") {
+  const t = tapResult(code, key, Date.now());
+  if (!t) { await answer(cq.id, "That button is out of date."); return; }
+  if (t.state === "done") {
     const r = await callAlerts({ mode: "done", userId: u.user_id, key });
     if (r.error) { await answer(cq.id, "Couldn't tick it in Daily. Try again."); return; }
   }
+  const change: C = { state: t.state, updated_at: new Date().toISOString() };
+  if (t.snoozeUntil) change.snooze_until = t.snoozeUntil;
   const ok = await patch(`alert_log?user_id=eq.${u.user_id}&key=eq.${enc(key)}`, change);
-  await answer(cq.id, ok ? label : "Couldn't save that. Try again.");
-  // editing without reply_markup removes the buttons, so a tap can't be repeated
-  if (ok && msg) await tg("editMessageText", { chat_id: chat, message_id: msg.message_id, text: `${S(msg.text, 3800)}\n\n${label}` });
+  await answer(cq.id, ok ? t.label : "Couldn't save that. Try again.");
+  // Starting leaves a Done button; every other tap clears the buttons so it can't be repeated
+  if (ok && msg) await tg("editMessageText", {
+    chat_id: chat, message_id: msg.message_id, text: `${S(msg.text, 3800)}\n\n${t.label}`,
+    ...(t.keyboard ? { reply_markup: t.keyboard } : {}),
+  });
 }
 
 async function onMessage(m: C) {
@@ -119,7 +120,7 @@ async function onMessage(m: C) {
 
   if (cmd === "/start") {
     const code = arg.replace(/[^a-z0-9]/gi, "");
-    const rows = code ? await get<UserRow>(`user_settings?select=user_id,telegram&telegram->>link_code=eq.${code}`) : [];
+    const rows = code ? await get<UserRow>(`user_settings?select=user_id,telegram&user_id=eq.${OWNER}&telegram->>link_code=eq.${code}`) : [];
     const u = rows?.[0];
     const exp = u ? Date.parse(String(u.telegram?.link_code_exp ?? "")) : NaN;
     if (!u || !(exp > Date.now())) {
@@ -139,9 +140,10 @@ async function onMessage(m: C) {
     return;
   }
   if (cmd === "/pause") {
-    const h = Math.min(24, Math.max(1, parseInt(arg, 10) || 2));
-    await setTelegram(u, { paused_until: new Date(Date.now() + h * 3_600_000).toISOString() });
-    await send(chat, `Paused for ${h} hour${h === 1 ? "" : "s"}. /resume turns alerts back on.`);
+    const ms = pauseMs(arg);
+    if (ms === null) { await send(chat, "Try /pause 30m or /pause 2h (5 minutes to 24 hours)."); return; }
+    await setTelegram(u, { paused_until: new Date(Date.now() + ms).toISOString() });
+    await send(chat, `Paused for ${pauseLabel(ms)}. /resume turns alerts back on.`);
     return;
   }
   if (cmd === "/resume") {

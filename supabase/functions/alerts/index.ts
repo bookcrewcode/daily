@@ -15,13 +15,15 @@ import {
   planAlerts, readSettings, localClock, addSteps,
   type Alert, type Block, type DayItem, type Deadline, type LogRow,
 } from "./plan.ts";
-import { tickBlockItem, newItemId } from "./items.ts";
+import { tickBlockItem, tickGoalItem, newItemId } from "./items.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const SVC = { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" };
 const OR_BASE = "https://openrouter.ai/api/v1";
 const D_FAST = "google/gemini-2.5-flash-lite";
+const OWNER = "f0e1e204-aa54-4a45-bbb5-99c83114fecb"; // the single owner set_ai_key allows
+const CALL_MS = 10_000; // every outside call gives up after 10s, well inside the function's limit
 
 type C = Record<string, unknown>;
 type SettingsRow = { user_id: string; telegram: C | null; ai_models: C | null };
@@ -56,7 +58,7 @@ async function rest(method: "POST" | "PATCH", q: string, body: unknown, prefer =
 
 async function tg(token: string, method: string, body: C): Promise<{ ok: boolean; status: number; result?: C }> {
   try {
-    const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(CALL_MS) });
     const d = await r.json().catch(() => ({}));
     return { ok: !!d.ok, status: r.status, result: d.result };
   } catch { return { ok: false, status: 0 }; }
@@ -80,14 +82,14 @@ async function firstSteps(top3: string[], aiModels: C | null): Promise<string[]>
       const m = aiModels?.fast;
       const model = typeof m === "string" && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._:-]+$/.test(m) ? m : D_FAST;
       const r = await fetch(`${OR_BASE}/chat/completions`, {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(CALL_MS),
         body: JSON.stringify({ model, max_tokens: 300, messages: [{ role: "system", content: sys }, { role: "user", content: user }] }),
       });
       if (!r.ok) { console.error(`[alerts] steps ${r.status}`); return []; }
       text = String((await r.json())?.choices?.[0]?.message?.content ?? "");
     } else {
       const r = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+        method: "POST", headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" }, signal: AbortSignal.timeout(CALL_MS),
         body: JSON.stringify({ model: "claude-haiku-5-5", max_tokens: 300, system: sys, messages: [{ role: "user", content: user }] }),
       });
       if (!r.ok) { console.error(`[alerts] steps ${r.status}`); return []; }
@@ -140,19 +142,22 @@ async function tickUser(u: SettingsRow, token: string, opts: { dryRun: boolean; 
   for (const a of alerts) {
     const existing = log.find((r) => r.key === a.key);
     const state = a.action === "hold" ? "held" : "sent";
+    // the plan's first steps are written BEFORE the claim, so a slow model call can
+    // never leave a claimed row stranded without its message
+    const text = a.action === "send" && a.kind === "plan" && a.top3.length
+      ? addSteps(a.text, a.top3, await firstSteps(a.top3, u.ai_models))
+      : a.text;
     const stamp = new Date().toISOString();
     // claim the row first; only the tick that wins the write sends
     const claimed = existing
       ? await rest("PATCH", `alert_log?user_id=eq.${uid}&key=eq.${enc(a.key)}&state=eq.${existing.state}`,
-          { state, snooze_until: null, updated_at: stamp, meta: { text: a.text } })
+          { state, snooze_until: null, updated_at: stamp, meta: { text } })
       : await rest("POST", "alert_log?on_conflict=user_id,key",
-          { user_id: uid, key: a.key, kind: a.kind, day: c.day, ref_id: a.refId, state, meta: { text: a.text } },
+          { user_id: uid, key: a.key, kind: a.kind, day: c.day, ref_id: a.refId, state, meta: { text } },
           "return=representation,resolution=ignore-duplicates");
     if (!claimed || claimed.length === 0) continue;
     if (a.action === "hold") { held++; continue; }
 
-    let text = a.text;
-    if (a.kind === "plan" && a.top3.length) text = addSteps(text, a.top3, await firstSteps(a.top3, u.ai_models));
     const r = await tg(token, "sendMessage", {
       chat_id: s.chat_id, text, reply_markup: keyboard(a), disable_notification: a.silent,
       link_preview_options: { is_disabled: true },
@@ -201,7 +206,15 @@ async function applyDone(uid: string, key: string, tz: string): Promise<C> {
     const rows = await rest("PATCH", `deadlines?user_id=eq.${uid}&id=eq.${ref}`, { done: true, updated_at: stamp });
     if (!rows) return { error: "write failed" };
     const goal = rows[0]?.goal_id;
-    if (typeof goal === "string") await rest("PATCH", `goals?user_id=eq.${uid}&id=eq.${goal}`, { status: "done", updated_at: stamp }, "return=minimal");
+    if (typeof goal === "string") {
+      await rest("PATCH", `goals?user_id=eq.${uid}&id=eq.${goal}`, { status: "done", updated_at: stamp }, "return=minimal");
+      const c = localClock(new Date(), tz);
+      const nights = await get<{ items: unknown }>(`nights?select=items&user_id=eq.${uid}&day=eq.${c.day}`);
+      const items = Array.isArray(nights?.[0]?.items) ? (nights[0].items as DayItem[]) : [];
+      if (items.some((i) => i.goal_id === goal)) {
+        await rest("PATCH", `nights?user_id=eq.${uid}&day=eq.${c.day}`, { items: tickGoalItem(items, goal, c.min * 60) }, "return=minimal");
+      }
+    }
     return { ok: true };
   }
   return { error: "bad key" };
@@ -216,8 +229,10 @@ Deno.serve(async (req) => {
   const userId = typeof body.userId === "string" && isUuid(body.userId) ? body.userId : "";
   const dryRun = body.dryRun === true;
   if ((mode === "today" || mode === "done" || dryRun) && !userId) return json({ error: "userId required" });
+  if (userId && userId !== OWNER) return json({ error: "not permitted" });
+  if (!["tick", "today", "done"].includes(mode)) return json({ error: `unknown mode "${mode}"` });
 
-  const filter = userId ? `user_id=eq.${userId}` : "telegram->>chat_id=not.is.null";
+  const filter = userId ? `user_id=eq.${OWNER}` : `user_id=eq.${OWNER}&telegram->>chat_id=not.is.null`;
   const users = await get<SettingsRow>(`user_settings?select=user_id,telegram,ai_models&${filter}`);
   if (!users) return json({ error: "couldn't read settings" }, 500);
 

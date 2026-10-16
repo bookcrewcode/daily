@@ -255,7 +255,15 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         load();
       }
     };
-    const onVisible = () => { if (document.visibilityState === "visible") check(); };
+    // Back in view on the same day: re-read the list, so a tick made elsewhere
+    // (a Telegram Done, the Plan chat) shows up instead of being overwritten by
+    // the next save of a stale list. A new day already reloads inside check().
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const sameDay = todayStr() === dayRef.current;
+      check();
+      if (sameDay) load();
+    };
     const id = setInterval(check, 15000);
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };

@@ -1,7 +1,7 @@
 // Run: npx --yes tsx --test supabase/functions/alerts/items.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { tickBlockItem, newItemId } from "./items.ts";
+import { tickBlockItem, tickGoalItem, newItemId } from "./items.ts";
 import type { Block, DayItem } from "./plan.ts";
 
 const blocks: Block[] = [
@@ -28,4 +28,13 @@ test("seeded day: only ticks, never re-adds a block Ben removed", () => {
 
 test("newItemId matches the app's id shape", () => {
   assert.match(newItemId(), /^i[0-9a-z]+$/);
+});
+
+test("Done on a deadline ticks its goal item on today's list, and touches nothing else", () => {
+  const list: DayItem[] = [
+    { id: "g", time: "", what: "HW 5 Set 5", src: "goal", goal_id: "goal-1" },
+    { id: "x", time: "17:00", what: "Gym 1.5h", src: "block", block_id: "b-gym" },
+  ];
+  assert.deepEqual(tickGoalItem(list, "goal-1", 500), [{ ...list[0], done: true, at: 500 }, list[1]]);
+  assert.deepEqual(tickGoalItem(list, "goal-2", 500), list);
 });

@@ -25,3 +25,9 @@ export function tickBlockItem(items: DayItem[], seeded: boolean, blocks: Block[]
   }
   return list.map((i) => (i.block_id === blockId ? { ...i, done: true, at: atSec } : i));
 }
+
+// Done on a deadline: tick its goal item if today's list carries one (the Card
+// adds goals on their start-by day). Never adds an item.
+export function tickGoalItem(items: DayItem[], goalId: string, atSec: number): DayItem[] {
+  return items.map((i) => (i.goal_id === goalId ? { ...i, done: true, at: atSec } : i));
+}
