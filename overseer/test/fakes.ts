@@ -1,5 +1,6 @@
 // Test doubles shared by the Overseer's tests.
 import { normalizeItems } from "../../src/lib/theGame";
+import type { LlmPort, LlmResult, Msg, ToolSpec } from "../src/core/llm";
 import type { Db, DayRow, GoalRow, LearnInfo, MessageIn, SettingsRow, SpendRow, StakesEvent } from "../src/core/db";
 import { DEFAULT_SETTINGS, type ActionRow, type Block, type DayItem, type Line, type Partner } from "../src/core/types";
 
@@ -127,3 +128,18 @@ export class FakeDb implements Db {
   async bumpPartner(id: string, sent: number) { const p = this.partnerRows.find((x) => x.id === id); if (p) p.sent = sent; }
   async logStakes(e: StakesEvent) { this.stakeRows.push({ day: e.day, item_id: e.item_id, status: e.status }); }
 }
+
+export class FakeLlm implements LlmPort {
+  replies: LlmResult[] = [];
+  calls: { model: string; messages: Msg[]; tools?: ToolSpec[] }[] = [];
+  async chat(model: string, messages: Msg[], tools?: ToolSpec[]): Promise<LlmResult> {
+    this.calls.push({ model, messages: structuredClone(messages), tools });
+    return this.replies.shift() ?? { text: "", tool_calls: [], cost: 0, tin: 0, tout: 0, error: "no reply queued" };
+  }
+}
+
+export const reply = (text: string, cost = 0.001): LlmResult => ({ text, tool_calls: [], cost, tin: 10, tout: 5, error: null });
+
+export const toolReply = (name: string, args: Record<string, unknown>, cost = 0.001): LlmResult => ({
+  text: "", tool_calls: [{ id: "t1", type: "function", function: { name, arguments: JSON.stringify(args) } }], cost, tin: 10, tout: 5, error: null,
+});
