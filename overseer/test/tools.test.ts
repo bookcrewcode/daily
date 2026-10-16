@@ -124,12 +124,16 @@ describe("other tools", () => {
     await undoAction(last(), ctx);
     expect(db.captureRows.get(id)?.done).toBe(false);
   });
-  it("set_stakes works before the first block and is refused after", async () => {
+  it("set_stakes asks first, works before the first block, and is refused after", async () => {
     const early = setup("10:00");
-    expect((await runTool("set_stakes", { item_ids: ["i1", "nope"] }, early.ctx, early.ids)).ok).toBe(true);
-    expect([early.ctx.plan.stakes, early.ctx.plan.locked]).toEqual([["i1"], true]);
+    const r = await runTool("set_stakes", { item_ids: ["i1", "nope"] }, early.ctx, early.ids);
+    expect(r.pending?.summary).toBe('Put stakes on "Precalc HW"');
+    expect(early.ctx.plan.stakes).toEqual([]);
+    await confirmPending(r.pending!, early.ctx);
+    expect([early.ctx.plan.stakes, early.ctx.plan.locked, early.ctx.plan.stakes_off]).toEqual([["i1"], true, false]);
     await undoAction(early.last(), early.ctx);
     expect(early.ctx.plan.stakes).toEqual([]);
+    expect((await runTool("set_stakes", { item_ids: ["nope"] }, early.ctx, early.ids)).ok).toBe(false);
     const late = setup("11:31");
     expect((await runTool("set_stakes", { item_ids: ["i1"] }, late.ctx, late.ids)).text).toBe("Too late to change stakes today.");
   });

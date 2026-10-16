@@ -28,8 +28,21 @@ describe("agenda", () => {
     expect(buildWindows(DAY, items, blocks, S).map((w) => [w.own, w.kind, w.start, w.end])).toEqual([
       ["a", "study", t("11:30"), t("13:00")],
       ["g", "drill", t("13:00"), t("13:15")],
-      ["d", "study", t("19:45"), t("21:15")],
+      ["d", "plan", t("19:45"), t("21:15")],
     ]);
+  });
+  it("ends a window when the next timed item starts", () => {
+    const its: DayItem[] = [
+      { id: "p1", time: "09:00", what: "Review notes", src: "plan" },
+      { id: "p2", time: "09:30", what: "Lunch", src: "plan" },
+    ];
+    expect(buildWindows(DAY, its, [], S).map((w) => [w.own, w.kind, w.start, w.end])).toEqual([
+      ["p1", "plan", t("09:00"), t("09:30")],
+      ["p2", "plan", t("09:30"), t("10:30")],
+    ]);
+  });
+  it("lets Ben switch off check-ins for Plan-chat items", () => {
+    expect(buildWindows(DAY, items, blocks, { ...S, ping_kinds: ["study", "drill"] }).map((w) => w.own)).toEqual(["a", "g"]);
   });
   it("keeps a moved block's length", () => {
     const moved = items.map((i) => (i.id === "a" ? { ...i, time: "14:00" } : i));

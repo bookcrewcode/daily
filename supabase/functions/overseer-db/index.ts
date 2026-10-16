@@ -19,7 +19,7 @@ async function expectedHash(): Promise<string> {
   try {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_secret`, { method: "POST", headers: SVC, body: JSON.stringify({ secret_name: "overseer_db_secret_sha256" }) });
     const hash = r.ok ? ((await r.json()) as string | null) ?? "" : "";
-    cached = { hash, at: Date.now() };
+    if (hash) cached = { hash, at: Date.now() };   // a failed read is never cached
     return hash;
   } catch {
     return "";

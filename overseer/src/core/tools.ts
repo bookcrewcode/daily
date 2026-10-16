@@ -9,7 +9,7 @@ import { CAL_HANDLERS } from "./caltools";
 import { stakesOffAllowed } from "./stakes";
 import { isHhmm } from "./time";
 import { dayArg, dayOf, fn, S, str, type Handler } from "./toolkit";
-import type { ActionRow, Pending } from "./types";
+import type { ActionRow, DayItem, Pending } from "./types";
 
 // Same keys as WIN_KEYS in src/lib/supabase.ts (not imported: that file pulls in the browser client).
 export const HABIT_KEYS = ["ws_meds", "ws_eat", "ws_lift", "ws_stretch", "ws_vocab", "ws_chinese", "ws_work", "ws_water", "ws_sleep", "ws_school", "ws_affirmations"];
@@ -187,18 +187,31 @@ const ITEM_HANDLERS: Record<string, Handler> = {
     },
   },
   set_stakes: {
-    spec: fn("set_stakes", "Choose which of today's open items carry stakes (at most 2). Only before the first drill block starts.", { item_ids: { type: "array", items: S, maxItems: 2 } }, ["item_ids"]),
-    run: async (a, ctx) => {
+    // the one tool whose effect reaches another person, so Ben confirms it
+    spec: fn("set_stakes", "Choose which of today's open items carry stakes (at most 2). Ben must confirm; this only asks. Only before the first drill block starts.", { item_ids: { type: "array", items: S, maxItems: 2 } }, ["item_ids"]),
+    run: async (a, ctx, ids) => {
       if (!stakesOffAllowed(firstWindowStart(ctx.plan, ctx.s), ctx.now)) return { ok: false, text: "Too late to change stakes today." };
-      const chosen = (Array.isArray(a.item_ids) ? a.item_ids : []).map(str).filter((id) => ctx.plan.items.some((i) => i.id === id && !i.done)).slice(0, 2);
-      const before = ctx.plan.stakes;
-      ctx.plan = { ...ctx.plan, stakes: chosen, locked: true };
-      const names = chosen.map((id) => ctx.plan.items.find((i) => i.id === id)?.what ?? id);
-      const action_id = await ctx.db.logAction({ tool: "set_stakes", summary: names.length ? `Stakes on: ${names.join("; ")}` : "No stakes today", before: { stakes: before }, after: { stakes: chosen } });
-      return { ok: true, text: names.length ? `Stakes on: ${names.join("; ")}.` : "No stakes today.", action_id };
+      const items = await loadDay(ctx, ctx.plan.day);
+      if (!items) return READ_FAIL;
+      const chosen = (Array.isArray(a.item_ids) ? a.item_ids : []).map(str)
+        .map((id) => items.find((i) => i.id === id && !i.done)).filter((i): i is DayItem => !!i).slice(0, 2);
+      if (!chosen.length) return { ok: false, text: "None of those are open on today's list." };
+      return {
+        ok: true, text: "Asked Ben to confirm the stakes.",
+        pending: { id: ids(), tool: "set_stakes", args: { item_ids: chosen.map((i) => i.id) }, summary: `Put stakes on ${chosen.map((i) => `"${i.what}"`).join("; ")}` },
+      };
+    },
+    confirm: async (p, ctx) => {
+      if (!stakesOffAllowed(firstWindowStart(ctx.plan, ctx.s), ctx.now)) return { ok: false, text: "Too late to change stakes today." };
+      const chosen = (Array.isArray(p.args.item_ids) ? p.args.item_ids : []).map(str);
+      const before = { stakes: ctx.plan.stakes, stakes_off: ctx.plan.stakes_off };
+      ctx.plan = { ...ctx.plan, stakes: chosen, stakes_off: false, locked: true };
+      const action_id = await ctx.db.logAction({ tool: "set_stakes", summary: p.summary, before, after: { stakes: chosen } });
+      return { ok: true, text: "Stakes set.", action_id };
     },
     undo: async (a, ctx) => {
-      ctx.plan = { ...ctx.plan, stakes: (a.before as { stakes: string[] }).stakes };
+      const b = a.before as { stakes: string[]; stakes_off?: boolean };
+      ctx.plan = { ...ctx.plan, stakes: b.stakes, stakes_off: !!b.stakes_off };
       return true;
     },
   },

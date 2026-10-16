@@ -43,6 +43,7 @@ export function classify(ev: Inbound, benChat: number | null, partnerChats: numb
 }
 
 export class TgClient {
+  lastStatus = 0;     // HTTP status of the last failed call (0 = network)
   constructor(private token: string, private f: typeof fetch = fetch) {}
 
   async call(method: string, body: Record<string, unknown>): Promise<any | null> {
@@ -52,11 +53,13 @@ export class TgClient {
       });
       const j = (await r.json().catch(() => null)) as { ok?: boolean; result?: unknown; description?: string } | null;
       if (!r.ok || !j?.ok) {
+        this.lastStatus = r.status;
         console.error(`[tg] ${method} ${r.status} ${j?.description ?? ""}`);
         return null;
       }
       return j.result ?? true;
     } catch (e) {
+      this.lastStatus = 0;
       console.error(`[tg] ${method}`, e instanceof Error ? e.message : e);
       return null;
     }

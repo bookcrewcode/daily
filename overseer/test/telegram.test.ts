@@ -53,7 +53,9 @@ describe("TgClient", () => {
   });
   it("returns null when Telegram says no", async () => {
     const { f } = mockFetch(() => ({ status: 400, body: { ok: false, description: "chat not found" } }));
-    expect(await new TgClient("T", f).send(1, "x")).toBeNull();
+    const tg = new TgClient("T", f);
+    expect(await tg.send(1, "x")).toBeNull();
+    expect(tg.lastStatus).toBe(400);
   });
   it("reads the bot's username", async () => {
     const { f } = mockFetch(() => ({ status: 200, body: { ok: true, result: { username: "ben_overseer_bot" } } }));

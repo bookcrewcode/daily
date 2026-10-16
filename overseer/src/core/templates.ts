@@ -15,6 +15,20 @@ const BY_CODE = Object.fromEntries(Object.entries(CODES).map(([k, v]) => [v, k])
 
 export const cb = (act: Cb["act"], arg: string) => `${CODES[act]}|${arg}`;
 
+// Item ids can be long (the Plan chat derives them from time + text), but a
+// Telegram button carries at most 64 bytes, and one bad button sinks the whole
+// message. Item buttons carry a short hash of the id; the brain looks the item
+// up on today's list by it.
+export function keyOf(id: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+export const itemCb = (act: Cb["act"], id: string) => cb(act, keyOf(id));
+
 export function parseCb(data: string): Cb | null {
   const i = data.indexOf("|");
   if (i < 1) return null;
@@ -33,6 +47,10 @@ export const T = {
   countdown: (partner: string, n: number) => `15 minutes, then ${partner} gets line #${n}. Tap Done on the two-minute step to stop it.`,
   countdownStopped: () => "Stopped. That counts.",
   countdownOver: () => "Block's over, so stakes on this one are off.",
+  stakesOff: (done: boolean) => (done ? "Done, so the stakes are off." : "That task is off today's list, so the stakes are off."),
+  stakesUnchecked: () => "Couldn't check your list, so nothing was sent.",
+  stakesUnwarned: () => "Stakes didn't go out: my warning never reached you.",
+  notOnList: () => "That item isn't on today's list anymore.",
   stakesSent: (partner: string) => `Sent to ${partner}. Moving on.`,
   partner: (line: string) => `From Ben's accountability bot: ${line}`,
   moved: (what: string, where: string) => `Moved "${clip(what)}" ${where}.`,
@@ -57,9 +75,10 @@ export const T = {
 };
 
 const b = (text: string, act: Cb["act"], arg: string): Btn => ({ text, data: cb(act, arg) });
-export const startButtons = (id: string): Btn[][] => [[b("On it", "onit", id), b("Done", "done", id)], [b("Stuck", "stuck", id), b("Skip", "skip", id)]];
-export const drillButtons = (id: string): Btn[][] => [[b("Done", "done", id), b("10 more min", "more", id)], [b("Stuck", "stuck", id), b("Skip", "skip", id)]];
-export const shrinkButtons = (id: string): Btn[][] => [[b("Done", "done", id), b("Stuck", "stuck", id)]];
+const bi = (text: string, act: Cb["act"], id: string): Btn => ({ text, data: itemCb(act, id) });
+export const startButtons = (id: string): Btn[][] => [[bi("On it", "onit", id), bi("Done", "done", id)], [bi("Stuck", "stuck", id), bi("Skip", "skip", id)]];
+export const drillButtons = (id: string): Btn[][] => [[bi("Done", "done", id), bi("10 more min", "more", id)], [bi("Stuck", "stuck", id), bi("Skip", "skip", id)]];
+export const shrinkButtons = (id: string): Btn[][] => [[bi("Done", "done", id), bi("Stuck", "stuck", id)]];
 export const morningButtons = (day: string): Btn[][] => [[b("Lock it in", "lock", day)], [b("Change", "change", day)], [b("No stakes today", "nostakes", day)]];
 export const confirmButtons = (pid: string): Btn[][] => [[b("Yes", "yes", pid), b("No", "no", pid)]];
 export const learnButtons = (): Btn[][] => [[{ text: "Open Learn", url: LEARN_URL }]];

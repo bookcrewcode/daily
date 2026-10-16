@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { overCap } from "../src/core/budget";
 import {
-  cb, confirmButtons, drillButtons, learnButtons, morningButtons, morningText, parseCb, shrinkButtons, startButtons, T, todayText, wrapText,
+  cb, confirmButtons, drillButtons, itemCb, keyOf, learnButtons, morningButtons, morningText, parseCb, shrinkButtons, startButtons, T, todayText, wrapText,
 } from "../src/core/templates";
 
 const EMOJI = /\p{Extended_Pictographic}/u;
@@ -31,6 +31,15 @@ describe("templates", () => {
     expect(parseCb(cb("yes", "0f8a2b6c-1d2e-4f3a-9b8c-7d6e5f4a3b2c"))?.arg).toBe("0f8a2b6c-1d2e-4f3a-9b8c-7d6e5f4a3b2c");
     expect(parseCb("zz|1")).toBeNull();
     expect(parseCb("nonsense")).toBeNull();
+  });
+  it("keeps every item button within 64 bytes, even for the long ids the Plan chat creates", () => {
+    const legacy = "l19:45_LOCK-IN: Modern America Test #2 review 1.5h, chapters 4-6 and the map quiz";
+    for (const b of [startButtons(legacy), drillButtons(legacy), shrinkButtons(legacy)].flat(2)) {
+      expect(new TextEncoder().encode(b.data!).length).toBeLessThanOrEqual(64);
+    }
+    expect(parseCb(itemCb("done", legacy))).toEqual({ act: "done", arg: keyOf(legacy) });
+    expect(keyOf(legacy)).toBe(keyOf(legacy));
+    expect(keyOf("a")).not.toBe(keyOf("b"));
   });
   it("lays out the buttons the spec names", () => {
     expect(startButtons("a").flat().map((b) => b.text)).toEqual(["On it", "Done", "Stuck", "Skip"]);

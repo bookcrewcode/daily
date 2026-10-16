@@ -27,7 +27,7 @@ export const DEFAULT_SETTINGS: Settings = {
   tz: "America/New_York",
   wake: "07:30",
   wrap: "21:30",
-  ping_kinds: ["study", "work", "read", "drill"],
+  ping_kinds: ["study", "work", "read", "drill", "plan"],
   ping_every_min: 40,
   cap_usd: 1,
   cheap_model: "google/gemini-3.7-flash",
@@ -72,7 +72,9 @@ export function blankPlan(day: string): Plan {
 export type Ladder = { win: string | null; task: string | null; step: 0 | 1 | 2 | 3 | 4; awaiting: boolean; next_at: number | null };
 export const EMPTY_LADDER: Ladder = { win: null, task: null, step: 0, awaiting: false, next_at: null };
 
-export type Countdown = { task: string; what: string; win: string; ends_at: number; fires_at: number; line_id: string; partner_id: string };
+// warned: the countdown message reached Ben (set by the agent on delivery);
+// a partner is never messaged without it.
+export type Countdown = { task: string; what: string; win: string; ends_at: number; fires_at: number; line_id: string; partner_id: string; warned: boolean };
 
 export type Pending = { id: string; tool: string; args: Record<string, unknown>; summary: string };
 
@@ -85,14 +87,14 @@ export type State = {
   pauses: number[];
   awaiting_top3_for: string | null;
   cap_notice_day: string | null;
-  last_update_id: number;
+  seen_updates: number[];          // recent Telegram update ids (Telegram may restart its numbering)
   pending: Pending[];
 };
 
 export function initialState(): State {
   return {
     plan: null, ladder: EMPTY_LADDER, countdown: null, stakes_sent_day: null, convo: [], pauses: [],
-    awaiting_top3_for: null, cap_notice_day: null, last_update_id: 0, pending: [],
+    awaiting_top3_for: null, cap_notice_day: null, seen_updates: [], pending: [],
   };
 }
 

@@ -3,13 +3,14 @@
 // and the every-minute tick. Every decision lives in core/brain.ts; this
 // file only wires storage, Telegram, Supabase and OpenRouter around it.
 import { Agent } from "agents";
-import { handle, undo as undoInBrain, type Deps, type Event, type Out } from "./core/brain";
+import { delivered, handle, undo as undoInBrain, type Deps, type Event, type Out } from "./core/brain";
 import { SupabaseDb } from "./core/db";
 import { openRouter } from "./core/llm";
 import { parseUpdate, TgClient } from "./core/telegram";
 import { authUrl, exchangeCode, GoogleCal, type Tokens } from "./google";
 import { initialState as freshState, type CalPort, type State } from "./core/types";
 import type { OverseerEnv } from "./env";
+import { afterSend, routeOf } from "./outbox";
 
 export function randomCode(): string {
   const b = new Uint8Array(12);
@@ -22,7 +23,7 @@ export class Overseer extends Agent<OverseerEnv, State> {
   private chain: Promise<unknown> = Promise.resolve();
 
   async onStart() {
-    this.sql`create table if not exists inbox (id integer primary key autoincrement, body text not null)`;
+    this.sql`create table if not exists inbox (id integer primary key autoincrement, body text not null, tries integer not null default 0)`;
     this.sql`create table if not exists outbox (id integer primary key autoincrement, body text not null, tries integer not null default 0)`;
     this.sql`create table if not exists kv (k text primary key, v text not null)`;
     await this.schedule("* * * * *", "tick");
@@ -73,15 +74,19 @@ export class Overseer extends Agent<OverseerEnv, State> {
     return { db: this.db(), llm: openRouter(this.env.OPENROUTER_API_KEY), cal: this.cal(), now: () => Date.now(), ids: () => crypto.randomUUID() };
   }
 
-  private async step(e: Event) {
+  // Returns true when an inbound update has to wait (settings unreadable).
+  private async step(e: Event): Promise<boolean> {
+    let deferred = false;
     try {
-      const { state, out } = await handle(this.state, e, this.deps());
-      this.setState(state);
-      for (const o of out) this.sql`insert into outbox (body) values (${JSON.stringify(o)})`;
+      const r = await handle(this.state, e, this.deps());
+      this.setState(r.state);
+      for (const o of r.out) this.sql`insert into outbox (body) values (${JSON.stringify(o)})`;
+      deferred = r.deferred === true;
     } catch (err) {
       console.error("[overseer] step failed", e.kind, err instanceof Error ? err.message : err);
     }
     await this.flush();
+    return deferred;
   }
 
   async tick() {
@@ -96,16 +101,23 @@ export class Overseer extends Agent<OverseerEnv, State> {
 
   async drain() {
     await this.serial(async () => {
-      const rows = this.sql<{ id: number; body: string }>`select id, body from inbox order by id limit 20`;
+      const rows = this.sql<{ id: number; body: string; tries: number }>`select id, body, tries from inbox order by id limit 20`;
       for (const r of rows) {
+        const wait = await this.step({ kind: "inbound", ev: parseUpdate(JSON.parse(r.body)) });
+        if (wait && r.tries < 10) {
+          // keep it (and everything after it, in order) and try again in 30 s
+          this.sql`update inbox set tries = tries + 1 where id = ${r.id}`;
+          await this.schedule(30, "drain");
+          return;
+        }
         this.sql`delete from inbox where id = ${r.id}`;
-        await this.step({ kind: "inbound", ev: parseUpdate(JSON.parse(r.body)) });
       }
     });
   }
 
-  // Send what's queued. Dry run (or no linked chat) logs instead of sending;
-  // a failed send stays queued for the next tick, up to three tries.
+  // Send what's queued. Without readable settings everything waits. Dry run (or
+  // no linked chat) logs instead of sending. Telegram's outright refusals are
+  // dropped and logged as not delivered; other failures get three tries.
   private async flush() {
     const rows = this.sql<{ id: number; body: string; tries: number }>`select id, body, tries from outbox order by id limit 30`;
     if (!rows.length) return;
@@ -114,16 +126,31 @@ export class Overseer extends Agent<OverseerEnv, State> {
     const tg = new TgClient(this.env.TELEGRAM_BOT_TOKEN);
     for (const r of rows) {
       const o = JSON.parse(r.body) as Out;
-      const chat = o.chat === "ben" ? (s?.chat_id ?? null) : o.chat;
-      const dry = !o.force && (s?.dry_run ?? true);
-      let ok = true;
+      const route = routeOf(o, s);
+      if (!route) return;
       if (o.answer) await tg.answer(o.answer);
-      if (o.text) {
-        if (!dry && chat !== null) ok = (await tg.send(chat, o.text, o.buttons)) !== null;
-        if (ok) await db.logMessage({ direction: "out", peer: o.chat === "ben" ? "ben" : "partner", text: o.text, buttons: o.buttons ?? null, dry_run: dry || chat === null });
+      if (!o.text) {
+        this.sql`delete from outbox where id = ${r.id}`;
+        continue;
       }
-      if (ok || r.tries >= 2) this.sql`delete from outbox where id = ${r.id}`;
-      else this.sql`update outbox set tries = tries + 1 where id = ${r.id}`;
+      const peer = o.chat === "ben" ? "ben" : "partner";
+      let result: { ok: boolean; status: number } | "logged" = "logged";
+      if (!route.dry && route.chat !== null) {
+        const sent = (await tg.send(route.chat, o.text, o.buttons)) !== null;
+        result = { ok: sent, status: sent ? 200 : tg.lastStatus };
+      }
+      const next = afterSend(result, r.tries);
+      if (next === "delete") {
+        await db.logMessage({ direction: "out", peer, text: o.text, buttons: o.buttons ?? null, dry_run: result === "logged" });
+        // delivered for real, or a dry run where nothing goes out anyway
+        if (o.tag && (result !== "logged" || route.dry)) this.setState(delivered(this.state, o.tag));
+        this.sql`delete from outbox where id = ${r.id}`;
+      } else if (next === "drop") {
+        await db.logMessage({ direction: "out", peer, text: `[not delivered] ${o.text}`, buttons: null, dry_run: true });
+        this.sql`delete from outbox where id = ${r.id}`;
+      } else {
+        this.sql`update outbox set tries = tries + 1 where id = ${r.id}`;
+      }
     }
   }
 
@@ -158,6 +185,11 @@ export class Overseer extends Agent<OverseerEnv, State> {
         });
       case "test":
         await this.serial(() => this.step({ kind: "test" }));
+        return { ok: true };
+      case "pause":
+      case "resume":
+        // through the brain, so the pause is named in the wrap and the ladder resets
+        await this.serial(() => this.step({ kind: "app", command: op === "pause" ? "/pause" : "/resume" }));
         return { ok: true };
       case "google_start": {
         if (!this.env.GOOGLE_CLIENT_ID || !this.env.GOOGLE_CLIENT_SECRET) return { ok: false, error: "Google sign-in isn't set up yet." };

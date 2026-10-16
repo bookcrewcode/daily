@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { handle, undo, type Deps, type Event, type Out } from "../src/core/brain";
+import { delivered, handle, undo, type Deps, type Event, type Out } from "../src/core/brain";
+import { itemCb, T } from "../src/core/templates";
 import { epochOf } from "../src/core/time";
 import { initialState, type State } from "../src/core/types";
 import { FakeDb, FakeLlm, reply, toolReply } from "./fakes";
@@ -22,10 +23,13 @@ function world() {
   ]);
   const deps: Deps = { db, llm, cal: null, now: () => now, ids: () => `p${++n}` };
   let st: State = initialState();
-  const step = async (t: string, e: Event = tick) => {
-    now = at(t);
+  let deliver = true;
+  const step = async (t: string, e: Event = tick, day = DAY) => {
+    now = at(t, day);
     const r = await handle(st, e, deps);
     st = r.state;
+    // the agent marks a tagged message delivered once Telegram accepts it
+    if (deliver) for (const o of r.out) if (o.tag) st = delivered(st, o.tag);
     return r.out;
   };
   const tap = (t: string, data: string) => step(t, { kind: "inbound", ev: { kind: "tap", update_id: ++upd, chat_id: 111, callback_id: `cb${upd}`, data } });
@@ -36,6 +40,7 @@ function world() {
     db, llm, deps, step, tap, say, item, texts,
     get st() { return st; },
     setNow: (t: number) => { now = t; },
+    setDeliver: (v: boolean) => { deliver = v; },
   };
 }
 
@@ -95,7 +100,7 @@ describe("drill blocks", () => {
     const w = world();
     await w.step("07:31");
     await w.step("11:30");
-    const out = await w.tap("11:40", `d|${w.item("Precalc HW")!.id}`);
+    const out = await w.tap("11:40", itemCb("done", w.item("Precalc HW")!.id));
     expect(out[0]).toEqual({ chat: "ben", text: "", answer: "cb1" });
     expect(w.texts(out)).toEqual(["Done: Precalc HW.", "Nothing left for this block. Good."]);
     expect(w.item("Precalc HW")?.done).toBe(true);
@@ -106,7 +111,7 @@ describe("drill blocks", () => {
     const w = world();
     await w.step("07:31");
     await w.step("11:30");
-    expect(w.texts(await w.tap("11:35", `m|${w.item("Precalc HW")!.id}`))).toEqual(["OK. Back in 10."]);
+    expect(w.texts(await w.tap("11:35", itemCb("more", w.item("Precalc HW")!.id)))).toEqual(["OK. Back in 10."]);
     expect(await w.step("11:44")).toEqual([]);
     expect(w.texts(await w.step("11:45"))).toEqual(["Check-in: Precalc HW. Where are you at?"]);
   });
@@ -115,7 +120,7 @@ describe("drill blocks", () => {
     await w.step("07:31");
     await w.step("11:30");
     w.llm.replies.push(reply("Write the first problem number on paper"));
-    expect(w.texts(await w.tap("11:35", `s|${w.item("Precalc HW")!.id}`))).toEqual(["Just this: Write the first problem number on paper. Two minutes, then tap Done."]);
+    expect(w.texts(await w.tap("11:35", itemCb("stuck", w.item("Precalc HW")!.id)))).toEqual(["Just this: Write the first problem number on paper. Two minutes, then tap Done."]);
     expect(w.llm.calls.at(-1)?.model).toBe("cheap/model");
   });
   it("Skip queues the task for a later block; it runs once that block's own task is done", async () => {
@@ -123,10 +128,10 @@ describe("drill blocks", () => {
     w.db.blockMap.set(4, [...w.db.blockMap.get(4)!, { id: "b3", label: "Essay draft", location: "", kind: "study", start_t: "15:00", end_t: "16:30" }]);
     await w.step("07:31");
     await w.step("11:30");
-    expect(w.texts(await w.tap("11:35", `k|${w.item("Precalc HW")!.id}`))).toEqual(['Moved "Precalc HW" to later today. It\'s queued for your 15:00 block.']);
+    expect(w.texts(await w.tap("11:35", itemCb("skip", w.item("Precalc HW")!.id)))).toEqual(['Moved "Precalc HW" to later today. It\'s queued for your 15:00 block.']);
     expect(w.item("Precalc HW")?.time).toBe("");
     expect(w.texts(await w.step("15:00"))[0]).toContain("Now: Essay draft.");
-    expect(w.texts(await w.tap("15:20", `d|${w.item("Essay draft")!.id}`))).toEqual([
+    expect(w.texts(await w.tap("15:20", itemCb("done", w.item("Essay draft")!.id)))).toEqual([
       "Done: Essay draft.",
       "Now: Precalc HW.\nFirst step: Open it and do the first two minutes.",
     ]);
@@ -134,7 +139,7 @@ describe("drill blocks", () => {
 });
 
 describe("stakes", () => {
-  async function countdownStarted(blockEnd = "13:00") {
+  async function countdownStarted(blockEnd = "13:00", deliverWarning = true) {
     const w = world();
     w.db.blockMap.set(4, [{ id: "b1", label: "Precalc HW", location: "", kind: "study", start_t: "11:30", end_t: blockEnd }]);
     withStakesReady(w);
@@ -142,12 +147,13 @@ describe("stakes", () => {
     await w.step("07:31");
     expect(w.texts(await w.tap("07:40", `L|${DAY}`))).toEqual(["Locked. Stakes on: Precalc HW."]);
     for (const t of ["11:30", "11:50", "12:00", "12:10"]) await w.step(t);
+    w.setDeliver(deliverWarning);
     expect(w.texts(await w.step("12:20"))).toEqual(["15 minutes, then Gavin gets line #1. Tap Done on the two-minute step to stop it."]);
     return w;
   }
   it("Done during the countdown stops it and nothing is sent", async () => {
     const w = await countdownStarted();
-    const out = await w.tap("12:25", `d|${w.item("Precalc HW")!.id}`);
+    const out = await w.tap("12:25", itemCb("done", w.item("Precalc HW")!.id));
     expect(w.texts(out)).toEqual(["Stopped. That counts.", "Done: Precalc HW.", "Nothing left for this block. Good."]);
     expect(out.some((o) => o.chat === 222)).toBe(false);
     expect(w.db.stakeRows.map((r) => r.status)).toEqual(["started", "cancelled"]);
@@ -172,6 +178,40 @@ describe("stakes", () => {
     const w = await countdownStarted("12:30");
     expect(w.texts(await w.step("12:30"))).toEqual(["Block's over, so stakes on this one are off."]);
     expect(w.db.stakeRows.map((r) => r.status)).toEqual(["started", "cancelled"]);
+  });
+  it("Ben ticking the task in the app stops the countdown; the partner gets nothing", async () => {
+    const w = await countdownStarted();
+    await w.db.saveItems(DAY, w.db.items(DAY).map((i) => (i.what === "Precalc HW" ? { ...i, done: true } : i)));
+    expect(w.texts(await w.step("12:21"))[0]).toBe("Done, so the stakes are off.");
+    expect((await w.step("12:35")).some((o) => o.chat === 222)).toBe(false);
+    expect(w.db.stakeRows.map((r) => r.status)).toEqual(["started", "cancelled"]);
+  });
+  it("marking the task done in chat stops the countdown right away", async () => {
+    const w = await countdownStarted();
+    w.llm.replies.push(toolReply("check_item", { item_id: w.item("Precalc HW")!.id, done: true }), reply("Marked done."));
+    expect(w.texts(await w.say("12:22", "finished precalc"))).toEqual(["Marked done.", "Stopped. That counts."]);
+    expect((await w.step("12:35")).some((o) => o.chat === 222)).toBe(false);
+  });
+  it("never messages the partner if the countdown warning didn't reach Ben", async () => {
+    const w = await countdownStarted("13:00", false);
+    const out = await w.step("12:35");
+    expect(out.some((o) => o.chat === 222)).toBe(false);
+    expect(w.texts(out)[0]).toBe("Stakes didn't go out: my warning never reached you.");
+    expect(w.db.stakeRows.map((r) => r.status)).toEqual(["started", "voided"]);
+  });
+  it("sends nothing when the list can't be checked at fire time", async () => {
+    const w = await countdownStarted();
+    w.db.failDay = true;
+    const out = await w.step("12:35");
+    expect(out.some((o) => o.chat === 222)).toBe(false);
+    expect(w.texts(out)[0]).toBe("Couldn't check your list, so nothing was sent.");
+  });
+  it("a Done tap stops the countdown even when saving the list fails", async () => {
+    const w = await countdownStarted();
+    const id = w.item("Precalc HW")!.id;
+    w.db.failDay = true;
+    expect(w.texts(await w.tap("12:25", itemCb("done", id)))).toEqual(["Stopped. That counts.", "Couldn't read the list right now. Nothing changed."]);
+    expect(w.st.countdown).toBeNull();
   });
   it("No stakes today works before the first block and is refused after", async () => {
     const late = world();
@@ -208,6 +248,16 @@ describe("talking to it", () => {
     expect(w.item("Gym")).toBeUndefined();
     expect(w.texts(await w.tap("09:02", "y|p1"))).toEqual(["That request expired."]);
   });
+  it("OpenRouter out of credit: one notice, then quiet with no more paid attempts", async () => {
+    const w = world();
+    await w.step("07:31");
+    w.llm.replies.push({ ...reply(""), cost: 0, tin: 0, error: "out_of_credit" });
+    expect(w.texts(await w.say("09:00", "move gym to 6"))).toEqual([T.capNotice()]);
+    const calls = w.llm.calls.length;
+    expect(await w.say("09:05", "hello?")).toEqual([]);
+    expect(w.llm.calls.length).toBe(calls);
+    expect(w.texts(await w.say("09:06", "/today"))[0]).toContain("[ ] Precalc HW");
+  });
   it("over the daily cap: says so once, then stays quiet; commands still work", async () => {
     const w = world();
     await w.step("07:31");
@@ -223,7 +273,7 @@ describe("evening wrap", () => {
   it("leads with wins, then takes tomorrow's top 3 from the reply", async () => {
     const w = world();
     await w.step("07:31");
-    await w.tap("19:00", `d|${w.item("Gym")!.id}`);
+    await w.tap("19:00", itemCb("done", w.item("Gym")!.id));
     const out = await w.step("21:30");
     expect(out[0].text.startsWith("Day wrap.")).toBe(true);
     expect(out[0].text).toContain("Done (1): Gym");
@@ -285,7 +335,7 @@ describe("review focus", () => {
     const w = world();
     await w.step("07:31");
     await w.step("11:30");
-    const ev: Event = { kind: "inbound", ev: { kind: "tap", update_id: 50, chat_id: 111, callback_id: "c50", data: `d|${w.item("Precalc HW")!.id}` } };
+    const ev: Event = { kind: "inbound", ev: { kind: "tap", update_id: 50, chat_id: 111, callback_id: "c50", data: itemCb("done", w.item("Precalc HW")!.id) } };
     await w.step("11:40", ev);
     const actions = w.db.actions.size;
     expect(await w.step("11:41", ev)).toEqual([]);
@@ -314,11 +364,69 @@ describe("review focus", () => {
   });
 });
 
+describe("fix pass", () => {
+  it("a Plan-chat item with a long id gets valid buttons, and Done works", async () => {
+    const w = world();
+    w.db.blockMap.set(4, []);
+    w.db.nights.set(DAY, { items: [{ time: "11:30", what: "LOCK-IN: Modern America Test #2 review, chapters 4-6 and the map quiz 1.5h" }], blocks_seeded: true, top3: [] });
+    await w.step("07:31");
+    const start = await w.step("11:30");
+    expect(start[0].text).toContain("Now: LOCK-IN");
+    for (const b of start[0].buttons!.flat()) expect(new TextEncoder().encode(b.data!).length).toBeLessThanOrEqual(64);
+    const done = start[0].buttons!.flat().find((b) => b.text === "Done")!;
+    expect(w.texts(await w.tap("11:40", done.data!))[0]).toContain("Done: LOCK-IN");
+    expect(w.db.items(DAY)[0].done).toBe(true);
+  });
+  it("holds a Telegram update while the settings can't be read, then handles it", async () => {
+    const w = world();
+    await w.step("07:31");
+    w.db.failReads = true;
+    const ev: Event = { kind: "inbound", ev: { kind: "text", update_id: 9, chat_id: 111, from_name: "x", text: "/today" } };
+    w.setNow(at("09:00"));
+    const r = await handle(w.st, ev, w.deps);
+    expect(r.deferred).toBe(true);
+    w.db.failReads = false;
+    expect((await handle(r.state, ev, w.deps)).out[0].text).toContain("Precalc HW");
+  });
+  it("an unanswered wrap doesn't capture the next day's first message", async () => {
+    const w = world();
+    await w.step("07:31");
+    await w.step("21:30");
+    expect(w.st.awaiting_top3_for).toBe(TOMORROW);
+    await w.step("07:31", tick, TOMORROW);
+    expect(w.st.awaiting_top3_for).toBeNull();
+  });
+  it("retries the morning when the list can't be read", async () => {
+    const w = world();
+    w.db.failDay = true;
+    expect(await w.step("07:31")).toEqual([]);
+    expect(w.st.plan?.morning_sent).toBe(false);
+    w.db.failDay = false;
+    expect((await w.step("07:32"))[0].text).toContain("11:30-13:00 Precalc HW");
+  });
+  it("keeps listening after Telegram restarts its update numbering", async () => {
+    const w = world();
+    await w.step("07:31");
+    await w.step("09:00", { kind: "inbound", ev: { kind: "text", update_id: 900000, chat_id: 111, from_name: "x", text: "/help" } });
+    const out = await w.step("09:01", { kind: "inbound", ev: { kind: "text", update_id: 5, chat_id: 111, from_name: "x", text: "/today" } });
+    expect(w.texts(out)[0]).toContain("Precalc HW");
+  });
+  it("pausing from the app is recorded and resets the ladder", async () => {
+    const w = world();
+    await w.step("07:31");
+    await w.step("11:30");
+    expect(w.texts(await w.step("11:35", { kind: "app", command: "/pause" }))).toEqual(["Paused. Send /resume to start again."]);
+    expect([w.db.set.paused, w.st.pauses.length, w.st.ladder.task]).toEqual([true, 1, null]);
+    await w.step("11:40", { kind: "app", command: "/resume" });
+    expect(w.db.set.paused).toBe(false);
+  });
+});
+
 describe("undo", () => {
   it("reverses a Done from the app's log, once", async () => {
     const w = world();
     await w.step("07:31");
-    await w.tap("19:00", `d|${w.item("Gym")!.id}`);
+    await w.tap("19:00", itemCb("done", w.item("Gym")!.id));
     const id = [...w.db.actions.keys()].at(-1)!;
     const r = await undo(w.st, id, w.deps);
     expect(r.ok).toBe(true);

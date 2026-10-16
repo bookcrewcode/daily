@@ -15,16 +15,18 @@ export function durationOf(what: string): number {
 
 export function buildWindows(day: string, items: DayItem[], blocks: Block[], s: Settings): Win[] {
   const byId = new Map(blocks.map((b) => [b.id, b] as const));
+  const starts = [...new Set(items.filter((i) => i.time).map((i) => epochOf(day, i.time, s.tz)))].sort((a, b) => a - b);
   const wins: Win[] = [];
   for (const it of items) {
     if (!it.time) continue;
     const b = it.block_id ? byId.get(it.block_id) : undefined;
-    const kind = b ? b.kind || "class" : it.src === "plan" ? "study" : "task";
+    const kind = b ? b.kind || "class" : it.src === "plan" ? "plan" : "task";
     if (!s.ping_kinds.includes(kind)) continue;
     const blockLen = b ? minutesBetween(b.start_t, b.end_t) : 0;
     const start = epochOf(day, it.time, s.tz);
     const len = blockLen > 0 ? blockLen : durationOf(it.what);
-    wins.push({ key: `w_${it.id}`, label: it.what, kind, start, end: start + len * MIN, own: it.id });
+    const next = starts.find((t) => t > start) ?? Infinity;
+    wins.push({ key: `w_${it.id}`, label: it.what, kind, start, end: Math.min(start + len * MIN, next), own: it.id });
   }
   return wins.sort((a, b) => a.start - b.start);
 }

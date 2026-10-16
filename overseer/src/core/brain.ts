@@ -15,7 +15,7 @@ import { seedDay } from "./seed";
 import { activePartners, canStake, COUNTDOWN_MIN, pickLine, pickPartner, stakesOffAllowed } from "./stakes";
 import { classify, type Inbound } from "./telegram";
 import {
-  confirmButtons, drillButtons, learnButtons, morningButtons, morningText, parseCb, shrinkButtons, startButtons, T, todayText, wrapText,
+  confirmButtons, drillButtons, keyOf, learnButtons, morningButtons, morningText, parseCb, shrinkButtons, startButtons, T, todayText, wrapText,
 } from "./templates";
 import { addDays, localOf, type Local } from "./time";
 import { confirmPending, runTool, toolSpecs, undoAction } from "./tools";
@@ -24,20 +24,23 @@ import { blankPlan, EMPTY_LADDER, type Btn, type CalPort, type Pending, type Pla
 const MIN = 60_000;
 
 export type Deps = { db: Db; llm: LlmPort; cal: CalPort | null; now: () => number; ids: () => string };
-export type Out = { chat: "ben" | number; text: string; buttons?: Btn[][]; answer?: string; force?: boolean };
-export type Event = { kind: "tick" } | { kind: "inbound"; ev: Inbound } | { kind: "test" };
+// tag: the agent reports delivery of tagged messages back through delivered().
+export type Out = { chat: "ben" | number; text: string; buttons?: Btn[][]; answer?: string; force?: boolean; tag?: "countdown" };
+export type Event = { kind: "tick" } | { kind: "inbound"; ev: Inbound } | { kind: "test" } | { kind: "app"; command: "/pause" | "/resume" };
 
 const ben = (text: string, buttons?: Btn[][]): Out => (buttons ? { chat: "ben", text, buttons } : { chat: "ben", text });
 const ctxOf = (st: State, d: Deps, s: Settings, now: number): ToolCtx => ({ db: d.db, cal: d.cal, s, now, plan: st.plan! });
 const spendOf = (d: Deps, s: Settings, day: string): Spend => ({ db: d.db, llm: d.llm, day, cap: s.cap_usd });
 const windowsOf = (p: Plan, s: Settings) => buildWindows(p.day, p.items, p.blocks, s);
 
-export async function handle(st: State, e: Event, d: Deps): Promise<{ state: State; out: Out[] }> {
+// deferred: an inbound update couldn't be handled (settings unreadable); the
+// agent keeps it and tries again.
+export async function handle(st: State, e: Event, d: Deps): Promise<{ state: State; out: Out[]; deferred?: boolean }> {
   const out: Out[] = [];
-  if (e.kind === "inbound" && e.ev.update_id <= st.last_update_id) return { state: st, out };
+  if (e.kind === "inbound" && st.seen_updates.includes(e.ev.update_id)) return { state: st, out };
   const s = await d.db.settings();
-  if (!s) return { state: st, out };
-  if (e.kind === "inbound") st = { ...st, last_update_id: e.ev.update_id };
+  if (!s) return { state: st, out, deferred: e.kind === "inbound" };
+  if (e.kind === "inbound") st = { ...st, seen_updates: [...st.seen_updates, e.ev.update_id].slice(-50) };
   const now = d.now();
   const L = localOf(now, s.tz);
   if (!st.plan || st.plan.day !== L.day) st = newDay(st, L.day);
@@ -45,8 +48,15 @@ export async function handle(st: State, e: Event, d: Deps): Promise<{ state: Sta
     out.push({ chat: "ben", text: "Test from the Overseer. If you can read this, pings will reach you.", force: true });
     return { state: st, out };
   }
+  if (e.kind === "app") return { state: await command(st, d, s, e.command, L, now, out), out };
   const next = e.kind === "tick" ? await tick(st, d, s, L, now, out) : await inbound(st, d, s, e.ev, L, now, out);
   return { state: next, out };
+}
+
+// The agent calls this once Telegram has accepted a tagged message. Stakes
+// only fire after the countdown warning actually reached Ben.
+export function delivered(st: State, tag: string): State {
+  return tag === "countdown" && st.countdown ? { ...st, countdown: { ...st.countdown, warned: true } } : st;
 }
 
 function newDay(st: State, day: string): State {
@@ -56,7 +66,7 @@ function newDay(st: State, day: string): State {
 // ── the minute tick ─────────────────────────────────────────────────────────
 
 async function tick(st: State, d: Deps, s: Settings, L: Local, now: number, out: Out[]): Promise<State> {
-  st = await countdownStep(st, d, s, now, out);      // a started countdown runs even while paused
+  st = await countdownStep(st, d, s, L, now, out);   // a started countdown runs even while paused
   if (s.paused) return st;
   const p = st.plan!;
   if (!p.morning_sent) return L.hhmm >= s.wake && L.hhmm < s.wrap ? morning(st, d, s, L, out) : st;
@@ -66,10 +76,11 @@ async function tick(st: State, d: Deps, s: Settings, L: Local, now: number, out:
   return drill(st, d, s, L, now, out);
 }
 
-// Re-read the day list. A failed read keeps the cached copy: never "nothing to do".
-async function refresh(p: Plan, d: Deps, weekday: number, seed: boolean): Promise<Plan> {
+// Re-read the day list. A failed read keeps the cached copy: never "nothing
+// to do". ok is false when the list or the timetable couldn't be read.
+async function refresh(p: Plan, d: Deps, weekday: number, seed: boolean): Promise<{ plan: Plan; ok: boolean }> {
   const [row, blocks] = await Promise.all([d.db.day(p.day), d.db.blocks(weekday)]);
-  if (row === null) return p;
+  if (row === null) return { plan: p, ok: false };
   const raw = row === "none" ? [] : row.items;
   let items = normalizeItems(raw);
   if (seed) {
@@ -79,11 +90,14 @@ async function refresh(p: Plan, d: Deps, weekday: number, seed: boolean): Promis
       await d.db.mirrorCounts(p.day, countDone(items), items.length);
     }
   }
-  return { ...p, items: sortItems(items), blocks: blocks ?? p.blocks, top3: row === "none" ? [] : row.top3, refreshed_at: d.now() };
+  const plan = { ...p, items: sortItems(items), blocks: blocks ?? p.blocks, top3: row === "none" ? [] : row.top3, refreshed_at: d.now() };
+  return { plan, ok: blocks !== null };
 }
 
 async function morning(st: State, d: Deps, s: Settings, L: Local, out: Out[]): Promise<State> {
-  let p = await refresh(st.plan!, d, L.weekday, true);
+  const fresh = await refresh(st.plan!, d, L.weekday, true);
+  if (!fresh.ok) return st;                   // try again next minute rather than send an empty plan
+  let p = fresh.plan;
   const wins = windowsOf(p, s);
   const byId = new Map(p.items.map((i) => [i.id, i] as const));
   const floatIds = floatingOf(p.items, p.top3, p.bumped).slice(0, 5);
@@ -115,7 +129,7 @@ async function morning(st: State, d: Deps, s: Settings, L: Local, out: Out[]): P
     stakesMissing: !stakesReady,
     learnAt: p.learn?.on ? p.learn.at : null,
   }), morningButtons(p.day)));
-  return { ...st, plan: p };
+  return { ...st, plan: p, awaiting_top3_for: null };   // an unanswered wrap expires with the new morning
 }
 
 async function learnStep(st: State, d: Deps, L: Local, out: Out[]): Promise<State> {
@@ -129,7 +143,7 @@ async function learnStep(st: State, d: Deps, L: Local, out: Out[]): Promise<Stat
 
 async function drill(st: State, d: Deps, s: Settings, L: Local, now: number, out: Out[]): Promise<State> {
   let p = st.plan!;
-  if (now - p.refreshed_at >= 5 * MIN) p = await refresh(p, d, L.weekday, false);
+  if (now - p.refreshed_at >= 5 * MIN) p = (await refresh(p, d, L.weekday, false)).plan;
   const win = windowAt(windowsOf(p, s), now);
   if (!win) return { ...st, plan: p, ladder: st.ladder.win ? EMPTY_LADDER : st.ladder };
   if (!p.locked) p = { ...p, locked: true, stakes: [] };    // unanswered morning: tasks lock, no stakes
@@ -139,7 +153,7 @@ async function drill(st: State, d: Deps, s: Settings, L: Local, now: number, out
   const r = onTick(st.ladder, now, s.ping_every_min);
   if (r.effect.kind === "none") return st;
   // something is due: read the list again so a task ticked in the app never gets pinged
-  p = await refresh(p, d, L.weekday, false);
+  p = (await refresh(p, d, L.weekday, false)).plan;
   st = { ...st, plan: p };
   const fresh = p.items.find((i) => i.id === cur.id);
   if (!fresh || fresh.done) return startNext(st, s, now, out, windowAt(windowsOf(p, s), now));
@@ -174,14 +188,14 @@ async function escalate(st: State, d: Deps, s: Settings, task: DayItem, win: Win
   if (lines && partners && canStake({ plan: p, itemId: task.id, day: p.day, sentDay: st.stakes_sent_day, lines, partners })) {
     const line = pickLine(lines)!;
     const partner = pickPartner(partners)!;
-    out.push(ben(T.countdown(partner.name, lines.findIndex((l) => l.id === line.id) + 1), shrinkButtons(task.id)));
+    out.push({ ...ben(T.countdown(partner.name, lines.findIndex((l) => l.id === line.id) + 1), shrinkButtons(task.id)), tag: "countdown" });
     await d.db.logStakes({ day: p.day, item_id: task.id, what: task.what, status: "started", line_id: line.id, partner_id: partner.id });
-    return { ...st, countdown: { task: task.id, what: task.what, win: win.key, ends_at: win.end, fires_at: now + COUNTDOWN_MIN * MIN, line_id: line.id, partner_id: partner.id } };
+    return { ...st, countdown: { task: task.id, what: task.what, win: win.key, ends_at: win.end, fires_at: now + COUNTDOWN_MIN * MIN, line_id: line.id, partner_id: partner.id, warned: false } };
   }
   return reshuffle(st, d, s, task, now, out, true);
 }
 
-async function countdownStep(st: State, d: Deps, s: Settings, now: number, out: Out[]): Promise<State> {
+async function countdownStep(st: State, d: Deps, s: Settings, L: Local, now: number, out: Out[]): Promise<State> {
   const c = st.countdown;
   if (!c) return st;
   const day = st.plan!.day;
@@ -191,20 +205,37 @@ async function countdownStep(st: State, d: Deps, s: Settings, now: number, out: 
     await log("cancelled");
     return { ...st, countdown: null };
   }
-  if (now < c.fires_at) return st;
-  const [lines, partners] = await Promise.all([d.db.lines(), d.db.partners()]);
-  const line = lines?.find((l) => l.id === c.line_id);
-  const partner = partners ? activePartners(partners).find((p) => p.id === c.partner_id) : undefined;
-  let next: State = { ...st, countdown: null };
-  if (st.stakes_sent_day !== day && line && partner && partner.chat_id !== null) {
-    out.push({ chat: partner.chat_id, text: T.partner(line.text) });
-    out.push(ben(T.stakesSent(partner.name)));
-    await Promise.all([log("sent"), d.db.bumpLine(line.id, line.used + 1), d.db.bumpPartner(partner.id, partner.sent + 1)]);
-    next = { ...next, stakes_sent_day: day };
-  } else {
-    await log("voided");
+  // Finished anywhere (a button, the chat, the app) counts: read the list every
+  // tick of the countdown, and never message a friend about finished work.
+  const fresh = await refresh(st.plan!, d, L.weekday, false);
+  st = { ...st, plan: fresh.plan };
+  const task = fresh.plan.items.find((i) => i.id === c.task);
+  if (fresh.ok && (!task || task.done)) {
+    out.push(ben(T.stakesOff(!!task)));
+    await log("cancelled");
+    return { ...st, countdown: null };
   }
-  const task = st.plan!.items.find((i) => i.id === c.task);
+  if (now < c.fires_at) return st;
+  let next: State = { ...st, countdown: null };
+  if (!fresh.ok) {
+    out.push(ben(T.stakesUnchecked()));
+    await log("voided");
+  } else if (!c.warned) {
+    out.push(ben(T.stakesUnwarned()));
+    await log("voided");
+  } else {
+    const [lines, partners] = await Promise.all([d.db.lines(), d.db.partners()]);
+    const line = lines?.find((l) => l.id === c.line_id);
+    const partner = partners ? activePartners(partners).find((p) => p.id === c.partner_id) : undefined;
+    if (st.stakes_sent_day !== day && line && partner && partner.chat_id !== null) {
+      out.push({ chat: partner.chat_id, text: T.partner(line.text) });
+      out.push(ben(T.stakesSent(partner.name)));
+      await Promise.all([log("sent"), d.db.bumpLine(line.id, line.used + 1), d.db.bumpPartner(partner.id, partner.sent + 1)]);
+      next = { ...next, stakes_sent_day: day };
+    } else {
+      await log("voided");
+    }
+  }
   return task && !task.done ? reshuffle(next, d, s, task, now, out, !s.paused) : next;
 }
 
@@ -231,7 +262,7 @@ async function reshuffle(st: State, d: Deps, s: Settings, task: DayItem, now: nu
 }
 
 async function wrap(st: State, d: Deps, s: Settings, L: Local, out: Out[]): Promise<State> {
-  const p = await refresh(st.plan!, d, L.weekday, false);
+  const p = (await refresh(st.plan!, d, L.weekday, false)).plan;
   const done = p.items.filter((i) => i.done).map((i) => i.what);
   const open = p.items.filter((i) => !i.done).map((i) => i.what);
   const moved = p.moved.map((m) => `${m.what} (${m.to})`);
@@ -283,14 +314,31 @@ async function inbound(st: State, d: Deps, s: SettingsRow, ev: Inbound, L: Local
   return ev.kind === "tap" ? onTap(st, d, s, ev, now, out) : onText(st, d, s, ev.text, L, now, out);
 }
 
+const ITEM_ACTS = new Set(["done", "onit", "more", "stuck", "skip"]);
+
 async function onTap(st: State, d: Deps, s: Settings, ev: Extract<Inbound, { kind: "tap" }>, now: number, out: Out[]): Promise<State> {
   out.push({ chat: "ben", text: "", answer: ev.callback_id });
   const c = parseCb(ev.data);
   if (!c) return st;
+  // item buttons carry a short key: find the item on today's list (re-read once if needed)
+  let id = c.arg;
+  if (ITEM_ACTS.has(c.act)) {
+    let item = st.plan!.items.find((i) => keyOf(i.id) === c.arg);
+    if (!item) {
+      const fresh = await refresh(st.plan!, d, localOf(now, s.tz).weekday, false);
+      st = { ...st, plan: fresh.plan };
+      item = fresh.plan.items.find((i) => keyOf(i.id) === c.arg);
+    }
+    if (!item) {
+      out.push(ben(T.notOnList()));
+      return st;
+    }
+    id = item.id;
+  }
   const p = st.plan!;
   switch (c.act) {
     case "done":
-      return markDone(st, d, s, c.arg, now, out);
+      return markDone(st, d, s, id, now, out);
     case "onit":
       out.push(ben("Good. I'll check in later."));
       return st;
@@ -298,13 +346,13 @@ async function onTap(st: State, d: Deps, s: Settings, ev: Extract<Inbound, { kin
       out.push(ben("OK. Back in 10."));
       return { ...st, ladder: onAnswer(st.ladder, now, s.ping_every_min, "more") };
     case "stuck": {
-      const item = p.items.find((i) => i.id === c.arg);
-      const step = (item && (await shrinkStep(spendOf(d, s, p.day), s.cheap_model, item.what))) ?? p.first_steps[c.arg] ?? T.defaultStep();
-      out.push(ben(T.shrink(step), shrinkButtons(c.arg)));
-      return { ...st, plan: { ...p, first_steps: { ...p.first_steps, [c.arg]: step } }, ladder: onAnswer(st.ladder, now, s.ping_every_min, "stuck") };
+      const item = p.items.find((i) => i.id === id);
+      const step = (item && (await shrinkStep(spendOf(d, s, p.day), s.cheap_model, item.what))) ?? p.first_steps[id] ?? T.defaultStep();
+      out.push(ben(T.shrink(step), shrinkButtons(id)));
+      return { ...st, plan: { ...p, first_steps: { ...p.first_steps, [id]: step } }, ladder: onAnswer(st.ladder, now, s.ping_every_min, "stuck") };
     }
     case "skip": {
-      const item = p.items.find((i) => i.id === c.arg && !i.done);
+      const item = p.items.find((i) => i.id === id && !i.done);
       return item ? reshuffle(st, d, s, item, now, out, st.ladder.task === item.id) : st;
     }
     case "lock":
@@ -312,7 +360,7 @@ async function onTap(st: State, d: Deps, s: Settings, ev: Extract<Inbound, { kin
         out.push(ben("Already locked."));
         return st;
       }
-      out.push(ben(T.locked(p.suggested_stakes.map((id) => p.items.find((i) => i.id === id)?.what ?? ""))));
+      out.push(ben(T.locked(p.suggested_stakes.map((x) => p.items.find((i) => i.id === x)?.what ?? ""))));
       return { ...st, plan: { ...p, locked: true, stakes: p.suggested_stakes } };
     case "change":
       out.push(ben(T.change()));
@@ -340,20 +388,19 @@ async function onTap(st: State, d: Deps, s: Settings, ev: Extract<Inbound, { kin
 }
 
 async function markDone(st: State, d: Deps, s: Settings, id: string, now: number, out: Out[]): Promise<State> {
-  const ctx = ctxOf(st, d, s, now);
-  const r = await checkItem(ctx, st.plan!.day, id, true);
-  if (!r.ok) {
-    out.push(ben(r.text));
-    return st;
-  }
-  let next: State = { ...st, plan: ctx.plan };
+  let next = st;
   const c = st.countdown;
   if (c && c.task === id) {
-    await d.db.logStakes({ day: ctx.plan.day, item_id: id, what: c.what, status: "cancelled", line_id: c.line_id, partner_id: c.partner_id });
+    // the Done tap stops a countdown first, even if the list can't be saved
+    await d.db.logStakes({ day: st.plan!.day, item_id: id, what: c.what, status: "cancelled", line_id: c.line_id, partner_id: c.partner_id });
     out.push(ben(T.countdownStopped()));
     next = { ...next, countdown: null };
   }
+  const ctx = ctxOf(next, d, s, now);
+  const r = await checkItem(ctx, next.plan!.day, id, true);
   out.push(ben(r.text));
+  if (!r.ok) return next;
+  next = { ...next, plan: ctx.plan };
   if (st.ladder.task !== id) return next;
   return startNext(next, s, now, out, windowAt(windowsOf(ctx.plan, s), now));
 }
@@ -384,7 +431,7 @@ async function onText(st: State, d: Deps, s: Settings, raw: string, L: Local, no
 
 async function command(st: State, d: Deps, s: Settings, t: string, L: Local, now: number, out: Out[]): Promise<State> {
   if (t === "/today") {
-    const p = await refresh(st.plan!, d, L.weekday, false);
+    const p = (await refresh(st.plan!, d, L.weekday, false)).plan;
     out.push(ben(todayText(p.items)));
     return { ...st, plan: p };
   }
@@ -432,6 +479,7 @@ export function systemPrompt(p: Plan, s: Settings, now: number, withCal: boolean
 
 async function talk(st: State, d: Deps, s: Settings, text: string, now: number, out: Out[]): Promise<State> {
   const p = st.plan!;
+  if (st.cap_notice_day === p.day) return st;   // over the cap or out of credit today: said once, no more paid tries
   if (overCap(await d.db.spent(p.day), s.cap_usd)) {
     if (st.cap_notice_day === p.day) return st;
     out.push(ben(T.capNotice()));
@@ -454,9 +502,16 @@ async function talk(st: State, d: Deps, s: Settings, text: string, now: number, 
   }
   const answer = res.text.trim() || "Done.";
   out.push(ben(answer));
+  let countdown = st.countdown;
+  if (countdown && ctx.plan.items.find((i) => i.id === countdown!.task)?.done) {
+    // marked done in chat: same as the Done tap
+    await d.db.logStakes({ day: p.day, item_id: countdown.task, what: countdown.what, status: "cancelled", line_id: countdown.line_id, partner_id: countdown.partner_id });
+    out.push(ben(T.countdownStopped()));
+    countdown = null;
+  }
   for (const x of pend) out.push(ben(T.confirm(x.summary), confirmButtons(x.id)));
   const convo = [...st.convo, { role: "user" as const, content: text }, { role: "assistant" as const, content: answer }].slice(-12);
-  return { ...st, plan: ctx.plan, pending: [...st.pending, ...pend].slice(-5), convo };
+  return { ...st, plan: ctx.plan, countdown, pending: [...st.pending, ...pend].slice(-5), convo };
 }
 
 // ── Undo from the app ───────────────────────────────────────────────────────
