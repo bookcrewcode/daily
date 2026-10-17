@@ -2,7 +2,7 @@ import { supabase } from "./supabase";
 
 // The Overseer agent's own API (a Cloudflare Worker). It answers only Ben's
 // signed-in session; everything else on the Overseer page reads Supabase.
-export const OVERSEER_URL = "https://overseer.<account>.workers.dev";
+export const OVERSEER_URL = "https://overseer.bengarnet.workers.dev";
 
 export type OverseerReply = { ok: boolean; error?: string; text?: string; url?: string; linked?: boolean; paused?: boolean; dry_run?: boolean; google?: boolean };
 
