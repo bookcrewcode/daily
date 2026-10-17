@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { REPORT_SYSTEM, parseReport, reportDue, reportPrompt, type ReportInput } from "./report";
+import { REPORT_SYSTEM, parseReport, pickNews, reportDue, reportPrompt, type ReportInput } from "./report";
 
 const input: ReportInput = {
   day: "2026-10-16",
@@ -51,4 +51,18 @@ test("a report is due when missing or failed, waits while running, and stops aft
   assert.equal(reportDue(now, { status: "failed", tries: 3, updated_at: "2026-10-16T12:31:00Z" }), false);
   assert.equal(reportDue(now, { status: "running", tries: 1, updated_at: "2026-10-16T12:38:00Z" }), false);
   assert.equal(reportDue(now, { status: "running", tries: 1, updated_at: "2026-10-16T12:34:00Z" }), true);
+});
+
+test("news is matched to holdings in code: a coin matches its -USD holding, four per holding, twelve in all", () => {
+  const row = (title: string, tickers: string[]) => ({ title, plain: `${title} plain`, impact: 4, direction: "bullish", source: "CNBC", link: `https://x/${title}`, published: "2026-10-17T12:00:00Z", tickers });
+  const rows = [
+    row("a", ["SPCX"]), row("b", ["TSLA"]), row("c", ["BTC"]), row("d", ["SPCX", "RKLB"]),
+    row("e", ["SPCX"]), row("f", ["SPCX"]), row("g", ["SPCX"]), row("h", ["spcx"]),
+  ];
+  const news = pickNews(rows, ["SPCX", "BTC-USD"]);
+  assert.deepEqual(news.map((n) => n.title), ["a", "c", "d", "e", "f"]);
+  assert.deepEqual(news[1].symbols, ["BTC-USD"]);
+  assert.equal(news[0].plain, "a plain");
+  assert.equal(pickNews(Array.from({ length: 30 }, (_, i) => row(`n${i}`, i % 2 ? ["SPCX"] : ["RKLB"])), ["SPCX", "RKLB", "ASTS"], 4, 6).length, 6);
+  assert.deepEqual(pickNews([row("x", [])], ["SPCX"]), []);
 });

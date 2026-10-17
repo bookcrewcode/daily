@@ -71,3 +71,24 @@ export function reportDue(nowMs: number, row: ReportRow | null, staleMs = 5 * 60
   if (row.status === "running") return nowMs - Date.parse(row.updated_at) > staleMs;
   return false;
 }
+export function toNews(r: Record<string, unknown>, held: string[]): ReportNews {
+  const tickers = Array.isArray(r.tickers) ? (r.tickers as unknown[]).map(String) : [];
+  const n = (v: unknown, d: number) => { const x = Number(v); return Number.isFinite(x) ? x : d; };
+  return {
+    symbols: held.filter((s) => tickers.includes(s) || (s.endsWith("-USD") && tickers.includes(s.slice(0, -4)))),
+    title: String(r.title ?? "").slice(0, 220), plain: String(r.plain ?? "").slice(0, 400), impact: n(r.impact, 1),
+    direction: String(r.direction ?? "none"), source: String(r.source ?? ""), link: String(r.link ?? ""), published: String(r.published ?? ""),
+  };
+}
+export function pickNews(rows: Record<string, unknown>[], held: string[], perSymbol = 4, max = 12): ReportNews[] {
+  const count = new Map<string, number>();
+  const out: ReportNews[] = [];
+  for (const r of rows) {
+    const x = toNews(r, held);
+    if (!x.symbols.length || x.symbols.every((s) => (count.get(s) ?? 0) >= perSymbol)) continue;
+    x.symbols.forEach((s) => count.set(s, (count.get(s) ?? 0) + 1));
+    out.push(x);
+    if (out.length >= max) break;
+  }
+  return out;
+}
