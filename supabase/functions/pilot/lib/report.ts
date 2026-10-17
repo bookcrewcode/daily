@@ -1,3 +1,4 @@
+import { addDays, etParts, isTradingDay, sessionBounds } from "./clock.ts";
 export type ReportHolding = { symbol: string; name: string; price: number; ret1d: number; ret5d: number; shares: number; value: number; gainPct: number | null };
 export type ReportNews = { symbols: string[]; title: string; plain: string; impact: number; direction: string; source: string; link: string; published: string };
 export type ReportEvent = { day: string; time_et: string; kind: string; label: string; symbol: string };
@@ -91,4 +92,10 @@ export function pickNews(rows: Record<string, unknown>[], held: string[], perSym
     if (out.length >= max) break;
   }
   return out;
+}
+export function newsSinceMs(nowMs: number): number {
+  let d = addDays(etParts(nowMs).date, -1);
+  for (let i = 0; i < 10 && !isTradingDay(d); i++) d = addDays(d, -1);
+  const dayBack = nowMs - 24 * 3_600_000;
+  return Math.min(dayBack, sessionBounds(d)?.closeMs ?? dayBack);
 }

@@ -2,11 +2,12 @@
 
 // Settings — the weekly buy the app records (Robinhood does the buying), the
 // daily AI budget, and the pause switch. Changing the weekly buy starts the
-// record from today: buys before today are already in what Ben typed.
+// record from today, or from tomorrow once today's buy has happened: earlier
+// buys are already in the numbers Ben typed from Robinhood.
 
 import { useState } from "react";
 import { Card } from "../ui";
-import { etDate } from "@/lib/desk/clock";
+import { recurringSinceFor } from "@/lib/portfolio/weekly";
 import { saveSettings, type PfSettings } from "@/lib/portfolio/api";
 
 const DAYS: [number, string][] = [[1, "Mon"], [2, "Tue"], [3, "Wed"], [4, "Thu"], [5, "Fri"]];
@@ -28,7 +29,7 @@ export default function PortfolioSettings({ uid, settings, onSaved }: { uid: str
     if (!(c >= 0 && c <= 5)) { setMsg("The daily AI limit must be between $0 and $5."); return; }
     const scheduleChanged = JSON.stringify(recurring) !== JSON.stringify(settings.recurring.map((r) => ({ symbol: r.symbol, usd: r.usd }))) || dow !== settings.buy_dow;
     setBusy(true);
-    const e = await saveSettings(uid, { recurring, buy_dow: dow, cap_usd_day: c, paused, ...(scheduleChanged ? { recurring_since: etDate(Date.now()) } : {}) });
+    const e = await saveSettings(uid, { recurring, buy_dow: dow, cap_usd_day: c, paused, ...(scheduleChanged ? { recurring_since: recurringSinceFor(Date.now()) } : {}) });
     setBusy(false);
     setMsg(e || "Saved.");
     if (!e) onSaved();
@@ -69,6 +70,7 @@ export default function PortfolioSettings({ uid, settings, onSaved }: { uid: str
         </div>
         <p className="text-[10px] text-[var(--text-4)] mt-1.5 leading-relaxed">
           If the buy day is a market holiday, Robinhood buys on the next trading day, and the record follows it.
+          Saving a change starts the record today, or tomorrow if today&apos;s buy has already happened, since that buy is in the numbers you typed from Robinhood.
           {settings.recurring_since ? ` Recording weekly buys since ${settings.recurring_since}.` : " Nothing is recorded until you save a weekly buy."}
         </p>
       </Card>

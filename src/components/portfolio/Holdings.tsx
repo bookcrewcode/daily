@@ -81,7 +81,8 @@ function Field({ label, value, onChange, type = "text", decimal }: { label: stri
 }
 
 const kindLabel = (l: Lot) =>
-  l.kind === "start" ? "What Robinhood showed you owned that day. It replaces anything entered before it."
+  l.skipped ? "Skipped: Robinhood didn't buy this week, so it counts for nothing."
+  : l.kind === "start" ? "What Robinhood showed you owned that day. It replaces anything entered before it."
   : l.kind === "weekly" ? (l.assumed ? "Weekly Robinhood buy, recorded at the 9:35 price. Edit it to Robinhood's real fill." : "Weekly Robinhood buy, checked against Robinhood.")
   : l.shares < 0 ? "A sale you entered." : "A buy you entered.";
 
@@ -93,20 +94,34 @@ function LotList({ lots, onChanged }: { lots: Lot[]; onChanged: () => void }) {
     const e = await deleteLot(l.id);
     if (e) setMsg(e); else onChanged();
   };
+  // A weekly buy is never deleted: the app would record it again. Marking it skipped keeps the week accounted for.
+  const skip = async (l: Lot, skipped: boolean) => {
+    const e = await updateLot(l.id, { skipped });
+    if (e) setMsg(e); else onChanged();
+  };
   return (
     <div className="mt-3 border-t border-[var(--border-1)] pt-2 space-y-2.5">
       <p className="mono text-[9px] uppercase tracking-widest text-[var(--text-4)]">Each buy and sale, newest first</p>
+      {lots.some((l) => l.kind === "weekly") && <p className="text-[10px] text-[var(--text-4)] leading-relaxed">For a weekly buy Robinhood didn&apos;t make (no money in the account, or the recurring buy was paused), tap Didn&apos;t happen. It stays listed, crossed out, and counts for nothing.</p>}
       {[...lots].sort((a, b) => b.day.localeCompare(a.day) || b.created_at.localeCompare(a.created_at)).map((l) => editing === l.id ? (
         <LotEdit key={l.id} lot={l} onDone={(saved) => { setEditing(null); if (saved) onChanged(); }} />
       ) : (
         <div key={l.id} className="flex items-start justify-between gap-2">
           <div>
-            <p className="text-[12px]">{l.day} · {l.kind === "start" ? "owned" : l.shares < 0 ? "sold" : "bought"} {fmtShares(Math.abs(l.shares))} at {fmtMoney(l.price, 2)}</p>
+            <p className={`text-[12px] ${l.skipped ? "line-through opacity-50" : ""}`}>{l.day} · {l.kind === "start" ? "owned" : l.shares < 0 ? "sold" : "bought"} {fmtShares(Math.abs(l.shares))} at {fmtMoney(l.price, 2)}</p>
             <p className="text-[10px] text-[var(--text-4)] leading-relaxed">{kindLabel(l)}</p>
           </div>
           <div className="flex gap-3 shrink-0 pt-0.5">
-            <button onClick={() => setEditing(l.id)} className="text-[11px] font-semibold text-[var(--neon)]">Edit</button>
-            <button onClick={() => remove(l)} className="text-[11px] text-[var(--text-3)]">Delete</button>
+            {l.kind === "weekly" && l.skipped ? (
+              <button onClick={() => skip(l, false)} className="text-[11px] font-semibold text-[var(--neon)]">Undo</button>
+            ) : (
+              <>
+                <button onClick={() => setEditing(l.id)} className="text-[11px] font-semibold text-[var(--neon)]">Edit</button>
+                {l.kind === "weekly"
+                  ? <button onClick={() => skip(l, true)} className="text-[11px] text-[var(--text-3)]">Didn&apos;t happen</button>
+                  : <button onClick={() => remove(l)} className="text-[11px] text-[var(--text-3)]">Delete</button>}
+              </>
+            )}
           </div>
         </div>
       ))}
@@ -164,7 +179,7 @@ function AddForm({ uid, holdings, onDone }: { uid: string; holdings: Holding[]; 
       const c = await checkSymbol(sym);
       if (!c.ok) { setBusy(false); setErr(c.error); return; }
     }
-    const e = await addLot(uid, { symbol: sym, shares: action === "sell" ? -s : s, price: p, day, kind: action === "start" ? "start" : "manual", assumed: false, note: "" });
+    const e = await addLot(uid, { symbol: sym, shares: action === "sell" ? -s : s, price: p, day, kind: action === "start" ? "start" : "manual", assumed: false, skipped: false, note: "" });
     setBusy(false);
     if (e) setErr(e); else onDone(true);
   };

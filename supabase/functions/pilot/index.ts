@@ -14,7 +14,7 @@ import { addDays, etParts } from "./lib/clock.ts";
 import type { Bar } from "./lib/types.ts";
 import { holdingsOf, type Lot, type LotKind, type Quote } from "./lib/lots.ts";
 import { dueWeeklyLots, etMidnightMs, firstFiveMinutePrice, sharesFor, type Recurring } from "./lib/weekly.ts";
-import { MAX_TRIES, REPORT_ESTIMATE_USD, REPORT_FALLBACK, REPORT_MODEL, REPORT_SCHEMA, REPORT_SYSTEM, parseReport, pickNews, reportDue, reportPrompt, toNews, type ReportEvent, type ReportInput, type ReportMarket, type ReportRow } from "./lib/report.ts";
+import { MAX_TRIES, REPORT_ESTIMATE_USD, REPORT_FALLBACK, REPORT_MODEL, REPORT_SCHEMA, REPORT_SYSTEM, newsSinceMs, parseReport, pickNews, reportDue, reportPrompt, toNews, type ReportEvent, type ReportInput, type ReportMarket, type ReportRow } from "./lib/report.ts";
 import { tickPlan } from "./lib/tick.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -95,7 +95,7 @@ async function reportRow(uid: string, day: string): Promise<ReportRow | null | u
   return row ? { status: row.status as ReportRow["status"], tries: num(row.tries), updated_at: String(row.updated_at) } : null;
 }
 function toLot(r: J): Lot {
-  return { id: String(r.id), symbol: String(r.symbol), shares: num(r.shares), price: num(r.price), day: String(r.day), kind: (r.kind as LotKind) ?? "manual", assumed: r.assumed === true, note: String(r.note ?? ""), created_at: String(r.created_at ?? "") };
+  return { id: String(r.id), symbol: String(r.symbol), shares: num(r.shares), price: num(r.price), day: String(r.day), kind: (r.kind as LotKind) ?? "manual", assumed: r.assumed === true, skipped: r.skipped === true, note: String(r.note ?? ""), created_at: String(r.created_at ?? "") };
 }
 
 /* ── tick ───────────────────────────────────────────────────────────────── */
@@ -125,9 +125,10 @@ async function feed(uid: string): Promise<J> {
 async function recordLots(uid: string, s: Settings, now: number): Promise<J> {
   if (!s.recurring.length || !s.since) return { due: 0 };
   const today = etParts(now).date;
-  const ex = await rest(`pf_lots?user_id=eq.${uid}&kind=eq.weekly&day=gte.${addDays(today, -15)}&select=symbol,day`);
+  // dedupe on the scheduled buy day, so a weekly lot Ben re-dated or marked skipped is never re-created
+  const ex = await rest(`pf_lots?user_id=eq.${uid}&kind=eq.weekly&due_day=gte.${addDays(today, -15)}&select=symbol,due_day`);
   if (!ex.ok || !Array.isArray(ex.json)) return { error: "Couldn't read the recorded weekly buys." };
-  const due = dueWeeklyLots(now, { recurring: s.recurring, buyDow: s.buyDow, since: s.since }, (ex.json as J[]).map((x) => ({ symbol: String(x.symbol), day: String(x.day) })));
+  const due = dueWeeklyLots(now, { recurring: s.recurring, buyDow: s.buyDow, since: s.since }, (ex.json as J[]).map((x) => ({ symbol: String(x.symbol), day: String(x.due_day) })));
   if (!due.length) return { due: 0 };
   const bars = new Map<string, Bar[]>();
   const written: J[] = [];
@@ -142,7 +143,7 @@ async function recordLots(uid: string, s: Settings, now: number): Promise<J> {
     if (!price || shares <= 0) { waiting.push(`${d.symbol} ${d.day}`); continue; } // retried by the next tick
     const ins = await rest("pf_lots", {
       method: "POST", headers: { Prefer: "return=minimal" },
-      body: JSON.stringify({ user_id: uid, symbol: d.symbol, shares, price, day: d.day, kind: "weekly", assumed: true, note: `Robinhood weekly buy of $${d.usd}, assumed at the 9:35 price.` }),
+      body: JSON.stringify({ user_id: uid, symbol: d.symbol, shares, price, day: d.day, due_day: d.day, kind: "weekly", assumed: true, note: `Robinhood weekly buy of $${d.usd}, assumed at the 9:35 price.` }),
     });
     if (ins.ok || ins.status === 409) written.push({ symbol: d.symbol, day: d.day, price, shares });
   }
@@ -191,7 +192,7 @@ async function writeReport(uid: string, fromApp: boolean): Promise<J> {
   const spent = await spentToday(uid, t0);
   if (spent === null || spent + REPORT_ESTIMATE_USD > s.cap) return await fail(uid, day, "Today's AI budget is used up, so no report was written. It resets at midnight New York time.");
 
-  const lotsR = await rest(`pf_lots?user_id=eq.${uid}&select=id,symbol,shares,price,day,kind,assumed,note,created_at&order=day.asc&limit=2000`);
+  const lotsR = await rest(`pf_lots?user_id=eq.${uid}&select=id,symbol,shares,price,day,kind,assumed,skipped,note,created_at&order=day.asc&limit=2000`);
   if (!lotsR.ok || !Array.isArray(lotsR.json)) return await fail(uid, day, "Couldn't read your holdings.");
   const lots = (lotsR.json as J[]).map(toLot);
   const symbols = [...new Set(lots.map((l) => l.symbol.toUpperCase()))];
@@ -208,7 +209,7 @@ async function writeReport(uid: string, fromApp: boolean): Promise<J> {
   if (!held.length) return await fail(uid, day, "No prices came back for your holdings, so the report waits for the next try.");
   const syms = held.map((h) => h.symbol);
 
-  const since = new Date(t0 - 24 * 3_600_000).toISOString();
+  const since = new Date(newsSinceMs(t0)).toISOString(); // back to the last session's close: a Monday report covers the weekend
   // desk_news.tickers is jsonb, so the day's tagged headlines are matched to the holdings in code (pickNews)
   const newsR = await rest(`desk_news?tagged=eq.true&impact=gte.2&published=gte.${since}&select=title,plain,impact,direction,source,link,published,tickers&order=impact.desc,published.desc&limit=500`);
   const macroR = await rest(`desk_news?tagged=eq.true&impact=gte.4&venue=eq.macro&published=gte.${since}&select=title,plain,impact,direction,source,link,published,tickers&order=impact.desc,published.desc&limit=5`);

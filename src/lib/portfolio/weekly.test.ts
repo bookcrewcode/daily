@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buyDateForWeek, dueWeeklyLots, etMidnightMs, firstFiveMinutePrice, sharesFor } from "./weekly";
+import { buyDateForWeek, dueWeeklyLots, etMidnightMs, firstFiveMinutePrice, recurringSinceFor, sharesFor } from "./weekly";
 import type { Bar } from "../desk/types";
 
 const ms = (iso: string) => Date.parse(iso);
@@ -57,4 +57,11 @@ test("shares are cut to six decimals, like Robinhood's fractional shares", () =>
 test("midnight in New York, in both daylight and standard time", () => {
   assert.equal(etMidnightMs("2026-10-16"), ms("2026-10-16T04:00:00Z"));
   assert.equal(etMidnightMs("2026-12-01"), ms("2026-12-01T05:00:00Z"));
+});
+
+test("a weekly buy saved after that morning's buy starts recording tomorrow (the buy is in the typed numbers)", () => {
+  assert.equal(recurringSinceFor(ms("2026-10-21T13:00:00Z")), "2026-10-21"); // Wed 09:00, before the buy
+  assert.equal(recurringSinceFor(ms("2026-10-21T13:35:00Z")), "2026-10-21"); // 09:35, the bar is not final yet
+  assert.equal(recurringSinceFor(ms("2026-10-21T14:00:00Z")), "2026-10-22"); // 10:00, the buy has happened
+  assert.equal(recurringSinceFor(ms("2026-10-17T16:00:00Z")), "2026-10-17"); // Saturday: no buy today
 });

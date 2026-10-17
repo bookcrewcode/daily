@@ -15,11 +15,11 @@ export const PILOT_FN = `${SUPABASE_URL}/functions/v1/pilot`;
 const n = (v: unknown, d = 0) => { const x = Number(v); return Number.isFinite(x) ? x : d; };
 
 function toLot(r: Record<string, unknown>): Lot {
-  return { id: String(r.id), symbol: String(r.symbol), shares: n(r.shares), price: n(r.price), day: String(r.day), kind: (r.kind as LotKind) ?? "manual", assumed: r.assumed === true, note: String(r.note ?? ""), created_at: String(r.created_at ?? "") };
+  return { id: String(r.id), symbol: String(r.symbol), shares: n(r.shares), price: n(r.price), day: String(r.day), kind: (r.kind as LotKind) ?? "manual", assumed: r.assumed === true, skipped: r.skipped === true, note: String(r.note ?? ""), created_at: String(r.created_at ?? "") };
 }
 
 export async function loadLots(uid: string): Promise<{ lots: Lot[]; error: string }> {
-  const { data, error } = await supabase.from("pf_lots").select("id,symbol,shares,price,day,kind,assumed,note,created_at").eq("user_id", uid).order("day", { ascending: true }).limit(2000);
+  const { data, error } = await supabase.from("pf_lots").select("id,symbol,shares,price,day,kind,assumed,skipped,note,created_at").eq("user_id", uid).order("day", { ascending: true }).limit(2000);
   if (error) return { lots: [], error: "Couldn't load your holdings." };
   return { lots: ((data ?? []) as Record<string, unknown>[]).map(toLot), error: "" };
 }

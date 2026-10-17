@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { REPORT_SYSTEM, parseReport, pickNews, reportDue, reportPrompt, type ReportInput } from "./report";
+import { REPORT_SYSTEM, newsSinceMs, parseReport, pickNews, reportDue, reportPrompt, type ReportInput } from "./report";
 
 const input: ReportInput = {
   day: "2026-10-16",
@@ -65,4 +65,11 @@ test("news is matched to holdings in code: a coin matches its -USD holding, four
   assert.equal(news[0].plain, "a plain");
   assert.equal(pickNews(Array.from({ length: 30 }, (_, i) => row(`n${i}`, i % 2 ? ["SPCX"] : ["RKLB"])), ["SPCX", "RKLB", "ASTS"], 4, 6).length, 6);
   assert.deepEqual(pickNews([row("x", [])], ["SPCX"]), []);
+});
+
+test("the report's news starts at the last session's close, or 24 hours back if that is earlier", () => {
+  const at = (iso: string) => Date.parse(iso);
+  assert.equal(newsSinceMs(at("2026-10-19T12:30:00Z")), at("2026-10-16T20:00:00Z")); // Monday 08:30: back to Friday's close
+  assert.equal(newsSinceMs(at("2026-10-21T12:30:00Z")), at("2026-10-20T12:30:00Z")); // Wednesday: 24 hours (Tuesday's close is later)
+  assert.equal(newsSinceMs(at("2026-11-27T13:30:00Z")), at("2026-11-25T21:00:00Z")); // day after Thanksgiving: Wednesday's close (EST)
 });

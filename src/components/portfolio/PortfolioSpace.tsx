@@ -25,6 +25,7 @@ export default function PortfolioSpace({ uid }: { uid: string }) {
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState("");
   const [priceErr, setPriceErr] = useState("");
+  const [pricesLoaded, setPricesLoaded] = useState(false); // no totals until the first prices arrive, so $0 never flashes
 
   const load = useCallback(async () => {
     const [l, s] = await Promise.all([loadLots(uid), loadSettings(uid)]);
@@ -35,6 +36,7 @@ export default function PortfolioSpace({ uid }: { uid: string }) {
     const q = await loadQuotes([...new Set(l.lots.map((x) => x.symbol.toUpperCase()))]);
     setQuotes(q.quotes);
     setPriceErr(q.error);
+    setPricesLoaded(true);
   }, [uid]);
   useEffect(() => { Promise.resolve().then(load); }, [load]);
   useEffect(() => {
@@ -46,6 +48,7 @@ export default function PortfolioSpace({ uid }: { uid: string }) {
 
   const { holdings, totals } = holdingsOf(lots, quotes);
   const shown: Gear = gear ?? (holdings.length ? "report" : "holdings");
+  const allMissing = holdings.length > 0 && totals.missing.length === holdings.length;
 
   return (
     <div className="pt-3">
@@ -55,7 +58,14 @@ export default function PortfolioSpace({ uid }: { uid: string }) {
       </div>
 
       <Card className="mt-2">
-        {holdings.length ? (
+        {holdings.length && !pricesLoaded ? (
+          <div className="skeleton h-12" />
+        ) : allMissing ? (
+          <>
+            <p className="text-sm text-[var(--text-2)] leading-relaxed">No prices came back right now, so the totals wait instead of showing a wrong number. Your entries are safe; prices load again on the next refresh, every five minutes.</p>
+            {priceErr && <p className="text-[11px] text-orange-400 mt-2">{priceErr}</p>}
+          </>
+        ) : holdings.length ? (
           <>
             <div className="flex items-baseline gap-5">
               <Stat big value={fmtMoney(totals.value, 2)} label="worth now" />
@@ -88,7 +98,7 @@ export default function PortfolioSpace({ uid }: { uid: string }) {
 
       <div key={shown} className="tab-enter">
         {shown === "holdings" && <Holdings uid={uid} lots={lots} holdings={holdings} onChanged={load} />}
-        {shown === "report" && <Report uid={uid} hasHoldings={holdings.length > 0} paused={settings?.paused ?? false} />}
+        {shown === "report" && <Report uid={uid} hasHoldings={holdings.length > 0} paused={settings?.paused ?? false} capUsd={settings?.cap_usd_day ?? 1} />}
         {shown === "settings" && (settings ? <PortfolioSettings uid={uid} settings={settings} onSaved={load} /> : (
           <Card className="mt-3"><p className="text-sm text-[var(--text-2)]">Couldn&apos;t load the settings.</p></Card>
         ))}

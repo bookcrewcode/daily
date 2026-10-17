@@ -60,3 +60,11 @@ export function etMidnightMs(day: string): number {
   const off = (etParts(Date.UTC(y, m - 1, d, 12)).hour - 12) * 3_600_000;
   return Date.UTC(y, m - 1, d) - off;
 }
+
+// The first buy day the app records, for a weekly buy saved now: today until today's 09:30 bar
+// is final, then tomorrow (a buy made earlier today is already in the numbers Ben typed).
+export function recurringSinceFor(nowMs: number): string {
+  const today = etParts(nowMs).date;
+  const b = sessionBounds(today);
+  return b && nowMs >= b.openMs + SETTLE_MS ? addDays(today, 1) : today;
+}

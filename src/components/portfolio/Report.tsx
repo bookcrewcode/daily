@@ -11,10 +11,10 @@ import { fmtPct } from "@/lib/desk/api";
 import { etDate, etParts, isTradingDay } from "@/lib/desk/clock";
 import { loadReports, spentSince, writeReportNow, type ReportRowFull } from "@/lib/portfolio/api";
 import { etMidnightMs } from "@/lib/portfolio/weekly";
-import type { ReportNews } from "@/lib/portfolio/report";
+import { REPORT_ESTIMATE_USD, type ReportNews } from "@/lib/portfolio/report";
 import { toneOf } from "./fmt";
 
-export default function Report({ uid, hasHoldings, paused }: { uid: string; hasHoldings: boolean; paused: boolean }) {
+export default function Report({ uid, hasHoldings, paused, capUsd }: { uid: string; hasHoldings: boolean; paused: boolean; capUsd: number }) {
   const [reports, setReports] = useState<ReportRowFull[]>([]);
   const [spent, setSpent] = useState<number | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -33,6 +33,10 @@ export default function Report({ uid, hasHoldings, paused }: { uid: string; hasH
     setLoaded(true);
   }, [uid]);
   useEffect(() => { Promise.resolve().then(load); }, [load]);
+  useEffect(() => {
+    const id = setInterval(load, 60_000); // the 08:30 report shows up without a reload
+    return () => clearInterval(id);
+  }, [load]);
 
   const writeNow = async () => {
     setBusy(true);
@@ -51,7 +55,8 @@ export default function Report({ uid, hasHoldings, paused }: { uid: string; hasH
   const done = reports.filter((x) => x.status === "done");
   const shown = done.find((x) => x.day === pick) ?? done[0] ?? null;
   const beforeTime = p.hour * 60 + p.minute < 8 * 60 + 30;
-  const canWrite = hasHoldings && !paused && !busy && (!todays || (todays.status !== "running" && todays.tries < 3));
+  const budgetGone = spent !== null && spent + REPORT_ESTIMATE_USD > capUsd;
+  const canWrite = hasHoldings && !paused && !busy && !budgetGone && (!todays || (todays.status !== "running" && todays.tries < 3));
 
   let status: string;
   if (!hasHoldings) status = "Add what you own on the Holdings page first; the report is about your stocks.";
@@ -59,6 +64,7 @@ export default function Report({ uid, hasHoldings, paused }: { uid: string; hasH
   else if (todays?.status === "done") status = `Today's report is below.`;
   else if (todays?.status === "running") status = "Today's report is being written right now.";
   else if (todays?.status === "failed") status = `Today's report didn't work: ${todays.error}${todays.tries >= 3 ? " It tries again tomorrow." : ""}`;
+  else if (budgetGone) status = `Today's AI budget is used up ($${(spent ?? 0).toFixed(2)} of your $${capUsd.toFixed(2)} limit), so the report and the news reading resume after midnight New York time.`;
   else if (!isTradingDay(today)) status = "The market is closed today, so no report is written on its own.";
   else if (beforeTime) status = "Today's report arrives at 8:30 New York time.";
   else status = "Today's report hasn't arrived yet. It retries every five minutes until the close.";

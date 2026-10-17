@@ -3,13 +3,14 @@
 //   start   "I already own this": the shares and average cost Robinhood shows on that day.
 //           It replaces everything entered for that stock before it (a snapshot), so
 //           re-entering it is how the record is brought back in line with Robinhood.
-//   weekly  the recurring Robinhood buy, recorded by the app (assumed until Ben checks it)
+//   weekly  the recurring Robinhood buy, recorded by the app (assumed until Ben checks it);
+//           marked skipped, rather than deleted, when Robinhood didn't buy that week
 //   manual  a buy (positive shares) or a sale (negative shares) Ben entered
 // Lots apply in date order, and in the order they were entered on the same day.
 // A sale takes shares out at average cost; selling more than is held stops at zero.
 
 export type LotKind = "start" | "weekly" | "manual";
-export type Lot = { id: string; symbol: string; shares: number; price: number; day: string; kind: LotKind; assumed: boolean; note: string; created_at: string };
+export type Lot = { id: string; symbol: string; shares: number; price: number; day: string; kind: LotKind; assumed: boolean; skipped: boolean; note: string; created_at: string };
 export type Quote = { price: number; prevClose: number | null; name?: string };
 export type Holding = {
   symbol: string; name: string; shares: number; cost: number; avgCost: number; realized: number;
@@ -34,7 +35,7 @@ export function holdingsOf(lots: Lot[], quotes: Record<string, Quote>): { holdin
   let realizedAll = 0;
   for (const [symbol, list] of bySym) {
     let shares = 0, cost = 0, realized = 0, assumed = 0;
-    for (const l of [...list].sort(lotOrder)) {
+    for (const l of list.filter((x) => !x.skipped).sort(lotOrder)) {
       if (l.kind === "start") { shares = Math.max(0, l.shares); cost = shares * l.price; assumed = 0; continue; }
       if (l.shares > 0) { shares += l.shares; cost += l.shares * l.price; if (l.assumed) assumed++; continue; }
       const sell = Math.min(-l.shares, shares);

@@ -5,7 +5,7 @@ import { holdingsOf, type Lot, type LotKind } from "./lots";
 let seq = 0;
 const lot = (symbol: string, shares: number, price: number, day: string, kind: LotKind = "manual", extra: Partial<Lot> = {}): Lot => {
   seq++;
-  return { id: `l${seq}`, symbol, shares, price, day, kind, assumed: false, note: "", created_at: new Date(Date.UTC(2026, 9, 16, 12) + seq * 1000).toISOString(), ...extra };
+  return { id: `l${seq}`, symbol, shares, price, day, kind, assumed: false, skipped: false, note: "", created_at: new Date(Date.UTC(2026, 9, 16, 12) + seq * 1000).toISOString(), ...extra };
 };
 const close = (a: number | null, b: number) => assert.ok(a !== null && Math.abs(a - b) < 1e-6, `${a} != ${b}`);
 
@@ -87,4 +87,14 @@ test("symbols merge whatever their case", () => {
   const { holdings } = holdingsOf([lot("spcx", 1, 100, "2026-10-01"), lot("SPCX", 1, 120, "2026-10-02")], { SPCX: { price: 110, prevClose: 110 } });
   assert.equal(holdings.length, 1);
   close(holdings[0].shares, 2);
+});
+
+test("a weekly buy marked skipped (Robinhood didn't buy that week) counts for nothing", () => {
+  const { holdings } = holdingsOf(
+    [lot("SPCX", 5, 140, "2026-10-12", "start"), lot("SPCX", 2.7, 148, "2026-10-14", "weekly", { assumed: true, skipped: true }), lot("SPCX", 2.6, 150, "2026-10-21", "weekly", { assumed: true })],
+    { SPCX: { price: 150, prevClose: 150 } },
+  );
+  close(holdings[0].shares, 7.6);
+  close(holdings[0].cost, 700 + 2.6 * 150);
+  assert.equal(holdings[0].assumedLots, 1);
 });
