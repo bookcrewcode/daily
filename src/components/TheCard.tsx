@@ -19,9 +19,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase, todayStr } from "@/lib/supabase";
 import {
-  type GameDayRow, type DayItem, type Splits,
+  type GameDayRow, type DayItem, type Splits, type Pillar,
   emptyDay, dayTotal, bonusCount, isStreakDay, winBar,
   normalizeItems, sortItems, countDone, newItemId,
+  signalPillars, signalCount, noiseItems, PILLARS,
   computeStreak, daysWon, winPace, levelInfo, weekDays, weekBand, weekStart, seasonDay,
   addDays, diffDays, secOfDay, fmtClock, fmtDelta, fmtDur, partBests,
   SEASON_START, SEASON_END, SEASON_DAYS, WIN_TARGET, WEEK_LABELS,
@@ -90,6 +91,11 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   const [addOpen, setAddOpen] = useState(false);
   const [aTime, setATime] = useState("");
   const [aWhat, setAWhat] = useState("");
+  const [aPillar, setAPillar] = useState<Pillar | "">("");
+
+  // signal pillar UI
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [pillarPick, setPillarPick] = useState<string | null>(null);
 
   // driving shifts — the bonus chip logs REAL money, not a mystery checkbox
   const [todayGigs, setTodayGigs] = useState<Gig[]>([]);
@@ -297,6 +303,10 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   const nextBlocks = blocks.filter((b) => b.time && b.time >= nowT).slice(0, 3);
   const weekLabel = WEEK_LABELS[weekStart(today)];
 
+  const pillars = signalPillars(items);
+  const signal = signalCount(items);
+  const noise = noiseItems(items);
+
   // PBs exclude today (still in progress) and frozen days
   const pbs = useMemo(() => partBests(days, today), [days, today]);
   const closedSec = row.splits?.closed;
@@ -411,14 +421,25 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
       time: /^([01]\d|2[0-3]):[0-5]\d$/.test(t) ? t : "",
       what: what.slice(0, 200),
       src: "card",
+      ...(aPillar ? { pillar: aPillar as Pillar } : {}),
     };
     const ok = await saveList([...itemsRef.current, item], "add", secOfDay());
-    if (ok) { setAWhat(""); setATime(""); sfx.pop(); }
+    if (ok) { setAWhat(""); setATime(""); setAPillar(""); sfx.pop(); }
   }
 
   async function removeItem(id: string) {
     if (saving) return;
     await saveList(itemsRef.current.filter((x) => x.id !== id), `x_${id}`, secOfDay());
+  }
+
+  async function setItemPillar(id: string, pillar: Pillar | undefined) {
+    const next = itemsRef.current.map((x) => x.id === id ? { ...x, pillar } : x);
+    await saveList(next, `p_${id}`, secOfDay());
+    setPillarPick(null);
+  }
+
+  function toggleCollapse(key: string) {
+    setCollapsed((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
   }
 
   async function patch(fields: Partial<GameDayRow>, key: string): Promise<boolean> {
@@ -561,10 +582,95 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         </div>
       ) : (
         <>
-          {/* TODAY'S LIST — the same array the Plan chat writes */}
-          <div className="mt-4 rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5">
+          {/* SIGNAL — the pillars that MUST get done today */}
+          {signal.total > 0 && (
+            <div className="mt-4 rounded-xl border border-[#58a6ff]/25 bg-[#0d1520] p-3.5">
+              <div className="flex items-baseline justify-between mb-2">
+                <Eyebrow>Signal</Eyebrow>
+                <p className="mono text-[10px]" style={{ color: signal.done >= signal.total ? "var(--ok)" : "#58a6ff" }}>
+                  {signal.done}/{signal.total} pillar{signal.total === 1 ? "" : "s"}
+                </p>
+              </div>
+              <div className="flex gap-1 mb-3">
+                {pillars.map((p) => (
+                  <div key={p.key} className="flex-1 h-1.5 rounded-full transition-colors duration-500"
+                    style={{ background: p.done ? "var(--ok)" : "rgba(88,166,255,0.25)" }} />
+                ))}
+              </div>
+              <div className="space-y-2">
+                {pillars.map((p) => {
+                  const pDone = p.items.filter((i) => i.done).length;
+                  const isOpen = !collapsed.has(p.key);
+                  return (
+                    <div key={p.key} style={{ borderLeft: `3px solid ${p.done ? "var(--ok)" : "#58a6ff"}` }}
+                      className={`rounded-r-xl overflow-hidden transition-colors ${p.done ? "bg-[var(--ok)]/[0.06]" : "bg-[#131d2b]"}`}>
+                      <button onClick={() => toggleCollapse(p.key)}
+                        className="w-full px-3 py-2.5 flex items-center justify-between active:scale-[0.99]">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          {p.done ? (
+                            <span className="w-5 h-5 rounded-md bg-[var(--ok)] grid place-items-center text-[11px] font-black text-black shrink-0">✓</span>
+                          ) : (
+                            <span className="text-[8px] font-bold tracking-widest uppercase shrink-0 px-1.5 py-0.5 rounded bg-[#58a6ff]/15 text-[#58a6ff]">Signal</span>
+                          )}
+                          <div className="min-w-0 text-left">
+                            <p className={`text-[13px] font-semibold leading-tight ${p.done ? "text-[var(--text-3)] line-through" : ""}`}>{p.label}</p>
+                            <p className="text-[10px] mono mt-0.5" style={{ color: p.done ? "var(--ok)" : "#58a6ff" }}>
+                              {pDone}/{p.items.length} done
+                            </p>
+                          </div>
+                        </div>
+                        <span className="text-[10px] text-[var(--text-4)]">{isOpen ? "▾" : "▸"}</span>
+                      </button>
+                      {isOpen && (
+                        <div className="px-3 pb-2.5 space-y-1">
+                          {p.items.map((it) => (
+                            <div key={it.id} className="flex items-center gap-2 py-0.5">
+                              <button onClick={() => toggleItem(it)} disabled={!!saving}
+                                className={`w-5 h-5 rounded-md grid place-items-center shrink-0 text-[10px] font-black active:scale-90 disabled:opacity-50 ${
+                                  it.done ? "bg-[var(--ok)] text-black" : "border border-white/20"}`}>
+                                {it.done ? "✓" : ""}
+                              </button>
+                              <button onClick={() => toggleItem(it)} disabled={!!saving}
+                                className="min-w-0 flex-1 text-left active:scale-[0.99] disabled:opacity-60">
+                                <p className={`text-[12px] leading-snug ${it.done ? "line-through text-[var(--text-3)]" : ""}`}>{it.what}</p>
+                              </button>
+                              <div className="relative">
+                                <button onClick={() => setPillarPick(pillarPick === it.id ? null : it.id)}
+                                  className="text-[8px] px-1.5 py-0.5 rounded bg-[#58a6ff]/10 text-[#58a6ff] active:scale-90 opacity-50">
+                                  {PILLARS.find((x) => x.key === it.pillar)?.label.slice(0, 3) ?? "?"}
+                                </button>
+                                {pillarPick === it.id && (
+                                  <div className="absolute right-0 top-6 z-20 bg-[#1c2333] border border-[var(--border-2)] rounded-lg shadow-xl py-1 min-w-[120px]">
+                                    {PILLARS.map((o) => (
+                                      <button key={o.key} onClick={() => setItemPillar(it.id, o.key)}
+                                        className={`block w-full text-left px-3 py-1.5 text-[11px] active:bg-white/10 ${it.pillar === o.key ? "text-[#58a6ff] font-semibold" : "text-[var(--text-2)]"}`}>
+                                        {o.label}
+                                      </button>
+                                    ))}
+                                    <button onClick={() => setItemPillar(it.id, undefined)}
+                                      className="block w-full text-left px-3 py-1.5 text-[11px] text-[var(--text-4)] active:bg-white/10">
+                                      Remove from signal
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                              <button onClick={() => removeItem(it.id)} disabled={!!saving}
+                                className="opacity-20 text-[10px] active:scale-90 disabled:opacity-10">✕</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* TODAY'S LIST — noise items (no pillar) + flat view when no signal */}
+          <div className={`${signal.total > 0 ? "mt-3" : "mt-4"} rounded-xl border border-[var(--border-1)] bg-[var(--card)] p-3.5`}>
             <div className="flex items-baseline justify-between mb-2">
-              <Eyebrow>Today&apos;s list</Eyebrow>
+              <Eyebrow>{signal.total > 0 ? "Everything else" : "Today’s list"}</Eyebrow>
               {total > 0 && (
                 <p className="mono text-[10px]" style={{ color: done >= bar ? "var(--ok)" : "var(--text-4)" }}>
                   {done >= bar ? "streak safe" : `${bar - done} more for the streak`}
@@ -582,8 +688,8 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
                 </button>
               </div>
             ) : (
-              <div className="space-y-1.5">
-                {items.map((it) => (
+              <div className={`space-y-1.5 ${signal.total > 0 && noise.length > 0 ? "opacity-70" : ""}`}>
+                {(signal.total > 0 ? noise : items).map((it) => (
                   <div key={it.id}
                     className={`group rounded-xl border px-2.5 py-2.5 flex items-center gap-2.5 transition-colors ${
                       it.done ? "bg-[var(--ok)]/[0.07] border-[var(--ok)]/30" : "bg-[var(--raised)] border-[var(--border-1)]"}`}>
@@ -603,27 +709,60 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
                         {it.done && typeof it.at === "number" && <span className="opacity-70"> · done {fmtClock(it.at)}</span>}
                       </p>
                     </button>
+                    <div className="relative">
+                      <button onClick={() => setPillarPick(pillarPick === it.id ? null : it.id)}
+                        aria-label="Assign signal pillar"
+                        className={`text-[8px] px-1.5 py-0.5 rounded active:scale-90 ${it.pillar ? "bg-[#58a6ff]/10 text-[#58a6ff]" : "bg-white/5 text-[var(--text-4)]"}`}>
+                        {it.pillar ? PILLARS.find((x) => x.key === it.pillar)?.label.slice(0, 3) : "tag"}
+                      </button>
+                      {pillarPick === it.id && (
+                        <div className="absolute right-0 top-6 z-20 bg-[#1c2333] border border-[var(--border-2)] rounded-lg shadow-xl py-1 min-w-[120px]">
+                          {PILLARS.map((o) => (
+                            <button key={o.key} onClick={() => setItemPillar(it.id, o.key)}
+                              className={`block w-full text-left px-3 py-1.5 text-[11px] active:bg-white/10 ${it.pillar === o.key ? "text-[#58a6ff] font-semibold" : "text-[var(--text-2)]"}`}>
+                              {o.label}
+                            </button>
+                          ))}
+                          {it.pillar && (
+                            <button onClick={() => setItemPillar(it.id, undefined)}
+                              className="block w-full text-left px-3 py-1.5 text-[11px] text-[var(--text-4)] active:bg-white/10">
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                     <button onClick={() => removeItem(it.id)} disabled={!!saving}
                       aria-label={`Remove ${it.what}`}
                       className="opacity-25 text-xs px-1 active:scale-90 disabled:opacity-10">✕</button>
                   </div>
                 ))}
+                {signal.total > 0 && noise.length === 0 && (
+                  <p className="text-[11px] text-[var(--text-4)] py-2">All items are tagged as signal. Add non-signal items below.</p>
+                )}
               </div>
             )}
 
             {addOpen ? (
-              <div className="mt-2 flex gap-1.5">
-                <input value={aTime} onChange={(e) => setATime(e.target.value)} disabled={!!saving}
-                  placeholder="09:00" inputMode="numeric"
-                  className="w-20 rounded-lg bg-black/30 px-2.5 py-2 outline-none text-sm mono" />
-                <input value={aWhat} onChange={(e) => setAWhat(e.target.value)} disabled={!!saving} autoFocus
-                  onKeyDown={(e) => { if (e.key === "Enter") addItem(); }}
-                  placeholder="what needs doing"
-                  className="flex-1 min-w-0 rounded-lg bg-black/30 px-3 py-2 outline-none text-sm" />
-                <button onClick={addItem} disabled={!!saving || !aWhat.trim()}
-                  className="rounded-lg bg-[var(--neon)] text-black text-sm font-bold px-3 active:scale-95 disabled:opacity-40">
-                  {saving === "add" ? "…" : "add"}
-                </button>
+              <div className="mt-2 space-y-1.5">
+                <div className="flex gap-1.5">
+                  <input value={aTime} onChange={(e) => setATime(e.target.value)} disabled={!!saving}
+                    placeholder="09:00" inputMode="numeric"
+                    className="w-20 rounded-lg bg-black/30 px-2.5 py-2 outline-none text-sm mono" />
+                  <input value={aWhat} onChange={(e) => setAWhat(e.target.value)} disabled={!!saving} autoFocus
+                    onKeyDown={(e) => { if (e.key === "Enter") addItem(); }}
+                    placeholder="what needs doing"
+                    className="flex-1 min-w-0 rounded-lg bg-black/30 px-3 py-2 outline-none text-sm" />
+                  <button onClick={addItem} disabled={!!saving || !aWhat.trim()}
+                    className="rounded-lg bg-[var(--neon)] text-black text-sm font-bold px-3 active:scale-95 disabled:opacity-40">
+                    {saving === "add" ? "…" : "add"}
+                  </button>
+                </div>
+                <select value={aPillar} onChange={(e) => setAPillar(e.target.value as Pillar | "")}
+                  className="rounded-lg bg-black/30 px-2.5 py-1.5 outline-none text-[11px] text-[var(--text-3)]">
+                  <option value="">no signal pillar</option>
+                  {PILLARS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+                </select>
               </div>
             ) : (
               <button onClick={() => setAddOpen(true)} className="mono text-[10px] text-[var(--neon)] mt-2 active:scale-95">＋ add a line</button>
