@@ -1,0 +1,204 @@
+// The Overseer agent: one Durable Object for Ben. It owns the brain's state,
+// a durable inbox (Telegram updates) and outbox (messages still to send),
+// and the every-minute tick. Every decision lives in core/brain.ts; this
+// file only wires storage, Telegram, Supabase and OpenRouter around it.
+import { Agent } from "agents";
+import { delivered, handle, undo as undoInBrain, type Deps, type Event, type Out } from "./core/brain";
+import { SupabaseDb } from "./core/db";
+import { openRouter } from "./core/llm";
+import { parseUpdate, TgClient } from "./core/telegram";
+import { authUrl, exchangeCode, GoogleCal, type Tokens } from "./google";
+import { initialState as freshState, type CalPort, type State } from "./core/types";
+import type { OverseerEnv } from "./env";
+import { afterSend, routeOf } from "./outbox";
+
+export function randomCode(): string {
+  const b = new Uint8Array(12);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+export class Overseer extends Agent<OverseerEnv, State> {
+  initialState: State = freshState();
+  private chain: Promise<unknown> = Promise.resolve();
+
+  async onStart() {
+    this.sql`create table if not exists inbox (id integer primary key autoincrement, body text not null, tries integer not null default 0)`;
+    this.sql`create table if not exists outbox (id integer primary key autoincrement, body text not null, tries integer not null default 0)`;
+    this.sql`create table if not exists kv (k text primary key, v text not null)`;
+    await this.schedule("* * * * *", "tick");
+  }
+
+  // One state change at a time: alarms and RPC calls interleave at every await.
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.catch(() => undefined);
+    return run;
+  }
+
+  private kvGet(k: string): string | null {
+    return this.sql<{ v: string }>`select v from kv where k = ${k}`[0]?.v ?? null;
+  }
+  private kvSet(k: string, v: string | null) {
+    if (v === null) this.sql`delete from kv where k = ${k}`;
+    else this.sql`insert into kv (k, v) values (${k}, ${v}) on conflict(k) do update set v = excluded.v`;
+  }
+
+  // The database is reached through the overseer-db edge function, so the
+  // service-role key never leaves Supabase.
+  private db() {
+    return new SupabaseDb(`${this.env.SUPABASE_URL}/functions/v1/overseer-db`, this.env.OVERSEER_DB_SECRET, this.env.BEN_USER_ID);
+  }
+  private cal(): CalPort | null {
+    const id = this.env.GOOGLE_CLIENT_ID;
+    const secret = this.env.GOOGLE_CLIENT_SECRET;
+    if (!id || !secret || !this.kvGet("google")) return null;
+    return new GoogleCal({
+      get: async () => JSON.parse(this.kvGet("google") ?? "null") as Tokens | null,
+      set: async (t) => this.kvSet("google", JSON.stringify(t)),
+    }, id, secret);
+  }
+
+  async googleCallback(code: string, state: string, origin: string): Promise<boolean> {
+    const want = this.kvGet("google_state");
+    this.kvSet("google_state", null);
+    const id = this.env.GOOGLE_CLIENT_ID;
+    const secret = this.env.GOOGLE_CLIENT_SECRET;
+    if (!want || state !== want || !code || !id || !secret) return false;
+    const t = await exchangeCode(code, id, secret, `${origin}/google/callback`);
+    if (!t) return false;
+    this.kvSet("google", JSON.stringify(t));
+    return true;
+  }
+  private deps(): Deps {
+    return { db: this.db(), llm: openRouter(this.env.OPENROUTER_API_KEY), cal: this.cal(), now: () => Date.now(), ids: () => crypto.randomUUID() };
+  }
+
+  // Returns true when an inbound update has to wait (settings unreadable).
+  private async step(e: Event): Promise<boolean> {
+    let deferred = false;
+    try {
+      const r = await handle(this.state, e, this.deps());
+      this.setState(r.state);
+      for (const o of r.out) this.sql`insert into outbox (body) values (${JSON.stringify(o)})`;
+      deferred = r.deferred === true;
+    } catch (err) {
+      console.error("[overseer] step failed", e.kind, err instanceof Error ? err.message : err);
+    }
+    await this.flush();
+    return deferred;
+  }
+
+  async tick() {
+    await this.serial(() => this.step({ kind: "tick" }));
+  }
+
+  // The webhook returns as soon as the update is stored; drain() does the work.
+  async inbound(update: unknown) {
+    this.sql`insert into inbox (body) values (${JSON.stringify(update)})`;
+    await this.schedule(1, "drain");
+  }
+
+  async drain() {
+    await this.serial(async () => {
+      const rows = this.sql<{ id: number; body: string; tries: number }>`select id, body, tries from inbox order by id limit 20`;
+      for (const r of rows) {
+        const wait = await this.step({ kind: "inbound", ev: parseUpdate(JSON.parse(r.body)) });
+        if (wait && r.tries < 10) {
+          // keep it (and everything after it, in order) and try again in 30 s
+          this.sql`update inbox set tries = tries + 1 where id = ${r.id}`;
+          await this.schedule(30, "drain");
+          return;
+        }
+        this.sql`delete from inbox where id = ${r.id}`;
+      }
+    });
+  }
+
+  // Send what's queued. Without readable settings everything waits. Dry run (or
+  // no linked chat) logs instead of sending. Telegram's outright refusals are
+  // dropped and logged as not delivered; other failures get three tries.
+  private async flush() {
+    const rows = this.sql<{ id: number; body: string; tries: number }>`select id, body, tries from outbox order by id limit 30`;
+    if (!rows.length) return;
+    const db = this.db();
+    const s = await db.settings();
+    const tg = new TgClient(this.env.TELEGRAM_BOT_TOKEN);
+    for (const r of rows) {
+      const o = JSON.parse(r.body) as Out;
+      const route = routeOf(o, s);
+      if (!route) return;
+      if (o.answer) await tg.answer(o.answer);
+      if (!o.text) {
+        this.sql`delete from outbox where id = ${r.id}`;
+        continue;
+      }
+      const peer = o.chat === "ben" ? "ben" : "partner";
+      let result: { ok: boolean; status: number } | "logged" = "logged";
+      if (!route.dry && route.chat !== null) {
+        const sent = (await tg.send(route.chat, o.text, o.buttons)) !== null;
+        result = { ok: sent, status: sent ? 200 : tg.lastStatus };
+      }
+      const next = afterSend(result, r.tries);
+      if (next === "delete") {
+        await db.logMessage({ direction: "out", peer, text: o.text, buttons: o.buttons ?? null, dry_run: result === "logged" });
+        // delivered for real, or a dry run where nothing goes out anyway
+        if (o.tag && (result !== "logged" || route.dry)) this.setState(delivered(this.state, o.tag));
+        this.sql`delete from outbox where id = ${r.id}`;
+      } else if (next === "drop") {
+        await db.logMessage({ direction: "out", peer, text: `[not delivered] ${o.text}`, buttons: null, dry_run: true });
+        this.sql`delete from outbox where id = ${r.id}`;
+      } else {
+        this.sql`update outbox set tries = tries + 1 where id = ${r.id}`;
+      }
+    }
+  }
+
+  async api(op: string, body: Record<string, unknown>, origin: string): Promise<Record<string, unknown>> {
+    const db = this.db();
+    const tg = new TgClient(this.env.TELEGRAM_BOT_TOKEN);
+    switch (op) {
+      case "status": {
+        const s = await db.settings();
+        return { ok: !!s, linked: !!s?.chat_id, paused: s?.paused ?? false, dry_run: s?.dry_run ?? true, google: !!this.kvGet("google") };
+      }
+      case "link": {
+        if (!(await tg.setWebhook(`${origin}/telegram`, this.env.TELEGRAM_WEBHOOK_SECRET))) return { ok: false, error: "Telegram didn't accept the webhook. Check the bot token." };
+        const code = randomCode();
+        const me = await tg.getMe();
+        if (!me || !(await db.patchSettings({ link_code: code }))) return { ok: false, error: "Couldn't make a link." };
+        return { ok: true, url: `https://t.me/${me}?start=link_${code}` };
+      }
+      case "invite": {
+        const name = String(body.name ?? "").trim().slice(0, 40);
+        if (!name) return { ok: false, error: "Add your friend's name first." };
+        const code = randomCode();
+        const me = await tg.getMe();
+        if (!me || !(await db.createInvite(name, code))) return { ok: false, error: "Couldn't make the invite." };
+        return { ok: true, url: `https://t.me/${me}?start=p_${code}` };
+      }
+      case "undo":
+        return this.serial(async () => {
+          const r = await undoInBrain(this.state, String(body.action_id ?? ""), this.deps());
+          this.setState(r.state);
+          return { ok: r.ok, text: r.text };
+        });
+      case "test":
+        await this.serial(() => this.step({ kind: "test" }));
+        return { ok: true };
+      case "pause":
+      case "resume":
+        // through the brain, so the pause is named in the wrap and the ladder resets
+        await this.serial(() => this.step({ kind: "app", command: op === "pause" ? "/pause" : "/resume" }));
+        return { ok: true };
+      case "google_start": {
+        if (!this.env.GOOGLE_CLIENT_ID || !this.env.GOOGLE_CLIENT_SECRET) return { ok: false, error: "Google sign-in isn't set up yet." };
+        const state = randomCode();
+        this.kvSet("google_state", state);
+        return { ok: true, url: authUrl(this.env.GOOGLE_CLIENT_ID, `${origin}/google/callback`, state) };
+      }
+      default:
+        return { ok: false, error: `Unknown request ${op}.` };
+    }
+  }
+}

@@ -1,10 +1,12 @@
 "use client";
 
-// The Overseer strip — one message, picked for the moment. Research-tuned:
-// morning = gain-framing + yesterday's intention (implementation intentions
-// have real ADHD evidence); evening = the streak/loss frame lives in the
-// UrgencyCard, so here we stay on patterns and momentum. Never leads with
-// failure — RSD-safe by design.
+// The Overseer strip: one message, picked for the moment. When the Overseer
+// agent (Telegram) has said something to Ben today, its latest message wins,
+// so the app and the phone tell the same story. Otherwise the research-tuned
+// fallback: morning = gain-framing + yesterday's intention (implementation
+// intentions have real ADHD evidence); evening = the streak/loss frame lives
+// in the UrgencyCard, so here we stay on patterns and momentum. Never leads
+// with failure: RSD-safe by design.
 
 import { useEffect, useState } from "react";
 import { supabase, WIN_KEYS, todayStr, dateStr } from "@/lib/supabase";
@@ -23,10 +25,18 @@ export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?
   useEffect(() => {
     (async () => {
       const since = new Date(); since.setDate(since.getDate() - 6);
-      const [{ data, error }, { data: todayPlan }] = await Promise.all([
+      const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+      const [{ data, error }, { data: todayPlan }, { data: said }] = await Promise.all([
         supabase.from("days").select("*").eq("user_id", uid).gte("day", dateStr(since)),
         supabase.from("nights").select("top3").eq("user_id", uid).eq("day", todayStr()).maybeSingle(),
+        supabase.from("overseer_messages").select("text").eq("user_id", uid).eq("direction", "out").eq("peer", "ben")
+          .gte("created_at", midnight.toISOString()).order("created_at", { ascending: false }).limit(1),
       ]);
+      const last = ((said ?? []) as { text: string }[])[0];
+      if (last?.text) {
+        setMsg({ head: "Overseer", body: last.text.slice(0, 280), tone: "good" });
+        return;
+      }
       // read-error guard: a transient failure must not be read as "no wins" —
       // empty rows would fabricate a false "zero taps yet" nudge. Keep whatever
       // message is already on screen and bail rather than treat null as truth.
@@ -46,7 +56,7 @@ export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?
       // MORNING: yesterday-you left instructions. Honor them.
       if (hour < 12 && top3.length > 0 && todayScore < 3) {
         setMsg({
-          head: "👁️ Overseer",
+          head: "Overseer",
           body: `Last night you chose: “${top3[0]}”. Don't decide anything — just do its first 2 minutes. Deciding is the trap; starting is the win.`,
           tone: "good",
         });
@@ -54,18 +64,18 @@ export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?
       }
       // stalled afternoon — smallest possible re-entry
       if (hour >= 15 && hour < 19 && todayScore === 0) {
-        setMsg({ head: "👁️ Overseer", body: "Zero taps yet today — that's not failure, that's a blocked start. Break the seal with the easiest toggle on this screen. One tap. Momentum follows action, not the other way around.", tone: "warn" });
+        setMsg({ head: "Overseer", body: "Zero taps yet today — that's not failure, that's a blocked start. Break the seal with the easiest toggle on this screen. One tap. Momentum follows action, not the other way around.", tone: "warn" });
         return;
       }
       // strong day — bank the identity, not just the points. After 7pm the
       // UrgencyCard owns the "streak on the line" story; don't contradict it.
       if (todayScore >= Math.ceil(WIN_KEYS.length * 0.7) && (hour < 19 || todayScore === WIN_KEYS.length)) {
-        setMsg({ head: "👁️ Overseer", body: `${todayScore}/${WIN_KEYS.length} today. This is what consistent looks like — remember this feeling tomorrow morning.`, tone: "good" });
+        setMsg({ head: "Overseer", body: `${todayScore}/${WIN_KEYS.length} today. This is what consistent looks like — remember this feeling tomorrow morning.`, tone: "good" });
         return;
       }
       // recurring weak link — pattern, not character
       if (weakCount <= 2 && rows.length >= 3) {
-        setMsg({ head: "👁️ Overseer", body: `${LABEL[weakest] ?? weakest} keeps slipping — ${weakCount}/7 days this week. That's a pattern, not a flaw. Do it FIRST tomorrow, before anything gets a vote.`, tone: "warn" });
+        setMsg({ head: "Overseer", body: `${LABEL[weakest] ?? weakest} keeps slipping — ${weakCount}/7 days this week. That's a pattern, not a flaw. Do it FIRST tomorrow, before anything gets a vote.`, tone: "warn" });
         return;
       }
       setMsg(null);
@@ -79,7 +89,7 @@ export default function Overseer({ uid, onOpenChat }: { uid: string; onOpenChat?
   return (
     <div className={`mt-3 rounded-2xl p-4 border ${warn ? "bg-orange-500/10 border-orange-500/40" : "bg-[var(--neon)]/10 border-[var(--neon)]/40"}`}>
       <p className={`text-xs uppercase tracking-widest mb-1 ${warn ? "text-orange-400" : "text-[var(--neon)]"}`}>{msg.head}</p>
-      <p className="text-sm font-medium leading-snug">{msg.body}</p>
+      <p className="text-sm font-medium leading-snug whitespace-pre-line">{msg.body}</p>
       {onOpenChat && (
         <button onClick={() => onOpenChat("overseer")}
           className={`mt-2 text-xs font-semibold ${warn ? "text-orange-300" : "text-[var(--neon)]"} underline underline-offset-2`}>

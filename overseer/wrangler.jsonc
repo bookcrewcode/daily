@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "overseer",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "vars": {
+    "SUPABASE_URL": "https://pciljeqsrricybdnhvsu.supabase.co",
+    "SUPABASE_ANON_KEY": "sb_publishable_pUix6c1Cx2GaJ1ZUzXJ32w_rJgGUYtZ",
+    "BEN_USER_ID": "f0e1e204-aa54-4a45-bbb5-99c83114fecb",
+    "APP_ORIGIN": "https://bookcrewcode.github.io"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "Overseer", "class_name": "Overseer" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Overseer"] }]
+}

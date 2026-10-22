@@ -21,7 +21,7 @@ import { supabase, todayStr } from "@/lib/supabase";
 import {
   type GameDayRow, type DayItem, type Splits, type Pillar,
   emptyDay, dayTotal, bonusCount, isStreakDay, winBar,
-  normalizeItems, sortItems, countDone, newItemId,
+  normalizeItems, sortItems, countDone, newItemId, rebase,
   signalPillars, signalCount, noiseItems, PILLARS,
   computeStreak, daysWon, winPace, levelInfo, weekDays, weekBand, weekStart, seasonDay,
   addDays, diffDays, secOfDay, fmtClock, fmtDelta, fmtDur, partBests,
@@ -29,6 +29,7 @@ import {
 } from "@/lib/theGame";
 import { splitsFor } from "@/lib/dayList";
 import { burstConfetti } from "@/lib/confetti";
+import Overseer from "@/components/Overseer";
 import { readPlanCache } from "@/lib/learnApi";
 import { loadDeskChip, deskChipText, type DeskChip } from "@/lib/desk/api";
 import { loadReadChip, readChipText, type ReadChip } from "@/lib/readingChip";
@@ -366,11 +367,16 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   // nights.items goes first (it's the shared source of truth with the Plan
   // chat); game_days carries the counts so the season map and the streak never
   // have to load every night row to know whether a day was won.
-  async function saveList(next: DayItem[], key: string, at: number): Promise<boolean> {
+  // `edit` is applied to the freshest list, not the copy on screen, so a tick
+  // made elsewhere since this screen loaded (the Overseer on Telegram, the Plan
+  // chat) survives. A failed read falls back to the list on screen.
+  async function saveList(edit: (items: DayItem[]) => DayItem[], key: string, at: number): Promise<boolean> {
     if (saving || dayRolled()) return false;
     setSaving(key); setErr("");
     try {
-      const sorted = sortItems(next);
+      const { data: row, error: readErr } = await supabase.from("nights")
+        .select("items").eq("user_id", uid).eq("day", today).maybeSingle();
+      const sorted = sortItems(rebase(readErr || !row ? null : row.items, itemsRef.current, edit));
       const { error } = await supabase.from("nights")
         .upsert({ user_id: uid, day: today, items: sorted }, { onConflict: "user_id,day" });
       if (error) { setErr("Couldn't save the list — try again."); return false; }
@@ -394,10 +400,9 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
   async function toggleItem(it: DayItem) {
     const at = secOfDay();                       // tap time, never resolve time
     const nextDone = !it.done;
-    const next = itemsRef.current.map((x) => x.id === it.id
+    const ok = await saveList((items) => items.map((x) => x.id === it.id
       ? { ...x, done: nextDone, at: nextDone ? at : undefined }
-      : x);
-    const ok = await saveList(next, `t_${it.id}`, at);
+      : x), `t_${it.id}`, at);
     if (!ok) return;
     if (nextDone) { sfx.coin(); buzz(12); } else sfx.pop();
     // a deadline checked off the list is a goal finished — close it for real,
@@ -423,18 +428,17 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
       src: "card",
       ...(aPillar ? { pillar: aPillar as Pillar } : {}),
     };
-    const ok = await saveList([...itemsRef.current, item], "add", secOfDay());
+    const ok = await saveList((items) => [...items, item], "add", secOfDay());
     if (ok) { setAWhat(""); setATime(""); setAPillar(""); sfx.pop(); }
   }
 
   async function removeItem(id: string) {
     if (saving) return;
-    await saveList(itemsRef.current.filter((x) => x.id !== id), `x_${id}`, secOfDay());
+    await saveList((items) => items.filter((x) => x.id !== id), `x_${id}`, secOfDay());
   }
 
   async function setItemPillar(id: string, pillar: Pillar | undefined) {
-    const next = itemsRef.current.map((x) => x.id === id ? { ...x, pillar } : x);
-    await saveList(next, `p_${id}`, secOfDay());
+    await saveList((items) => items.map((x) => x.id === id ? { ...x, pillar } : x), `p_${id}`, secOfDay());
     setPillarPick(null);
   }
 
@@ -544,6 +548,7 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
 
   return (
     <div className="pt-3">
+      <Overseer uid={uid} />
       {/* header: the ring is the list */}
       <div className="relative">
         <div className="glow-hero" />

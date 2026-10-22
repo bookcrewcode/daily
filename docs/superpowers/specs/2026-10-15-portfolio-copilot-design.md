@@ -1,0 +1,146 @@
+# Portfolio copilot: design
+
+Status: approved by Ben 2026-10-16 ("go"); section 4d added the same day from his themes. Replaces the paused Desk as the money part of the Daily app.
+
+## What Ben wants (his words, 2026-10-14 and 15)
+
+- "Get my money working for me ... a riskier savings account" that compounds for years, without "watching charts 24/7."
+- He buys $400 every week on Robinhood (Mondays until 2026-10-15, then Wednesdays: "stop buys on monday ... wednesday is the best"; he keeps the bank deposit on Monday and the buy on Wednesday), mostly SpaceX (SPCX), about $1.2k so far, and holds for the long run.
+- "Agents each day run reports on the individual stock, the market, etc., and then news around it."
+- Telegram alerts "if there's something important," with a yes or no, and "a breakdown with why it thinks so and why it has the conviction so I can learn from it."
+- Unlock days: test whether buying on them beats his normal weekly buys.
+- "Add alerts for high conviction plays through the day. We can do paper and track profitability before going with real money, and with real money still nothing crazy."
+
+## Lines this design keeps
+
+- **No order placement.** Nothing in the app places, cancels or changes a real order, and the app never holds broker credentials. Real money moves only when Ben taps in Robinhood himself. The weekly buys are Robinhood's own recurring investment, set up once by Ben in the Robinhood app.
+- **No autonomy grant.** Ben shared a Reddit guide (2026-10-15) whose step 3 tells Claude it may "execute trades without asking permission." This design never does that and never connects Robinhood's trading tools to Claude. If Ben later wants hands-off trading, Robinhood's own in-app agent with approvals off is his to set up.
+- **No borrowing, no options in v1.** Options can be added to the paper book later; they never get a real-money suggestion until they have their own paper record.
+- **News is data.** A headline can only ever lead to a paper play inside the guardrails; it can never trigger anything else.
+- **The Desk stays paused**, its data kept. Its tab becomes the Portfolio tab.
+- The app explains itself: every label defined on screen, no hover tooltips, no emojis (see the Daily app rules).
+
+## What it does
+
+### 1. Holdings
+
+Ben types his positions once: symbol, shares or coins, average cost. On Ben's buy day (a setting, Wednesday from 2026-10-15) the app adds the recurring buy as a new lot at the first five-minute price after the open, marked "assumed, edit if Robinhood filled differently." He can edit or delete any lot. The page shows value, gain or loss in dollars and percent, and each holding's share of the account.
+
+Later option, not in v1: read holdings from Robinhood's official read-only connection through a daily job on Ben's Mac, with every trading tool switched off.
+
+### 2. Morning report (08:30 ET, trading days)
+
+For each holding: price, day and week move, the tagged news that touched it in the last day with its plain-words explanation, and the events in the next two weeks (earnings, insider unlocks, Fed meetings). Then the market backdrop: S&P 500, Nasdaq, bitcoin, the 10-year yield. One model call writes a short plain summary (about 150 words) and "what to watch today." Saved in the app; Telegram gets a three-line version with a link.
+
+### 3. Events and the unlock test
+
+Unlock dates, earnings and Fed meetings live in the existing events calendar. SPCX's known unlocks: August 6 and September 9, 2026; the later tranches through June 2027 must be confirmed from the prospectus before they are entered. Three trading days before each event Ben gets a Telegram note: what happens, who can sell or what is announced, and how the stock moved at the previous ones.
+
+Drop-day alert: when a holding is down 5% or more on the day, Ben gets one Telegram note with the move, the news behind it in plain words, and how the stock did in the five days after its earlier 5% drops. It is information for an extra buy Ben may choose to make; it never suggests options. (A friend's tip Ben shared on 2026-10-15 was year-out out-of-the-money calls on 5% drop days; options stay out of v1.)
+
+The unlock test: on each unlock the app records the closing price on unlock day and five trading days later, and compares buying on unlock day with his recurring buy that week. A small table on the Portfolio tab shows the running result, so Ben can see from his own numbers whether buying extra on unlock days helps.
+
+### 4. High-conviction plays, paper only
+
+Through the trading day (stocks 09:30 to 16:00 ET, crypto 09:00 to 22:00 ET, every 15 minutes) the app looks for candidates on Ben's holdings and the watchlist (section 4c, up to 30 symbols):
+
+- a coded setup from the Desk's scanner (breakout, trend pullback and the others), or
+- a high-impact headline (impact 4 or 5) on one of those names, or
+- a policy or economic event that the map in section 4d links strongly to one of those names.
+
+No model is called unless a candidate exists. When one does, a single model call judges it and returns: long or short, entry, stop, target, size as a percent of the paper book, conviction from 0 to 1, the thesis in plain words, and the one thing that would prove it wrong. Only plays with conviction of at least 0.75 go further, at most three a day, and never the same symbol twice in a day.
+
+Each such play is opened in a separate paper book ($10,000 paper start) through the Desk's guardrail: a stop is required, the target must be at least 1.5 times as far as the stop, and one play may risk at most 1% of the paper book. Fills, stops, targets and time exits use the Desk's existing paper engine and costs.
+
+Ben gets a Telegram alert with the play, the reasoning, the conviction, what would prove it wrong, and Yes and No buttons. His answer is logged next to the play. The paper book records every play either way, so the app keeps two scorecards: **the AI's calls** (all plays) and **your calls** (the plays Ben said yes to). That shows whether the AI is any good and whether his own judgment adds to it.
+
+### 4b. Ideas from what Ben notices (social arbitrage)
+
+Ben, 2026-10-15: plays "like Chris Camillo's social arbitrage ... doesn't have to be basic finance bro numbers play all the time." The method: spot a consumer trend in real life or on social media before Wall Street does, then check whether it is big enough to move one company's sales.
+
+- **Idea inbox.** Ben sends an observation from his phone (a Telegram message to the alert bot, or a box in the app), e.g. "GTA VI trailer, Lucia's thong is a Victoria's Secret product."
+- **The app does the checks Camillo does,** in one research pass, and writes an idea card:
+  1. Which company and ticker it really points to (verify the ticker; the Reddit example wrote VSXY for Victoria's Secret, which trades as VSCO).
+  2. **Materiality:** how big the product or category is against the company's total sales, from the latest 10-Q, 10-K and earnings call.
+  3. **Is the trend still growing:** Wikipedia page views over the last 90 days (free official API), plus app-chart rank and Google's daily trending searches where they apply. Reddit mentions only once Ben adds a free Reddit API key in settings (Reddit refuses requests without one, checked 2026-10-15).
+  4. **Has the market noticed:** the stock's move since the trend began, news count, analyst mentions.
+  5. **Timing:** the next earnings date, when the trend would show up in reported sales.
+- The card ends with long, short or pass, a conviction from 0 to 1, the thesis, what would prove it wrong, and a horizon through the next earnings report. A take goes into the same paper book as the other plays, scored on the same graduation line, and labelled as a social-arbitrage play so its record can be read separately.
+- **The app hunts too** (Ben, 2026-10-15: "I want you also to be looking"). Every trading day at 07:00 ET:
+  1. **Gather risers, no model:** Wikipedia's most-viewed pages of the previous day against each page's 30-day average, App Store top free and top grossing apps that climbed in rank, Steam's most-played games that climbed, and Google's daily trending searches. All four sources are free and answered a test request on 2026-10-15. TikTok and Amazon have no allowed source, so they are left out.
+  2. **Sort, one cheap model call:** drop what can't move a public company (deaths, sports results, celebrities, holidays), and map the rest to a product and a verified ticker.
+  3. **Research the best three** with the same idea card as Ben's inbox. A take with conviction of at least 0.75 opens a paper play. Cards below that go on a "watching" list and are re-checked once a week, then dropped after four weeks unless the trend is still growing.
+  4. Telegram gets an alert only when a card opens a play, plus a short Monday note with the watching list.
+- Social plays carry who found them, so the scorecard shows **your finds** and **the app's finds** separately. Expect most cards to say pass, and expect the app's finds to come later than Ben's best ones: these sources show what many people already see, while Camillo's edge is noticing something in real life first. The scorecard will show whether the app's hunting is worth its cost.
+
+### 4c. Watchlist and lessons
+
+Ben's themes (2026-10-16). The scan watches these names, not the whole market, and Ben can edit every list in settings. All tickers below returned a live quote on 2026-10-16; EchoStar (SATS) did not and is left out.
+
+- **SpaceX, its field and its competitors:** SPCX (held), RKLB, ASTS, PL, LUNR, FLY, IRDM, GSAT, VSAT, AMZN (Kuiper satellites), TSLA (Musk link).
+- **AI and energy:** NVDA, AVGO, TSM, VRT, GEV, CEG, VST, TLN, OKLO, IREN, WULF, APLD.
+- **Social moves:** no fixed names. The ticker of any idea card that is on the watching list or has an open play joins the scan automatically and leaves when the card is dropped, at most five at a time.
+- **Policy and economy:** not a list of names but the map in section 4d, which links events to the names above.
+
+That is 23 fixed names plus up to five social ones, under the cap of 30. SOL, ETH and HYPE from the earlier candidate list are left out; Ben can add them in settings.
+
+Lessons:
+- Every closed paper play gets the Desk's plain-words review and a one-line lesson, and repeated lessons are counted, so the record of what worked and what didn't builds up for Ben to read.
+
+### 4d. Policy and economy map
+
+Ben, 2026-10-16: "Ontology that tracks how economic and policy moves impact equities in real time." The map links what happens in the economy and in government to the stocks it moves, then measures how much each link really moves prices, so trusted links rise and empty ones fade.
+
+- **Three layers.** Events (Fed decisions, inflation and jobs reports, tariffs, chip export rules, FAA launch licences, FCC spectrum rulings, nuclear (NRC) approvals, power and permitting rules, NASA and defense contracts, about 15 types to start), what each moves (interest rates, the dollar, oil and power prices, chip supply, launch cadence, spectrum), and the watchlist names plus a few market funds used as yardsticks (SPY, QQQ, IWM, TLT, XLE, XLU, SMH).
+- **Each link has a direction and a record.** For example: "FCC spectrum ruling, moves spectrum, helps or hurts ASTS, GSAT, SPCX," or "inflation hotter than expected, rates up, hurts RKLB and OKLO." A starter set of links is written by hand from these themes and shown to Ben before it goes live.
+- **In real time.** The news feed already runs every 15 minutes. Its cheap tagging call also labels each economic or policy item with its event type and whether it surprised up or down. The map then names the linked stocks and the expected direction.
+- **Measured, not assumed.** After each tagged event the app records how each linked stock moved one hour later and at the close, against the S&P 500. Each link keeps a count, its average move and how often the direction was right. A link with at least five events and the right direction at least 60% of the time is marked strong; a link that hasn't moved prices after ten events is greyed out.
+- **What it feeds.** The morning report lists today's scheduled events and which holdings and watchlist names they touch. A high-impact event on a strong link becomes a play candidate for the judge, under the same paper rules, labelled as a policy play with its own record. The Portfolio tab shows the map as plain sentences, for example: "Hotter inflation report: RKLB fell 2.1% more than the market on average, 7 of 9 times."
+- No new model calls beyond the feed's existing tagging. Release dates for the inflation, jobs and growth reports and the Fed meetings are entered in the events calendar from the official schedules.
+
+### 5. From paper to real money
+
+The Portfolio tab shows a graduation line, and real-money suggestions stay off until all of it is true:
+
+- at least 30 closed paper plays over at least six weeks,
+- profitable after costs,
+- ahead of the S&P 500 over the same weeks,
+- the paper book never more than 15% below its high.
+
+After graduation, "nothing crazy" means these defaults, which Ben can change in settings: stocks and ETFs only; at most 5% of the real account on one play; at most two real plays open; a stop always set. The app then shows the real-money size next to each alert, and Ben places it himself in Robinhood or ignores it. Tapping Yes on a graduated alert replies with a ready order ticket (buy or sell, shares, limit price, stop price, copyable) and a link that opens that stock in the Robinhood app, so placing it takes about thirty seconds. A Yes tap never places an order (Ben, 2026-10-15: confirmation through Telegram, "no AI glitch ... losing me money").
+
+### 6. Telegram
+
+A new alert-only bot that Ben creates in BotFather and connects in the app's settings (token stored in the vault, never shown again). It can only send messages, receive Yes or No taps, and receive text ideas for the idea inbox, all from Ben's own chat; anything else it receives is ignored. It is separate from Ben's existing bot, which can run commands on his Mac and must never carry these buttons. The webhook checks Telegram's secret header and Ben's chat id before writing a decision.
+
+## Cost
+
+A hard cap of $1 a day on model calls, enforced on the server like the Desk's budget gate. The morning report costs about one to two cents. A play judgment costs one to five cents depending on the model; the default judge is Gemini 3.1 Pro, which finished second of nine in the Desk's league at low cost, and Ben can switch it. An idea card costs about five to fifteen cents (it reads filings and runs several look-ups), with at most five of Ben's idea cards and three of the app's a day; the daily sort call costs about one to two cents. When the day's budget runs short, Ben's ideas go first, then plays, then the app's hunt. Feed tagging stays on its own cheap model. Expected spend: well under $1 on a normal day.
+
+## Pieces
+
+- Tables: `pf_lots` (every buy and sale; holdings are the lots summed, so there is no separate holdings table), `pf_settings` (watchlist, caps, judge model, alert hours, Telegram chat id), `pf_reports`, `pf_spend` (every model call's cost, which the $1 daily cap sums), `pf_plays` (the play, its paper trade id, conviction, reasoning, Ben's decision and when), `pf_events_test` (unlock-test rows), `pf_ideas` (who found it, Ben's observation or the riser, the idea card, its take, watching status, its paper trade id), `pf_trends` (each day's risers by source, score and mapped ticker), `pf_lessons` (one-line lessons and how often each repeats), `pf_map_links` (event type, what it moves, symbol, expected direction, count, average move after one hour and at the close, times right), `pf_map_events` (each tagged event and the measured moves). Paper trades go in `desk_trades` with owner `pilot`; a play's source (setup, headline, social or policy) is stored on `pf_plays`.
+- Edge function `pilot` with modes `report`, `scan`, `events`, `telegram` (webhook), `lots` (weekly lot), `scorecard`, `idea` (one research pass), `hunt` (the daily trend hunt and the weekly watching re-check), `map` (measures the moves after tagged events).
+- One cron, `pilot-tick`, every five minutes: runs the paper sync, the feed ingest every 15 minutes in hours, the play scan every 15 minutes in hours, the morning report at 08:30 ET, the weekly lot after the open on the buy day, event alerts at 08:35 ET, the trend hunt at 07:00 ET, the map measurements every 15 minutes in hours. The Desk's crons stay off.
+- App: the Portfolio tab (holdings, report, plays and both scorecards, unlock test, graduation line, settings) replacing the Desk tab.
+
+## Testing
+
+Unit tests for lot math, the weekly lot, the unlock test, the alert throttle, the two scorecards, the graduation rule, the riser score, the watching-list expiry and the map's link record (strong and greyed-out rules). The Telegram sender has a dry-run mode. The play scan runs for one full trading day writing to the app only before alerts go to Ben's phone.
+
+## Build order
+
+1. Holdings, weekly lots and the morning report in the app.
+2. Telegram bot, morning summary and event alerts with the unlock test.
+3. Paper plays with alerts, Yes or No, and both scorecards.
+4. The idea inbox and the app's daily trend hunt.
+5. The policy and economy map.
+6. The graduation line and the real-money sizes, which stay hidden until the paper record earns them.
+
+## Open items
+
+- SPCX unlock dates after September 9 need confirming from the prospectus.
+- The starter links of the policy and economy map, shown to Ben before step 5 goes live.
+- Telegram (step 2): another session built a dedicated "Daily alerts" bot on the `telegram-alerts` branch (paused 2026-10-16 and handed to the Overseer). Step 2 reuses that bot and its webhook rather than adding a third bot; decided when step 2 is planned.
+
+Settled 2026-10-16: holdings are typed in for v1; the watchlist is seeded with Ben's themes (section 4c).
