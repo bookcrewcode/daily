@@ -4,6 +4,7 @@
 // must not look like "nothing to do".
 import type { DayItem } from "../../../src/lib/theGame";
 import { addDays, isHhmm } from "./time";
+import { plainFetch } from "./http";
 import { DEFAULT_SETTINGS, type ActionRow, type Block, type Line, type Partner, type Settings } from "./types";
 
 export type SettingsRow = Settings & { link_code: string | null };
@@ -54,7 +55,7 @@ export interface Db {
 const nowIso = () => new Date().toISOString();
 
 export class SupabaseDb implements Db {
-  constructor(private url: string, private key: string, private uid: string, private f: typeof fetch = fetch) {}
+  constructor(private url: string, private key: string, private uid: string, private f: typeof fetch = plainFetch) {}
 
   private headers(prefer?: string): Record<string, string> {
     return { apikey: this.key, Authorization: `Bearer ${this.key}`, "Content-Type": "application/json", ...(prefer ? { Prefer: prefer } : {}) };

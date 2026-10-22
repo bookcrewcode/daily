@@ -2,6 +2,7 @@
 // webhook secret, decide who is talking, and a tiny Bot API client. The
 // client never logs request URLs because they carry the bot token.
 import type { Btn } from "./types";
+import { plainFetch } from "./http";
 
 export type Inbound =
   | { kind: "text"; update_id: number; chat_id: number; from_name: string; text: string }
@@ -44,7 +45,7 @@ export function classify(ev: Inbound, benChat: number | null, partnerChats: numb
 
 export class TgClient {
   lastStatus = 0;     // HTTP status of the last failed call (0 = network)
-  constructor(private token: string, private f: typeof fetch = fetch) {}
+  constructor(private token: string, private f: typeof fetch = plainFetch) {}
 
   async call(method: string, body: Record<string, unknown>): Promise<any | null> {
     try {

@@ -1,6 +1,7 @@
 // Google OAuth (offline access, calendar.events scope only) and a small
 // Calendar API client. The refresh token lives in the agent's own storage.
 import { addDays, epochOf } from "./core/time";
+import { plainFetch } from "./core/http";
 import type { CalEvent, CalPort } from "./core/types";
 
 export type Tokens = { access_token: string; refresh_token: string; expires_at: number };
@@ -33,7 +34,7 @@ export async function exchangeCode(code: string, clientId: string, secret: strin
 }
 
 export class GoogleCal implements CalPort {
-  constructor(private store: TokenStore, private clientId: string, private secret: string, private f: typeof fetch = fetch, private clock: () => number = Date.now) {}
+  constructor(private store: TokenStore, private clientId: string, private secret: string, private f: typeof fetch = plainFetch, private clock: () => number = Date.now) {}
 
   private async token(): Promise<string | null> {
     const t = await this.store.get();
