@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr } from "@/lib/supabase";
-import { diffDays, type DayItem, type Pillar, normalizeItems, sortItems, mergeItems, newItemId, PILLARS } from "@/lib/theGame";
+import { diffDays, type DayItem, type Pillar, normalizeItems, sortItems, mergeItems, newItemId, PILLARS, signalPillars, signalCount } from "@/lib/theGame";
 import { mirrorCounts } from "@/lib/dayList";
 import { fetchCalendarEvents, resolveBlocks, parseTime, type CalEvent } from "@/lib/calendar";
 import { pushSchedule, acquireToken, everGranted, NeedsAuth } from "@/lib/gcal";
@@ -346,6 +346,58 @@ export default function PlanSpace({ uid }: { uid: string }) {
             onApply={(next) => writeItems(mergeItems(items, normalizeItems(next)), "chat")}
             onPush={clientId ? (next) => pushToCalendar(normalizeItems(next)) : undefined}
           />
+
+          {/* SIGNAL DASHBOARD — the hero section: what each pillar needs today */}
+          {(() => {
+            const pillars = signalPillars(items);
+            const sig = signalCount(items);
+            if (sig.total === 0) return null;
+            const pct = sig.total ? Math.round((sig.done / sig.total) * 100) : 0;
+            return (
+              <Card className="mt-3">
+                <div className="flex items-baseline justify-between mb-3">
+                  <div className="flex items-baseline gap-2.5">
+                    <Eyebrow>Signal</Eyebrow>
+                    <span className="text-[20px] font-bold font-display leading-none" style={{ color: sig.done >= sig.total ? "var(--ok)" : "var(--text-1)" }}>{pct}%</span>
+                  </div>
+                  <p className="mono text-[10px]" style={{ color: sig.done >= sig.total ? "var(--ok)" : "var(--text-3)" }}>
+                    {sig.done}/{sig.total} pillar{sig.total === 1 ? "" : "s"} clear
+                  </p>
+                </div>
+                <div className="space-y-3">
+                  {pillars.map((p) => {
+                    const itemPct = p.items.length ? (p.doneCount / p.items.length) * 100 : 0;
+                    return (
+                      <div key={p.key}>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: p.done ? "var(--ok)" : p.color }} />
+                            <span className={`text-[13px] font-semibold ${p.done ? "text-[var(--text-3)] line-through" : ""}`}>{p.label}</span>
+                          </div>
+                          <span className="mono text-[10px]" style={{ color: p.done ? "var(--ok)" : p.color }}>
+                            {p.doneCount}/{p.items.length}
+                          </span>
+                        </div>
+                        <div className="h-2 rounded-full overflow-hidden" style={{ background: `${p.color}15` }}>
+                          <div className="h-full rounded-full transition-all duration-700 ease-out"
+                            style={{ width: `${itemPct}%`, background: p.done ? "var(--ok)" : p.color }} />
+                        </div>
+                        {p.items.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                            {p.items.map((it) => (
+                              <span key={it.id} className={`text-[10px] leading-relaxed ${it.done ? "line-through opacity-30" : "opacity-50"}`}>
+                                {it.what}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+            );
+          })()}
 
           {/* TODAY — the shipping-tracker timeline */}
           <Card className="mt-3">

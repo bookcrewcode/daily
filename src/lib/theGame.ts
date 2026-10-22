@@ -28,13 +28,16 @@ export const SPLIT_KEYS: SplitKey[] = ["first", "closed"];
 // Signal pillars — the 3-5 things that MUST happen today. Everything else is
 // noise. Completing a pillar means every item tagged with it is done.
 export type Pillar = "essentials" | "academics" | "knowledge" | "wealth" | "body";
-export const PILLARS: readonly { key: Pillar; label: string }[] = [
-  { key: "essentials", label: "Essentials" },
-  { key: "academics", label: "Academics" },
-  { key: "knowledge", label: "Knowledge" },
-  { key: "wealth", label: "Wealth" },
-  { key: "body", label: "Body" },
+export const PILLARS: readonly { key: Pillar; label: string; color: string }[] = [
+  { key: "essentials", label: "Essentials", color: "#8b949e" },
+  { key: "academics", label: "Academics", color: "#d2a8ff" },
+  { key: "knowledge", label: "Knowledge", color: "#58a6ff" },
+  { key: "wealth",    label: "Wealth",    color: "#f0b72f" },
+  { key: "body",      label: "Body",      color: "#f97583" },
 ] as const;
+export function pillarColor(p: Pillar | undefined): string {
+  return PILLARS.find((x) => x.key === p)?.color ?? "#8b949e";
+}
 const PILLAR_SET = new Set<string>(PILLARS.map((p) => p.key));
 
 // One line on the day's list. `id` is stable so checking an item off survives
@@ -373,13 +376,14 @@ export function winPace(won: number, today: string): { total: number; projected:
 }
 
 // ── signal ──────────────────────────────────────────────────────────────────
-export type SignalPillar = { key: Pillar; label: string; items: DayItem[]; done: boolean };
+export type SignalPillar = { key: Pillar; label: string; color: string; items: DayItem[]; done: boolean; doneCount: number };
 
 export function signalPillars(items: DayItem[]): SignalPillar[] {
   return PILLARS
     .map((p) => {
       const pItems = items.filter((i) => i.pillar === p.key);
-      return { ...p, items: pItems, done: pItems.length > 0 && pItems.every((i) => i.done) };
+      const doneCount = pItems.filter((i) => i.done).length;
+      return { ...p, items: pItems, doneCount, done: pItems.length > 0 && doneCount === pItems.length };
     })
     .filter((p) => p.items.length > 0);
 }
@@ -391,6 +395,27 @@ export function signalCount(items: DayItem[]): { done: number; total: number } {
 
 export function noiseItems(items: DayItem[]): DayItem[] {
   return items.filter((i) => !i.pillar);
+}
+
+const BODY_RE = /\bgym\b|\bworkout\b|\bcardio\b|\brun\b|\bpush day\b|\bpull day\b|\bleg day\b|\blift\b/i;
+const ACAD_RE = /\bclass\b|\blecture\b|\bexam\b|\bhomework\b|\bassignment\b|\bstudy\b|\blab\b|\bsyllab/i;
+const KNOW_RE = /\bread\b|\breading\b|\banki\b|\blearn\b|\bcourse\b|\btutorial\b|\bpodcast\b|\blisten\b/i;
+const ESS_RE = /\bmeds\b|\bmed\b|\bbed\b|\bclean\b|\blaundry\b|\bgrocery\b|\bcook\b|\bmeal\b|\bdishes\b|\bshower\b|\btrash\b/i;
+const WEALTH_RE = /\btrad(e|ing)\b|\bbookcrew\b|\baffiliate\b|\bcold email\b|\bship\b|\bdeploy\b|\bbuild\b|\bcode\b|\bfunnel\b|\bprospect\b|\bpitch\b/i;
+
+const KIND_MAP: Record<string, Pillar> = {
+  class: "academics", gym: "body", read: "knowledge", study: "academics",
+  drive: "essentials", reset: "essentials", drill: "knowledge",
+};
+
+export function guessPillar(what: string, kind?: string | null): Pillar | undefined {
+  if (kind && KIND_MAP[kind]) return KIND_MAP[kind];
+  if (BODY_RE.test(what)) return "body";
+  if (ACAD_RE.test(what)) return "academics";
+  if (ESS_RE.test(what)) return "essentials";
+  if (WEALTH_RE.test(what)) return "wealth";
+  if (KNOW_RE.test(what)) return "knowledge";
+  return undefined;
 }
 
 // L-lane trunk rotation: Mon/Thu · Tue/Fri · Wed/Sat · Sun synthesis.

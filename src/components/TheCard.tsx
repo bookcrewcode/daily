@@ -22,7 +22,7 @@ import {
   type GameDayRow, type DayItem, type Splits, type Pillar,
   emptyDay, dayTotal, bonusCount, isStreakDay, winBar,
   normalizeItems, sortItems, countDone, newItemId, rebase,
-  signalPillars, signalCount, noiseItems, PILLARS,
+  signalPillars, signalCount, noiseItems, PILLARS, pillarColor, guessPillar,
   computeStreak, daysWon, winPace, levelInfo, weekDays, weekBand, weekStart, seasonDay,
   addDays, diffDays, secOfDay, fmtClock, fmtDelta, fmtDur, partBests,
   SEASON_START, SEASON_END, SEASON_DAYS, WIN_TARGET, WEEK_LABELS,
@@ -183,11 +183,13 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         const have = new Set(list.map((i) => i.block_id).filter(Boolean));
         const add = ((cb.data ?? []) as { id: string; label: string; location: string; start_t: string; kind: string | null }[])
           .filter((c) => !have.has(c.id))
-          .map((c) => ({
-            id: newItemId(), time: c.start_t,
-            what: `${c.label}${(c.kind ?? "class") === "class" && c.location ? ` · ${c.location}` : ""}`.slice(0, 200),
-            src: "block" as const, block_id: c.id,
-          }));
+          .map((c) => {
+            const what = `${c.label}${(c.kind ?? "class") === "class" && c.location ? ` · ${c.location}` : ""}`.slice(0, 200);
+            const item: DayItem = { id: newItemId(), time: c.start_t, what, src: "block" as const, block_id: c.id };
+            const guessed = guessPillar(what, c.kind);
+            if (guessed) item.pillar = guessed;
+            return item;
+          });
         const merged = [...list, ...add];
         const { error } = await supabase.from("nights")
           .upsert({ user_id: uid, day: today, items: merged, blocks_seeded: true }, { onConflict: "user_id,day" });
@@ -589,38 +591,41 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
         <>
           {/* SIGNAL — the pillars that MUST get done today */}
           {signal.total > 0 && (
-            <div className="mt-4 rounded-xl border border-[#58a6ff]/25 bg-[#0d1520] p-3.5">
+            <div className="mt-4 rounded-xl border border-white/[0.08] bg-[#0d1117] p-3.5">
               <div className="flex items-baseline justify-between mb-2">
                 <Eyebrow>Signal</Eyebrow>
-                <p className="mono text-[10px]" style={{ color: signal.done >= signal.total ? "var(--ok)" : "#58a6ff" }}>
+                <p className="mono text-[10px]" style={{ color: signal.done >= signal.total ? "var(--ok)" : "var(--text-3)" }}>
                   {signal.done}/{signal.total} pillar{signal.total === 1 ? "" : "s"}
                 </p>
               </div>
               <div className="flex gap-1 mb-3">
                 {pillars.map((p) => (
-                  <div key={p.key} className="flex-1 h-1.5 rounded-full transition-colors duration-500"
-                    style={{ background: p.done ? "var(--ok)" : "rgba(88,166,255,0.25)" }} />
+                  <div key={p.key} className="flex-1 h-2 rounded-full transition-colors duration-500 relative overflow-hidden"
+                    style={{ background: `${p.color}20` }}>
+                    <div className="absolute inset-y-0 left-0 rounded-full transition-all duration-500"
+                      style={{ width: `${p.items.length ? (p.doneCount / p.items.length) * 100 : 0}%`, background: p.done ? "var(--ok)" : p.color }} />
+                  </div>
                 ))}
               </div>
               <div className="space-y-2">
                 {pillars.map((p) => {
-                  const pDone = p.items.filter((i) => i.done).length;
                   const isOpen = !collapsed.has(p.key);
                   return (
-                    <div key={p.key} style={{ borderLeft: `3px solid ${p.done ? "var(--ok)" : "#58a6ff"}` }}
-                      className={`rounded-r-xl overflow-hidden transition-colors ${p.done ? "bg-[var(--ok)]/[0.06]" : "bg-[#131d2b]"}`}>
+                    <div key={p.key}
+                      className="rounded-r-xl overflow-hidden transition-colors"
+                      style={{ borderLeft: `3px solid ${p.done ? "var(--ok)" : p.color}`, background: p.done ? "rgba(63,185,80,0.06)" : `${p.color}08` }}>
                       <button onClick={() => toggleCollapse(p.key)}
                         className="w-full px-3 py-2.5 flex items-center justify-between active:scale-[0.99]">
                         <div className="flex items-center gap-2.5 min-w-0">
                           {p.done ? (
                             <span className="w-5 h-5 rounded-md bg-[var(--ok)] grid place-items-center text-[11px] font-black text-black shrink-0">✓</span>
                           ) : (
-                            <span className="text-[8px] font-bold tracking-widest uppercase shrink-0 px-1.5 py-0.5 rounded bg-[#58a6ff]/15 text-[#58a6ff]">Signal</span>
+                            <span className="w-2 h-2 rounded-full shrink-0" style={{ background: p.color }} />
                           )}
                           <div className="min-w-0 text-left">
                             <p className={`text-[13px] font-semibold leading-tight ${p.done ? "text-[var(--text-3)] line-through" : ""}`}>{p.label}</p>
-                            <p className="text-[10px] mono mt-0.5" style={{ color: p.done ? "var(--ok)" : "#58a6ff" }}>
-                              {pDone}/{p.items.length} done
+                            <p className="text-[10px] mono mt-0.5" style={{ color: p.done ? "var(--ok)" : p.color }}>
+                              {p.doneCount}/{p.items.length} done
                             </p>
                           </div>
                         </div>
@@ -641,14 +646,17 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
                               </button>
                               <div className="relative">
                                 <button onClick={() => setPillarPick(pillarPick === it.id ? null : it.id)}
-                                  className="text-[8px] px-1.5 py-0.5 rounded bg-[#58a6ff]/10 text-[#58a6ff] active:scale-90 opacity-50">
+                                  className="text-[8px] px-1.5 py-0.5 rounded active:scale-90 opacity-50"
+                                  style={{ background: `${p.color}15`, color: p.color }}>
                                   {PILLARS.find((x) => x.key === it.pillar)?.label.slice(0, 3) ?? "?"}
                                 </button>
                                 {pillarPick === it.id && (
                                   <div className="absolute right-0 top-6 z-20 bg-[#1c2333] border border-[var(--border-2)] rounded-lg shadow-xl py-1 min-w-[120px]">
                                     {PILLARS.map((o) => (
                                       <button key={o.key} onClick={() => setItemPillar(it.id, o.key)}
-                                        className={`block w-full text-left px-3 py-1.5 text-[11px] active:bg-white/10 ${it.pillar === o.key ? "text-[#58a6ff] font-semibold" : "text-[var(--text-2)]"}`}>
+                                        className="block w-full text-left px-3 py-1.5 text-[11px] active:bg-white/10"
+                                        style={{ color: it.pillar === o.key ? o.color : "var(--text-2)", fontWeight: it.pillar === o.key ? 600 : 400 }}>
+                                        <span className="inline-block w-2 h-2 rounded-full mr-2" style={{ background: o.color }} />
                                         {o.label}
                                       </button>
                                     ))}
@@ -717,14 +725,17 @@ export default function TheCard({ uid, onGoTab }: { uid: string; onGoTab: (t: st
                     <div className="relative">
                       <button onClick={() => setPillarPick(pillarPick === it.id ? null : it.id)}
                         aria-label="Assign signal pillar"
-                        className={`text-[8px] px-1.5 py-0.5 rounded active:scale-90 ${it.pillar ? "bg-[#58a6ff]/10 text-[#58a6ff]" : "bg-white/5 text-[var(--text-4)]"}`}>
+                        className="text-[8px] px-1.5 py-0.5 rounded active:scale-90"
+                        style={it.pillar ? { background: `${pillarColor(it.pillar)}15`, color: pillarColor(it.pillar) } : { background: "rgba(255,255,255,0.05)", color: "var(--text-4)" }}>
                         {it.pillar ? PILLARS.find((x) => x.key === it.pillar)?.label.slice(0, 3) : "tag"}
                       </button>
                       {pillarPick === it.id && (
                         <div className="absolute right-0 top-6 z-20 bg-[#1c2333] border border-[var(--border-2)] rounded-lg shadow-xl py-1 min-w-[120px]">
                           {PILLARS.map((o) => (
                             <button key={o.key} onClick={() => setItemPillar(it.id, o.key)}
-                              className={`block w-full text-left px-3 py-1.5 text-[11px] active:bg-white/10 ${it.pillar === o.key ? "text-[#58a6ff] font-semibold" : "text-[var(--text-2)]"}`}>
+                              className="block w-full text-left px-3 py-1.5 text-[11px] active:bg-white/10"
+                              style={{ color: it.pillar === o.key ? o.color : "var(--text-2)", fontWeight: it.pillar === o.key ? 600 : 400 }}>
+                              <span className="inline-block w-2 h-2 rounded-full mr-2" style={{ background: o.color }} />
                               {o.label}
                             </button>
                           ))}
