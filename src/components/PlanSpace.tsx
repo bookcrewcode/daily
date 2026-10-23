@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase, todayStr } from "@/lib/supabase";
-import { diffDays, type DayItem, normalizeItems, sortItems, mergeItems, newItemId } from "@/lib/theGame";
+import { diffDays, type DayItem, type Pillar, normalizeItems, sortItems, mergeItems, newItemId, PILLARS, signalPillars, signalCount } from "@/lib/theGame";
 import { mirrorCounts } from "@/lib/dayList";
 import { fetchCalendarEvents, resolveBlocks, parseTime, type CalEvent } from "@/lib/calendar";
 import { pushSchedule, acquireToken, everGranted, NeedsAuth } from "@/lib/gcal";
@@ -65,6 +65,7 @@ export default function PlanSpace({ uid }: { uid: string }) {
   // add-block form
   const [bTime, setBTime] = useState("");
   const [bWhat, setBWhat] = useState("");
+  const [bPillar, setBPillar] = useState<Pillar | "">("");
   // add-deadline form
   const [dTitle, setDTitle] = useState("");
   const [dDue, setDDue] = useState("");
@@ -168,9 +169,11 @@ export default function PlanSpace({ uid }: { uid: string }) {
   async function addBlock() {
     const what = bWhat.trim();
     if (!what) return;
-    const next = [...items, { id: newItemId(), time: bTime, what: what.slice(0, 120), src: "plan" as const }];
+    const item: DayItem = { id: newItemId(), time: bTime, what: what.slice(0, 120), src: "plan" as const };
+    if (bPillar) item.pillar = bPillar;
+    const next = [...items, item];
     const ok = await writeItems(next, "block");
-    if (ok) { setBWhat(""); setBTime(""); }
+    if (ok) { setBWhat(""); setBTime(""); setBPillar(""); }
   }
 
   async function removeBlock(i: number) {
@@ -344,6 +347,58 @@ export default function PlanSpace({ uid }: { uid: string }) {
             onPush={clientId ? (next) => pushToCalendar(normalizeItems(next)) : undefined}
           />
 
+          {/* SIGNAL DASHBOARD — the hero section: what each pillar needs today */}
+          {(() => {
+            const pillars = signalPillars(items);
+            const sig = signalCount(items);
+            if (sig.total === 0) return null;
+            const pct = sig.total ? Math.round((sig.done / sig.total) * 100) : 0;
+            return (
+              <Card className="mt-3">
+                <div className="flex items-baseline justify-between mb-3">
+                  <div className="flex items-baseline gap-2.5">
+                    <Eyebrow>Signal</Eyebrow>
+                    <span className="text-[20px] font-bold font-display leading-none" style={{ color: sig.done >= sig.total ? "var(--ok)" : "var(--text-1)" }}>{pct}%</span>
+                  </div>
+                  <p className="mono text-[10px]" style={{ color: sig.done >= sig.total ? "var(--ok)" : "var(--text-3)" }}>
+                    {sig.done}/{sig.total} pillar{sig.total === 1 ? "" : "s"} clear
+                  </p>
+                </div>
+                <div className="space-y-3">
+                  {pillars.map((p) => {
+                    const itemPct = p.items.length ? (p.doneCount / p.items.length) * 100 : 0;
+                    return (
+                      <div key={p.key}>
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: p.done ? "var(--ok)" : p.color }} />
+                            <span className={`text-[13px] font-semibold ${p.done ? "text-[var(--text-3)] line-through" : ""}`}>{p.label}</span>
+                          </div>
+                          <span className="mono text-[10px]" style={{ color: p.done ? "var(--ok)" : p.color }}>
+                            {p.doneCount}/{p.items.length}
+                          </span>
+                        </div>
+                        <div className="h-2 rounded-full overflow-hidden" style={{ background: `${p.color}15` }}>
+                          <div className="h-full rounded-full transition-all duration-700 ease-out"
+                            style={{ width: `${itemPct}%`, background: p.done ? "var(--ok)" : p.color }} />
+                        </div>
+                        {p.items.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                            {p.items.map((it) => (
+                              <span key={it.id} className={`text-[10px] leading-relaxed ${it.done ? "line-through opacity-30" : "opacity-50"}`}>
+                                {it.what}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+            );
+          })()}
+
           {/* TODAY — the shipping-tracker timeline */}
           <Card className="mt-3">
             <div className="flex items-center justify-between mb-2">
@@ -387,14 +442,21 @@ export default function PlanSpace({ uid }: { uid: string }) {
                 );
               })}
             </div>
-            <div className="flex gap-1.5 mt-3">
-              <input type="time" value={bTime} onChange={(e) => setBTime(e.target.value)} disabled={!!saving}
-                className="rounded-lg bg-black/25 px-2.5 py-2 outline-none text-sm w-[6.4rem] shrink-0 mono" />
-              <input value={bWhat} onChange={(e) => setBWhat(e.target.value)} disabled={!!saving}
-                onKeyDown={(e) => { if (e.key === "Enter") addBlock(); }}
-                placeholder="add a block…" className="flex-1 min-w-0 rounded-lg bg-black/25 px-3 py-2 outline-none text-sm" />
-              <button onClick={addBlock} disabled={!!saving || !bWhat.trim()}
-                className="px-3.5 rounded-lg bg-[var(--neon)] text-black text-sm font-bold active:scale-95 disabled:opacity-40">＋</button>
+            <div className="mt-3 space-y-1.5">
+              <div className="flex gap-1.5">
+                <input type="time" value={bTime} onChange={(e) => setBTime(e.target.value)} disabled={!!saving}
+                  className="rounded-lg bg-black/25 px-2.5 py-2 outline-none text-sm w-[6.4rem] shrink-0 mono" />
+                <input value={bWhat} onChange={(e) => setBWhat(e.target.value)} disabled={!!saving}
+                  onKeyDown={(e) => { if (e.key === "Enter") addBlock(); }}
+                  placeholder="add a block…" className="flex-1 min-w-0 rounded-lg bg-black/25 px-3 py-2 outline-none text-sm" />
+                <button onClick={addBlock} disabled={!!saving || !bWhat.trim()}
+                  className="px-3.5 rounded-lg bg-[var(--neon)] text-black text-sm font-bold active:scale-95 disabled:opacity-40">＋</button>
+              </div>
+              <select value={bPillar} onChange={(e) => setBPillar(e.target.value as Pillar | "")}
+                className="rounded-lg bg-black/25 px-2.5 py-1.5 outline-none text-[11px] text-[var(--text-3)]">
+                <option value="">no signal pillar</option>
+                {PILLARS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+              </select>
             </div>
             {calErr && <p className="text-[10px] text-orange-400/80 mt-2">Google Calendar feed didn&apos;t load — the plan above is still exact.</p>}
             {pushMsg && <p className="text-[10px] text-[var(--text-2)] mt-2">{pushMsg}</p>}

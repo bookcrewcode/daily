@@ -22,6 +22,7 @@ import ReadSpace from "@/components/ReadSpace";
 import OverseerSpace from "@/components/OverseerSpace";
 import AIOffBanner from "@/components/AIOffBanner";
 import AIKey from "@/components/AIKey";
+import TelegramAlerts from "@/components/TelegramAlerts";
 import AIModels from "@/components/AIModels";
 import UpdateBar from "@/components/UpdateBar";
 import Today from "@/components/Today";
@@ -222,6 +223,7 @@ function Shell({ uid }: { uid: string }) {
               <p className="text-[10px] uppercase tracking-[0.2em] opacity-45">Settings</p>
               <AIKey />
               <AIModels />
+              <TelegramAlerts />
               <p className="text-[10px] uppercase tracking-[0.2em] opacity-45 mt-5 mb-2">Legacy — the old rooms, data intact</p>
               <div className="grid grid-cols-2 gap-1.5">
                 {LEGACY.map((l) => (

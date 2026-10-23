@@ -14,6 +14,7 @@ export const LEARN_FN = `${URL}/functions/v1/learn`;
 export const STUDIO_FN = `${URL}/functions/v1/studio`;
 export const DEADLINES_FN = `${URL}/functions/v1/deadlines`;
 export const NUDGE_FN = `${URL}/functions/v1/nudge`;
+export const TELEGRAM_FN = `${URL}/functions/v1/telegram`;
 export const NEWS_FN = `${URL}/functions/v1/news`;
 export const KALSHI_FN = `${URL}/functions/v1/kalshi`;
 
