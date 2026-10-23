@@ -22,7 +22,6 @@ import ReadSpace from "@/components/ReadSpace";
 import OverseerSpace from "@/components/OverseerSpace";
 import AIOffBanner from "@/components/AIOffBanner";
 import AIKey from "@/components/AIKey";
-import TelegramAlerts from "@/components/TelegramAlerts";
 import AIModels from "@/components/AIModels";
 import UpdateBar from "@/components/UpdateBar";
 import Today from "@/components/Today";
@@ -59,7 +58,6 @@ const SPACES: { key: Tab; label: string }[] = [
 // The Desk (model trading league) is paused as of 2026-10-08 (too costly per
 // day); it lives here until it is switched back on, with all its data intact.
 const LEGACY: { key: Tab; label: string }[] = [
-  { key: "overseer", label: "Overseer" },
   { key: "desk", label: "Desk (paused)" },
   { key: "today", label: "Today (old)" },
   { key: "planlegacy", label: "Planner (old)" },
@@ -221,9 +219,13 @@ function Shell({ uid }: { uid: string }) {
             <div onClick={(e) => e.stopPropagation()} className="w-full md:max-w-md bg-[var(--background)] rounded-t-2xl md:rounded-2xl border-t md:border border-white/[0.08] p-4 pb-8 md:pb-4 max-h-[85vh] overflow-y-auto" style={{ animation: "fadeSlide 0.2s ease" }}>
               <div className="w-10 h-1 rounded-full bg-white/15 mx-auto mb-4 md:hidden" />
               <p className="text-[10px] uppercase tracking-[0.2em] opacity-45">Settings</p>
+              <button onClick={() => go("overseer")}
+                className="mt-3 w-full rounded-xl border border-[var(--neon)]/30 bg-[var(--neon)]/[0.06] px-4 py-3 text-left active:scale-[0.99]">
+                <span className="block text-sm font-semibold">Overseer</span>
+                <span className="block text-xs opacity-60">Your day manager on Telegram: connect it, see what it did today, and set its rules.</span>
+              </button>
               <AIKey />
               <AIModels />
-              <TelegramAlerts />
               <p className="text-[10px] uppercase tracking-[0.2em] opacity-45 mt-5 mb-2">Legacy — the old rooms, data intact</p>
               <div className="grid grid-cols-2 gap-1.5">
                 {LEGACY.map((l) => (
